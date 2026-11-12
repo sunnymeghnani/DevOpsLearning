@@ -1,0 +1,81 @@
+{
+ "id": "l0-processes-signals",
+ "title": "Zombies, and a process that won't die",
+ "level": "L0",
+ "map_node": "processes-signals",
+ "path": "fresher",
+ "order": 5,
+ "minutes": 20,
+ "difficulty": "easy",
+ "source": {
+  "title": "pt-kill --execute-command creates zombies (Percona Toolkit bug #919819)",
+  "url": "https://bugs.launchpad.net/percona-toolkit/+bug/919819",
+  "note": "adapted"
+ },
+ "brief": "**ALERT 03:12 · app-01 · process count high, CPU 100%**\n\nMonitoring shows about 60 extra processes on app-01 and one CPU pinned since the night. This box has a hard limit of 512 processes; when it is reached, nothing new can start, not even your SSH session (`fork: Resource temporarily unavailable`).\n\nThe night shift tried `kill -9` on a few of the extra PIDs. \"Nothing happens, they're immortal.\" They also tried `kill` on the CPU hog, with the same result.\n\nFind out what these processes are and who owns them, then clean up with the right tool. Reports must keep being generated: don't leave the report service stopped.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "The immortal processes",
+   "text": "List processes with their state and parent: `ps -eo pid,ppid,stat,comm`. A **zombie** has already exited; only its exit status is left in the process table, waiting for its parent to collect it with `wait()`. You can't kill something that is already dead.\n\nIdentify the parent, then use the service manager to make the zombies go away. Report generation must keep running and start at boot. Done when no `Z` processes are left.",
+   "points": 50,
+   "hints": [
+    "`ps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/'` lists the zombies. All have the same PPID; `ps -o pid,comm,unit -p <PPID>` (or `systemctl status <PPID>`) names the parent and its unit.",
+    "When the parent exits, PID 1 adopts the zombies and reaps them at once: `sudo systemctl restart report-worker`. The lasting fix is in the code: the parent must `waitpid()` (or ignore SIGCHLD)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which state letter does ps print in the STAT column for a zombie?",
+     "format": "one letter",
+     "answer_sha256": "594e519ae499312b29433b7dd8a97ff068defcba9755b6d5d00e84c524d67b06"
+    },
+    {
+     "id": "q2",
+     "prompt": "What is the name (ps -o comm) of the zombies' parent process?",
+     "format": "process name",
+     "answer_sha256": "650fdc194ada60a0a77c24dd1a9763b20f15b40d0d73789eeb344e5cb9ca9afb"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "no zombie processes; report-worker.service is active and enabled",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "The CPU hog that ignores kill",
+   "text": "Find the process using the most CPU (`top`, or `ps -eo pid,ppid,ni,pcpu,comm --sort=-pcpu | head`). It is left over from last night's backup and no unit owns it. Read its script to see why a plain `kill` does nothing.\n\nSignals are messages: a program may catch or ignore most of them, but not all. Stop it, starting with the polite signal and escalating only if needed. Done when no `backup-sync` process is left.",
+   "points": 50,
+   "hints": [
+    "`cat /usr/local/bin/backup-sync`: `trap '' TERM INT HUP` tells bash to ignore those signals.",
+    "SIGKILL can't be caught or ignored: `sudo kill -KILL <PID>` (`kill -9`), or `sudo pkill -KILL -x backup-sync`. Check with `pgrep -x backup-sync`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which signal number can never be caught or ignored by a process?",
+     "format": "number",
+     "answer_sha256": "19581e27de7ced00ff1ce50b2047e7a567c76b1cbaebabe5ef03f7c3017bb5b7"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which signal does a plain `kill PID` send?",
+     "format": "SIGNAME, e.g. SIGHUP",
+     "answer_sha256": "f5d19b9ad46bfdf0102adbf46ef6750cdbef4bf0a889260e87e36b992b33b388"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "no backup-sync process is running",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. `report-worker` forks one child per job and never calls `wait()`. Each finished child stays in the process table as a **zombie** (`Z`, `<defunct>`): it uses no CPU or memory, but it holds a PID. Enough of them exhaust the unit's `TasksMax` (`systemctl show -p TasksMax report-worker`: 76 on this box), then `pids.max`/`pid_max`, and then every `fork()` fails with EAGAIN.\n2. `backup-sync` runs `trap '' TERM INT HUP`, so the default `kill` (SIGTERM) and Ctrl-C do nothing.\n\n### Task 1\n```bash\nps -eo pid,ppid,stat,comm | awk '$3 ~ /^Z/' | head      # Z ... [sh] <defunct>, same PPID\nps -eo stat= | grep -c '^Z'                             # how many\nps -o pid,comm,unit -p <PPID>                           # report-worker, report-worker.service\nsudo kill -9 <zombie PID>                               # no effect: it is already dead\nsudo systemctl restart report-worker\nps -eo stat= | grep -c '^Z'                             # 0\n```\n*Why:* only a parent can reap its children. When the parent exits, its children are re-parented to PID 1 (systemd), which reaps them immediately. Restart, not stop: the service must keep running. The real fix is in the code: `os.waitpid()`, a SIGCHLD handler, or `signal(SIGCHLD, SIG_IGN)`. The last is what Percona did for pt-kill.\n\n### Task 2\n```bash\nps -eo pid,ppid,ni,pcpu,comm --sort=-pcpu | head -3     # backup-sync near 100 %\ncat /usr/local/bin/backup-sync                          # trap '' TERM INT HUP\nsudo kill <PID> ; sleep 2 ; ps -p <PID>                 # still there\nsudo kill -KILL <PID>                                   # SIGKILL (9) cannot be trapped\npgrep -x backup-sync || echo gone\n```\n*Why:* always try SIGTERM first, because it lets a program clean up (temp files, locks, half-written data). Use SIGKILL only when TERM is ignored. Afterwards, check what the job left behind: lock files, partial backups.\n\n**Source (adapted):** [pt-kill --execute-command creates zombies](https://bugs.launchpad.net/percona-toolkit/+bug/919819): the tool forked children and never reaped them. The only workaround was restarting pt-kill, and the fix (2.0.3) lets the system reap dead children."
+}

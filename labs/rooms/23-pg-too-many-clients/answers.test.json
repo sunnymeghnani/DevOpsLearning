@@ -1,0 +1,5 @@
+{
+ "q1": "report-worker",
+ "q2": "superuser_reserved_connections",
+ "q3": "postmaster"
+}

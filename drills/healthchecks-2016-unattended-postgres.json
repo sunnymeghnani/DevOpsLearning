@@ -1,0 +1,72 @@
+{
+  "id": "healthchecks-2016-unattended-postgres",
+  "title": "The night the database updated itself",
+  "level": "L0",
+  "track": "sre",
+  "topics": ["uptime-checks", "incident-note", "devops-day-to-day"],
+  "minutes": 6,
+  "role": "You are the only maintainer of a small cron-monitoring service. Your users' servers send it a ping after each job; when pings stop, it emails them that a check is down.",
+  "source": {
+    "label": "Healthchecks.io: Outage postmortem, 20 August 2016",
+    "url": "https://blog.healthchecks.io/2016/08/outage-postmortem-20-august-2016/",
+    "org": "Healthchecks.io",
+    "date": "2016-08-20",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You are travelling abroad. When you finally read your mail, your own monitors fired almost a day ago, and your users have been getting \"check has gone down\" emails for hours. Your phone has no data roaming; your SSH keys are on a PC far away.",
+  "steps": [
+    {
+      "situation": "Almost every check on the service went down at the same time. You borrow a laptop with your keys.",
+      "evidence": "$ curl -s -o /dev/null -w '%{http_code}\\n' https://hc.example.com/ping/5f3c0e2a-demo\n400\n$ curl -s -o /dev/null -w '%{http_code}\\n' https://hc.example.com/\n200",
+      "evidence_cmd": "curl -s -o /dev/null -w '%{http_code}' https://hc.example.com/ping/<uuid>",
+      "choices": [
+        {"text": "Test your own ping endpoint from outside before anything else", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "Thousands of customers don't break their cron jobs in the same minute. The website answers 200, but every ping gets 400: the fault is in your ping handler."},
+        {"text": "Assume a big customer outage and wait for it to clear", "verdict": "bad", "effect": {"service": -15, "time": -15, "evidence": -5, "trust": -10}, "why": "Every user gets false alarms while you wait for something that isn't happening."},
+        {"text": "Pause all outgoing alert emails first", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "It stops the noise, but also any real alert, and the ping data still isn't recorded."}
+      ]
+    },
+    {
+      "situation": "The site and the alert sender work. Only the ping handler, a separate Go program, fails. What changed?",
+      "evidence": "$ grep -h 'Packages that will be upgraded' /var/log/unattended-upgrades/unattended-upgrades.log | tail -1\n2016-08-19 23:41:07,113 INFO Packages that will be upgraded: postgresql-9.5 postgresql-client-9.5\n$ journalctl -u hchk --since '2016-08-19 23:40' | head -3\nAug 19 23:41:22 web1 hchk[1187]: SQL error: conn closed\nAug 19 23:41:23 web1 hchk[1187]: SQL error: conn closed",
+      "evidence_cmd": "less /var/log/unattended-upgrades/unattended-upgrades.log",
+      "choices": [
+        {"text": "Line up the upgrade log with the handler's log: what restarted, and who never reconnected", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "An automatic security update restarted PostgreSQL and closed every connection. The Python site reconnected; the Go handler logged the error and kept using the dead connection."},
+        {"text": "Restart PostgreSQL again", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": -5, "trust": 0}, "why": "The database is healthy. Restarting it breaks the parts that had already recovered."},
+        {"text": "Roll the whole server back to last week's snapshot", "verdict": "risky", "effect": {"service": 5, "time": -15, "evidence": -10, "trust": -5}, "why": "It loses a week of data and the security update, to fix one process that needs a restart."}
+      ]
+    },
+    {
+      "situation": "You know the cause. Users are still getting false alerts.",
+      "choices": [
+        {"text": "Restart the ping handler now; fix its reconnect logic afterwards", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 0, "trust": 5}, "why": "This is what ended the outage. The code fix (handle a closed or broken connection) can be done calmly once pings flow again."},
+        {"text": "Write and deploy the reconnect fix first, then restart", "verdict": "risky", "effect": {"service": 5, "time": -15, "evidence": 0, "trust": -5}, "why": "The right fix, but users keep getting false alerts while you code on a borrowed laptop."},
+        {"text": "Reboot the database server to reset everything", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "It restarts the part that was healthy and closes every connection again. The broken part is the ping handler, and it stays broken."}
+      ]
+    },
+    {
+      "situation": "Pings flow again. Your monitoring did its job: alerts arrived within about five minutes. What do you change?",
+      "choices": [
+        {"text": "Make the handler reconnect, turn off unattended upgrades on the DB server and patch it on purpose, fix how you can be reached when away, and publish a postmortem", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 20}, "why": "The real follow-ups. The gap was a person who couldn't be reached and a program that never reconnected, not missing alerts."},
+        {"text": "Add a fifth monitoring service", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": 0}, "why": "Four services already alerted on time. More alerts to a person who can't see them change nothing."},
+        {"text": "Turn off security updates on every server", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -15}, "why": "Control when updates run; don't stop them. The next unpatched hole is a worse outage."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "Late on 19 August 2016, Ubuntu 16.04's unattended security updates installed a PostgreSQL update on the Healthchecks.io database server and restarted the database, closing all connections. The Django site and alerting reconnected on their own. The Go ping listener did not: its error handling logged SQL errors and carried on with the dead connection, answering every ping with HTTP 400. For about 24 hours no pings were processed, so many checks went down and users got false alerts. Four monitoring services (NewRelic, UptimeRobot, Cronitor, Dead Man's Snitch) alerted the sole maintainer within about 5 minutes, but he was travelling, couldn't read email, and his SSH keys were on a PC more than 4 hours away. Restarting the listener fixed it. Follow-ups: handle closed connections in the code (done), turn off unattended upgrades on the database server (done) and on other servers later, keep roaming data on abroad, and carry a small laptop with the deploy tools.",
+    "lessons": ["When every check fails at once, test your own front door first.", "Clients must survive a database restart: test reconnects, not just the happy path.", "Unattended upgrades restart services: decide where that is acceptable.", "An alert only helps if someone can act on it: plan for the times you're away."],
+    "commands": ["curl -s -o /dev/null -w '%{http_code}' https://hc.example.com/ping/<uuid>", "less /var/log/unattended-upgrades/unattended-upgrades.log", "zgrep postgresql /var/log/apt/history.log*", "journalctl -u postgresql --since yesterday", "systemctl restart hchk"]
+  },
+  "practise": {
+    "labs": ["06-packages-apt"],
+    "handbook": [
+      {"file": "41-problems-linux-systems.md", "heading": "2.6 Unattended-upgrades restarted or rebooted prod"},
+      {"file": "51-problems-databases-storage-backup.md", "heading": "PostgreSQL connections and pooling"},
+      {"file": "52-devops-day-to-day.md", "heading": "13.2 Only one person knows how it works"}
+    ],
+    "sites": [
+      {"label": "SadServers: Cork, Postgres after a reboot (free account)", "url": "https://sadservers.com/scenario/cork"},
+      {"label": "Uptime Kuma public demo (no sign-up)", "url": "https://demo.kuma.pet/start-demo"}
+    ]
+  }
+}

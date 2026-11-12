@@ -1,0 +1,5 @@
+{
+ "q1": "90",
+ "q2": "systemd-networkd-wait-online.service",
+ "q3": "--any"
+}

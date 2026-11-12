@@ -1,0 +1,80 @@
+{
+  "id": "cloudflare-2019-waf-regex-cpu",
+  "title": "One regex, every CPU, worldwide",
+  "level": "L3",
+  "track": "web",
+  "topics": ["deployment-strategies", "reverse-proxy", "slow-system", "outage-basics"],
+  "minutes": 8,
+  "role": "You are an SRE at a large CDN. Your edge servers run the reverse proxy and a web application firewall (WAF) in front of millions of sites.",
+  "source": {
+    "label": "Cloudflare: details of the outage on 2 July 2019 (post-mortem)",
+    "url": "https://blog.cloudflare.com/details-of-the-cloudflare-outage-on-july-2-2019/",
+    "org": "Cloudflare",
+    "date": "2019-07-02",
+    "read_on": "2026-11-07"
+  },
+  "brief": "13:42 UTC. CPU on the HTTP serving machines jumps to 100% in every data centre at once. Customers' sites return 502s and traffic drops sharply. There's no traffic spike that could explain it.",
+  "steps": [
+    {
+      "situation": "Is this an attack, or did you do it?",
+      "evidence": "$ deploy-log --since 13:30\n13:42:05  waf-managed-rules  release  mode=simulate  targets=global  via=quicksilver\n13:41:58  dns-edge           release  canary=pop-ams  status=ok\n# edge CPU, all regions: 18% -> 100% at 13:42",
+      "evidence_cmd": "deploy-log --since 13:30",
+      "choices": [
+        {"text": "Line up recent changes against the moment CPU jumped", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "A global jump in the same second matches a global push. The WAF rule release went everywhere through the config store within seconds."},
+        {"text": "Treat it as a DDoS and add capacity", "verdict": "bad", "effect": {"service": -10, "time": -15, "evidence": -10, "trust": 0}, "why": "Traffic didn't rise; CPU per request did. New machines get the same rules and go to 100% too."},
+        {"text": "Restart the proxy on all edge machines", "verdict": "bad", "effect": {"service": -15, "time": -10, "evidence": -10, "trust": -5}, "why": "They reload the same rules and peg the CPU again, and you've dropped every open connection on the way."}
+      ]
+    },
+    {
+      "situation": "The new rule was meant to run in *simulate* mode, yet it runs on every request. A regex in it backtracks badly and eats the CPU. Rolling back one rule through the normal pipeline takes time.",
+      "choices": [
+        {"text": "Use the global kill switch to turn the WAF off everywhere, then fix the rule", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 0, "trust": 5}, "why": "It's the fastest safe way to stop the damage. Cloudflare ran the global terminate at 14:07, and traffic and CPU were back to normal by 14:09."},
+        {"text": "Find and rewrite the bad regex first, then deploy the fix", "verdict": "risky", "effect": {"service": -10, "time": -15, "evidence": 10, "trust": 0}, "why": "Debugging a regex while the network is down. Stop the bleeding first; study it after."},
+        {"text": "Roll back the rule release through the normal pipeline", "verdict": "good", "effect": {"service": 15, "time": -5, "evidence": 5, "trust": 0}, "why": "The right end state, but slower than the kill switch while every site is down."}
+      ],
+      "evidence": "$ sudo perf top -p $(pgrep -o nginx) --stdio | head -4\n  92.40%  libpcre.so.3     [.] match\n   2.10%  libluajit-5.1.so [.] lj_str_new\n   0.90%  nginx            [.] ngx_http_lua_ffi_exec_regex",
+      "evidence_cmd": "perf top -p $(pgrep -o nginx)"
+    },
+    {
+      "situation": "To use the kill switch you need the internal control panel. It sits behind your own login service, which is down too, and some SREs' sessions have expired.",
+      "choices": [
+        {"text": "Use the documented break-glass path and log every step", "verdict": "best", "effect": {"service": 15, "time": 10, "evidence": 5, "trust": 5}, "why": "Cloudflare staff had to use a rarely used bypass. Break-glass access exists for this moment, and logging keeps it honest."},
+        {"text": "Turn off authentication on the control panel for now", "verdict": "bad", "effect": {"service": 10, "time": 5, "evidence": -5, "trust": -25}, "why": "You open your most powerful tool to the internet during an outage, which is exactly when attackers look."},
+        {"text": "Wait until the login service recovers", "verdict": "bad", "effect": {"service": -20, "time": -20, "evidence": 0, "trust": -5}, "why": "It won't recover: it runs on the same overloaded edge you need the panel to fix."}
+      ],
+      "evidence": "$ curl -sI https://ops-panel.example.com/ | head -1\nHTTP/2 502\n$ sso login --user priya\nerror: session expired; identity provider unreachable"
+    },
+    {
+      "situation": "Traffic is back. The rule is fixed. How do you turn the WAF on again?",
+      "choices": [
+        {"text": "Turn it on in one city, watch CPU, then go global", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 5}, "why": "That's what Cloudflare did, re-enabling globally at 14:52. If you're wrong, only one city feels it."},
+        {"text": "Turn it on everywhere at once: customers need protection", "verdict": "risky", "effect": {"service": -5, "time": 5, "evidence": 0, "trust": 0}, "why": "If the fix is wrong you have the same outage again, everywhere, in seconds."},
+        {"text": "Leave the WAF off until next week", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -15}, "why": "Customers pay to be protected, and attackers notice quickly."}
+      ]
+    },
+    {
+      "situation": "The post-mortem asks: what makes this class of failure impossible, not just unlikely?",
+      "choices": [
+        {"text": "Staged rollouts for rules, CPU guards, profiling rules in tests, and a regex engine without backtracking", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "Each layer catches what the others miss. An engine like RE2 or Rust's regex runs in linear time, so a bad pattern can't eat the CPU."},
+        {"text": "Require two reviewers on every regex", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "Catastrophic backtracking is hard to see by eye. Reviews help, but they're not a guarantee."},
+        {"text": "Find out who wrote the rule", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "The rule was only the trigger. The real gaps were a removed CPU guard and an instant global push."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "At 13:42 UTC on 2 July 2019 Cloudflare deployed a WAF Managed Rules change that was meant to run in simulate mode. A poorly written regular expression in it backtracked enormously and used up the CPU that serves HTTP and HTTPS. WAF rules went out through Quicksilver, which reaches the whole network within seconds, so the outage was global at once and customers saw 502s. Internal tools sat behind Cloudflare's own Access, so staff had to use a rarely used bypass. A global terminate of the WAF at 14:07 brought traffic and CPU back by 14:09. After testing in a single city, the WAF was re-enabled globally at 14:52. Follow-ups: put back the CPU protection that had been removed, check all 3,868 rules, profile rule performance in tests, move to a regex engine with run-time guarantees, and roll rules out in stages.",
+    "lessons": ["A change that reaches everything in seconds needs staged rollout and a kill switch.", "Correlate the start of an outage with your own change log first.", "Test break-glass access before you need it.", "Prefer tools that bound their worst case, like non-backtracking regex engines."],
+    "commands": ["mpstat -P ALL 1", "top -H -p <pid>", "perf top -p <pid>", "journalctl --since '13:30'"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Canary releases"},
+      {"file": "39-learn-senior-architecture.md", "heading": "Failure domains and blast radius [L2 · Mid]"}
+    ],
+    "sites": [
+      {"label": "Wheel of Misfortune: replay an outage with a colleague", "url": "https://dastergon.github.io/wheel-of-misfortune/"},
+      {"label": "Grafana Play: read CPU dashboards (in the browser)", "url": "https://play.grafana.org/"}
+    ]
+  }
+}

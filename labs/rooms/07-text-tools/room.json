@@ -1,0 +1,81 @@
+{
+ "id": "l0-text-tools",
+ "title": "Who is hammering the docs?",
+ "level": "L0",
+ "map_node": "text-tools",
+ "path": "fresher",
+ "order": 7,
+ "minutes": 30,
+ "difficulty": "easy",
+ "source": {
+  "title": "AI crawlers need to be more respectful (Read the Docs blog, July 2024)",
+  "url": "https://about.readthedocs.com/blog/2024/07/ai-crawlers-abuse/",
+  "note": "adapted"
+ },
+ "brief": "**INCIDENT INC-1020 · docs.example.com · 502/504 since about 10:40 UTC**\n\nUsers report timeouts on the docs site and the bandwidth graph went vertical. The load balancer team exported the logs of the window 10:30–11:00 to `/var/log/incident/`:\n\n- `access-2026-10-20.log`: nginx combined format (client, time, request, status, bytes, referer, user agent)\n- `app-2026-10-20.json`: the docs app, one JSON object per line\n\nSomeone already blocked the top IP address. It changed nothing. Answer the questions **from the logs** (grep, awk, sort, uniq, jq), hand security the evidence, then stop the traffic on this nginx without hurting real users.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Find the spike and the culprit",
+   "text": "Count 5xx responses per minute and find the minute where they jump. Then group the 5xx responses by user agent. In the combined format, `awk '{print $9}'` is the status, and the user agent is the 6th field when you split on double quotes (`awk -F'\"'`).\n\nSecurity asks for the evidence: write every distinct client address that sent the culprit's user agent to `/srv/incident/docharvester-ips.txt`, one per line, no duplicates (use `sudo tee`).",
+   "points": 50,
+   "hints": [
+    "Per minute: `awk '$9 ~ /^5/ {print substr($4,14,5)}' access-2026-10-20.log | sort | uniq -c`. Per user agent: `awk -F'\"' '$3 ~ /^ 5/ {print $6}' ... | sort | uniq -c | sort -rn | head`.",
+    "`grep -F 'DocHarvester/' access-2026-10-20.log | awk '{print $1}' | sort -u | sudo tee /srv/incident/docharvester-ips.txt`, then count the lines with `wc -l`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "In which minute do the 5xx errors start to spike?",
+     "format": "HH:MM (UTC)",
+     "answer_sha256": "33e813493c5e6bcca7d23f8a047b179177250a9c277789b18a37a6e505de47b1"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which crawler (product/version token in its user agent) caused most of the 5xx?",
+     "format": "Name/x.y",
+     "answer_sha256": "ebfffee6d2962b05d11bdf1ce33c87247ecf1134f51870c0cd02e25bd2175864"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "/srv/incident/docharvester-ips.txt lists exactly the crawler's client addresses",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Size it, then block it",
+   "text": "Count how many requests the crawler sent in total, and use `jq` on the app's JSON log to find the most common error message.\n\nThe crawler rotates through dozens of addresses, so blocking IPs is whack-a-mole, but its user agent is constant. Make nginx refuse that user agent (any version, e.g. with `map $http_user_agent` and `return 403`). Browsers and monitoring (`curl`) must still get 200. Test with `curl -A`, check the config with `nginx -t`, then reload.",
+   "points": 50,
+   "hints": [
+    "`grep -c 'DocHarvester/' access-2026-10-20.log`; `jq -r 'select(.level==\"error\") | .msg' app-2026-10-20.json | sort | uniq -c | sort -rn`.",
+    "In `/etc/nginx/conf.d/block-crawlers.conf`: `map $http_user_agent $blocked_ua { default 0; ~*DocHarvester 1; }`. In the server block of `/etc/nginx/sites-available/docs`: `if ($blocked_ua) { return 403; }`. Then `sudo nginx -t && sudo systemctl reload nginx`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "How many requests did the crawler send in the exported window?",
+     "format": "number",
+     "answer_sha256": "459535faa370a3b5f8b87203b089623c7aeb9325abf241ec8a685b9c325047a3"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which error message appears most often in the app's JSON log?",
+     "format": "the msg text",
+     "answer_sha256": "b7e6030fc1cb09ae5f03af6d8f2d57a2b0805852bb68a228f1e333d90fc1dade"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "nginx refuses the DocHarvester user agent; browsers and curl still get 200",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What happened\nFrom 10:42 a crawler identifying itself as `DocHarvester/1.7` downloaded large zip archives and deep archive pages. It used 37 addresses, none with more than about 15 requests, so the \"top IP\" block did nothing. The backend timed out, and real users got 502/504 as well.\n\n### Task 1\n```bash\ncd /var/log/incident\nawk '$9 ~ /^5/ {print substr($4,14,5)}' access-2026-10-20.log | sort | uniq -c   # 10:35 1, then 10:42 13 ...\nawk -F'\"' '$3 ~ /^ 5/ {print $6}' access-2026-10-20.log | sort | uniq -c | sort -rn | head -3\nawk '{print $1}' access-2026-10-20.log | sort | uniq -c | sort -rn | head -3      # the top IP is small: rotation\ngrep -F 'DocHarvester/' access-2026-10-20.log | awk '{print $1}' | sort -u \\\n  | sudo tee /srv/incident/docharvester-ips.txt | wc -l                            # 37\n```\n*Why:* with `-F'\"'`, field 2 is the request, field 3 holds the status and size, and field 6 is the user agent. `sort | uniq -c | sort -rn` is the universal \"top N\" pipeline.\n\n### Task 2\n```bash\ngrep -c 'DocHarvester/' access-2026-10-20.log                                   # 353\njq -r 'select(.level==\"error\") | .msg' app-2026-10-20.json | sort | uniq -c | sort -rn\nsudo tee /etc/nginx/conf.d/block-crawlers.conf <<'EOF'\nmap $http_user_agent $blocked_ua { default 0; ~*DocHarvester 1; }\nEOF\nsudo nano /etc/nginx/sites-available/docs        # add: if ($blocked_ua) { return 403; }\nsudo nginx -t && sudo systemctl reload nginx\ncurl -s -o /dev/null -w '%{http_code}\\n' -A 'DocHarvester/1.7' http://127.0.0.1/   # 403\ncurl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1/                         # 200\n```\n*Why:* `map` is evaluated once per request and keeps the server block readable. `~*` is a case-insensitive regex. Blocking by user agent only works while the bot is honest about it; the Read the Docs team also added rate limits and better caching for the expensive endpoint.\n\n**Source (adapted):** [AI crawlers need to be more respectful](https://about.readthedocs.com/blog/2024/07/ai-crawlers-abuse/): Read the Docs found crawlers with identifiable user agents, spread over many IP addresses (per-IP limits didn't help), downloading the same large files repeatedly. Blocking them cut download bandwidth by about 75%."
+}

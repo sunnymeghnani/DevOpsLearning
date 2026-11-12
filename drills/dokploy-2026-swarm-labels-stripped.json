@@ -1,0 +1,72 @@
+{
+  "id": "dokploy-2026-swarm-labels-stripped",
+  "title": "The deploy that quietly took the labels",
+  "level": "L3",
+  "track": "containers",
+  "topics": ["dokploy", "swarm-in-practice", "swarm"],
+  "minutes": 6,
+  "role": "You run a team's apps on Dokploy: a single-node Docker Swarm, with Traefik routing each app by the labels on its Swarm service.",
+  "source": {
+    "label": "Dokploy/dokploy #5453: Docker-image apps lose Traefik labels on deploy (GitHub issue)",
+    "url": "https://github.com/Dokploy/dokploy/issues/5453",
+    "org": "Dokploy community",
+    "date": "2026-09-13",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Two apps run pinned images from a registry and redeploy through a webhook when CI pushes. After each deploy every hostname of those apps returns `404 page not found`. Dokploy says the deploy finished and the containers are healthy.",
+  "steps": [
+    {
+      "situation": "The container is fine. Traefik just doesn't know about it any more.",
+      "evidence": "$ docker service ps shop-web --format '{{.CurrentState}}' | head -1\nRunning 3 minutes ago\n$ curl -s https://shop.example.com\n404 page not found",
+      "evidence_cmd": "docker service ps shop-web",
+      "choices": [
+        {"text": "Compare the service's labels now with its previous spec", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "Traefik's Swarm provider builds routers from service labels. If they changed during the deploy, `Spec` and `PreviousSpec` will disagree."},
+        {"text": "Deploy again from the Dokploy UI", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": 0}, "why": "If the deploy causes it, another deploy repeats it."},
+        {"text": "Restart Traefik", "verdict": "risky", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": 0}, "why": "Every other site blinks, and Traefik still finds no labels on this service."}
+      ]
+    },
+    {
+      "situation": "The labels are gone from the live spec, and the deploy log shows only the image pull.",
+      "evidence": "$ docker service inspect shop-web --format '{{json .Spec.Labels}}'\n{}\n$ docker service inspect shop-web --format '{{len .PreviousSpec.Labels}}'\n9",
+      "evidence_cmd": "docker service inspect shop-web",
+      "choices": [
+        {"text": "Put the nine labels back with `docker service update --label-add`, keeping the new image", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 5, "trust": 0}, "why": "`PreviousSpec` tells you exactly what was there. Re-adding the labels restores routing without undoing the release."},
+        {"text": "Run `docker service update --rollback`", "verdict": "good", "effect": {"service": 15, "time": 10, "evidence": 0, "trust": -5}, "why": "The reporter found this brings the labels back, but it also rolls back the image, so the release you just shipped is gone."},
+        {"text": "Delete the app in Dokploy and create it again", "verdict": "bad", "effect": {"service": -10, "time": -15, "evidence": -10, "trust": 0}, "why": "A long outage, lost settings, and you destroy the very state that shows the bug."}
+      ]
+    },
+    {
+      "situation": "Routing is back, but the next push will strip the labels again.",
+      "choices": [
+        {"text": "File an upstream issue with versions and the inspect output, and run a temporary job that re-adds missing labels", "verdict": "best", "effect": {"service": 10, "time": 5, "evidence": 10, "trust": 10}, "why": "Like the reporter, who measured it three times and kept a systemd timer re-adding the labels every 15 seconds. Evidence gets bugs fixed; the timer keeps you up meanwhile."},
+        {"text": "Pause deploys of these two apps until someone has time", "verdict": "risky", "effect": {"service": 5, "time": -5, "evidence": 0, "trust": -5}, "why": "Safe for routing, but fixes and security patches stop shipping."},
+        {"text": "Edit Dokploy's database by hand to force the labels in", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": -10}, "why": "Unsupported surgery on the platform's state, and you can't be sure the deploy code reads it."}
+      ]
+    },
+    {
+      "situation": "Weeks later the issue is closed with a fix.",
+      "choices": [
+        {"text": "Upgrade Dokploy, deploy once, check the labels survive, then remove the timer", "verdict": "best", "effect": {"service": 10, "time": 5, "evidence": 10, "trust": 5}, "why": "Verify the fix with the same inspect command before you drop the safety net."},
+        {"text": "Leave the timer running forever, just in case", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": 0}, "why": "A hidden job that rewrites live services will surprise the next person who changes labels on purpose."},
+        {"text": "Upgrade and remove the timer in the same minute, without checking", "verdict": "bad", "effect": {"service": -10, "time": 5, "evidence": -10, "trust": 0}, "why": "If the fix doesn't cover your apps, the next webhook takes the sites down again."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "Dokploy issue #5453 was opened on 13 September 2026 against v0.29.12 and still reproduced on v0.30.6, on a single-node Swarm on an Ubuntu arm64 VM. For apps of type docker with pinned ghcr.io images, every deploy through the webhook or the API rewrote the Swarm service spec without its `traefik.*` labels: nine before, none after. The containers stayed healthy while Traefik answered 404 for every hostname. `docker service inspect` showed `Spec.Labels` empty while `PreviousSpec.Labels` still held all nine, and the deploy log showed only the image pull. Both apps had been created by duplicating a project on an older Dokploy. The reporter kept them up with a systemd timer that re-added the labels every 15 seconds; `docker service update --rollback` also restored them, but with the old image. The issue was closed on 23 October 2026 by PR #5631, a change to keep service labels on application deploy.",
+    "lessons": ["A Traefik 404 next to a healthy container: check the labels the provider reads.", "`PreviousSpec` shows what the last update changed on a Swarm service.", "Report platform bugs with versions and measured evidence, and keep the stopgap visible.", "Verify an upstream fix before removing the workaround."],
+    "commands": ["docker service inspect shop-web --format '{{json .Spec.Labels}}'", "docker service inspect shop-web --format '{{json .PreviousSpec.Labels}}'", "docker service update --label-add traefik.enable=true shop-web", "docker service ps shop-web", "docker service update --rollback shop-web"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "45-dokploy-and-self-hosted-paas.md", "heading": "6.6 Image app 404 after a webhook redeploy"},
+      {"file": "43-traefik-and-reverse-proxies.md", "heading": "7.3 Swarm labels ignored and blips on deploy"},
+      {"file": "26-playbook-containers-k8s.md", "heading": "Decision tree: Traefik 404"}
+    ],
+    "sites": [
+      {"label": "iximiuz: three-node Docker Swarm playground", "url": "https://labs.iximiuz.com/playgrounds/docker-swarm"},
+      {"label": "SadServers: San Juan, Traefik in Docker Compose", "url": "https://sadservers.com/scenario/san-juan"}
+    ]
+  }
+}

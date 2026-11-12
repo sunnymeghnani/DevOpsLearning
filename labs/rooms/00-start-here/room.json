@@ -1,0 +1,112 @@
+{
+ "id": "l0-start-here",
+ "title": "Start here: your first on-call shift",
+ "level": "L0",
+ "map_node": "start-here",
+ "path": "fresher",
+ "order": 0,
+ "minutes": 15,
+ "difficulty": "easy",
+ "source": {
+  "title": "Resend incident report, 21 Feb 2024: a migration meant for a local database ran against production",
+  "url": "https://resend.com/blog/incident-report-for-february-21-2024",
+  "note": "adapted"
+ },
+ "brief": "**#oncall, 07:58.** Morning! You have the pager from now on. One thing from the night: during maintenance, the decommission steps for the old status host were run in the wrong terminal tab, so they ran on this machine instead, and the status page went dark. The night engineer left a handover note somewhere under `/srv` with the ticket ID.\n\nReal teams lose data this way. In Resend's February 2024 incident, a command meant for a local database ran against production. So the first habit here is to check which machine you are on before you change anything.\n\nUse the terminal on the right. It is a disposable Ubuntu server with real systemd and no internet. You are `lab`, with passwordless `sudo`. Answer each question, press **Check**, and the next task unlocks.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Know where you are",
+   "points": 20,
+   "text": "Before touching a server, confirm its identity. Find this machine's hostname and the codename of the Ubuntu release it runs (`VERSION_CODENAME` in `/etc/os-release`). Then start a habit that would have saved the night shift: write the hostname, and nothing else, into `whereami.txt` in your home folder. Create it as yourself, not with `sudo`, so the file belongs to you. Press **Check** when the file is in place.",
+   "hints": [
+    "`hostname` prints the name; `cat /etc/os-release` shows the release fields.",
+    "`hostname > ~/whereami.txt` writes the name into the file; `ls -l ~/whereami.txt` shows the owner."
+   ],
+   "questions": [
+    {
+     "id": "q-hostname",
+     "prompt": "What is this machine's hostname?",
+     "format": "one word",
+     "answer_sha256": "a51146d38077ff992eba84cf1d5e9b249073503eb74868699016153b031a38f7"
+    },
+    {
+     "id": "q-codename",
+     "prompt": "What is the Ubuntu release codename (VERSION_CODENAME)?",
+     "format": "one word",
+     "answer_sha256": "d3a61c684446b22fbc324502c1ad80e4387f0ed707feec1f1ab81a8b3fc65539"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "~/whereami.txt exists, belongs to you and contains the hostname",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Find the handover note",
+   "points": 30,
+   "text": "The night engineer saved a handover note somewhere under `/srv`, among older shift notes and runbooks. Find it without opening every folder by hand: search by name, or search the contents for the word handover. Read it, note the ticket ID, and do what it asks of the morning shift in its first step. Report the full path of the note and the ticket ID, then press **Check**.",
+   "hints": [
+    "`find /srv -iname '*handover*'` searches by name; `grep -ril handover /srv` searches contents.",
+    "The note asks for a file called `handover.ack` in the same folder as the note, containing the ticket ID (`echo`, then `>`)."
+   ],
+   "questions": [
+    {
+     "id": "q-note-path",
+     "prompt": "What is the full path of the handover note?",
+     "format": "/path/to/file",
+     "answer_sha256": "1daea8aaabcb4fd4ac0a8959609e4b4e08770e42d28357e57762866716480554"
+    },
+    {
+     "id": "q-ticket",
+     "prompt": "Which ticket ID does the note mention?",
+     "format": "ABC-0000",
+     "answer_sha256": "1bb282b0d016d26f46c52a52def2f0a4bd3130c0681aa91a1d6f9f3251abc13f"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "handover.ack sits next to the note and holds the ticket ID",
+     "script": "checks/t2.sh"
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "title": "Bring the status page back",
+   "points": 50,
+   "text": "The status page is served by nginx, and nginx was stopped and disabled by the misplaced decommission steps. Look at the service first: `systemctl status` tells you whether it runs now and whether it will start at boot. Bring it back so that it serves `http://localhost/` now and also comes back after the next reboot. Then find which TCP port it listens on. Press **Check** when the page answers.",
+   "hints": [
+    "`systemctl status nginx` shows both: Active (now) and enabled/disabled (at boot). Starting and enabling are two different things.",
+    "`sudo systemctl enable --now nginx` does both; `ss -tlnp` and `curl -s localhost` confirm it."
+   ],
+   "questions": [
+    {
+     "id": "q-port",
+     "prompt": "Which TCP port does nginx listen on?",
+     "format": "a number",
+     "answer_sha256": "48449a14a4ff7d79bb7a1b6f3d488eba397c36ef25634c111b49baf362511afc"
+    },
+    {
+     "id": "q-enable",
+     "prompt": "Which systemctl subcommand makes a service start at boot?",
+     "format": "one word",
+     "answer_sha256": "e97166b54500da3a32eae48afe8df0970b19abfde3e4f3a50206cd8509feb161"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "nginx is active, enabled and serves the status page",
+     "script": "checks/t3.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What happened\nSteps meant for another machine ran on this one. Nothing was broken in nginx itself: the service was stopped (down now) and disabled (down after every reboot).\n\n### The commands, and why each one\n1. `hostname` and `cat /etc/os-release`: confirm the target before you change it. This is the lesson from the Resend report.\n2. `hostname > ~/whereami.txt`: the redirect `>` writes a command's output to a file, owned by you because no sudo was used.\n3. `find /srv -iname '*handover*'` (by name) or `grep -ril handover /srv` (by content): search instead of browsing.\n4. `echo OPS-4127 > /srv/ops/shift-notes/2026-10-19/handover.ack`: acknowledge the handover.\n5. `systemctl status nginx`: read *Active* (now) and *Loaded ... disabled* (boot) separately.\n6. `sudo systemctl enable --now nginx`: `enable` adds it to the boot target, `--now` also starts it.\n7. `ss -tlnp` and `curl -s localhost`: prove it listens on port 80 and serves the page.\n\n### Real-world source\nAdapted from Resend's incident report of 21 February 2024 (https://resend.com/blog/incident-report-for-february-21-2024): a command meant for a local database ran against production. Their fixes separate credentials per environment; your habit is to check the hostname, user and environment first."
+}

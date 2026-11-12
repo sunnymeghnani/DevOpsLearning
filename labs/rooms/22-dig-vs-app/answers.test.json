@@ -1,0 +1,6 @@
+{
+ "q1": "192.0.2.44",
+ "q2": "/etc/nsswitch.conf",
+ "q3": "api.example.com",
+ "q4": "ndots"
+}

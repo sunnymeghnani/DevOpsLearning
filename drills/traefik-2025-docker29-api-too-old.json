@@ -1,0 +1,81 @@
+{
+  "id": "traefik-2025-docker29-api-too-old",
+  "title": "Patch night, and every route is gone",
+  "level": "L3",
+  "track": "web",
+  "topics": ["traefik-deep-dive", "docker-engine", "dokploy-operations", "traefik"],
+  "minutes": 7,
+  "role": "You run a self-hosted platform: Traefik in Docker routes a dozen sites by container labels on one Ubuntu 24.04 server.",
+  "source": {
+    "label": "traefik/traefik #12253: Docker 29, client version 1.24 is too old (GitHub issue)",
+    "url": "https://github.com/traefik/traefik/issues/12253",
+    "org": "Traefik community",
+    "date": "2025-11-10",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Package upgrades ran overnight. In the morning every site answers Traefik's plain `404 page not found`. All containers are up, and the uptime monitor, which checks Traefik's `/ping`, is green.",
+  "steps": [
+    {
+      "situation": "Users are reporting it in chat. Where do you start?",
+      "evidence": "$ curl -sI https://shop.example.com | head -1\nHTTP/2 404\n$ curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:8080/ping\n200\n$ docker ps --format '{{.Names}}\\t{{.Status}}' | head -3\ntraefik     Up 7 hours\nshop-web    Up 7 hours\nblog-web    Up 7 hours",
+      "evidence_cmd": "curl -sI https://shop.example.com",
+      "choices": [
+        {"text": "Read Traefik's own log since the reboot", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "A 404 from Traefik means it has no router for that host. Its log says why the routers vanished."},
+        {"text": "Restart Traefik", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "It comes back with the same problem, and you've learned nothing."},
+        {"text": "Redeploy every app to refresh its labels", "verdict": "risky", "effect": {"service": -5, "time": -15, "evidence": 0, "trust": 0}, "why": "A dozen redeploys, and the labels were never the problem."}
+      ]
+    },
+    {
+      "situation": "Traefik's log repeats one error.",
+      "evidence": "$ docker logs traefik --since 8h 2>&1 | tail -2\nERR Provider error, retrying ... providerName=docker error=\"Error response from daemon:\n  client version 1.24 is too old. Minimum supported API version is 1.44, please upgrade your client to a newer version\"\n$ docker version --format '{{.Server.Version}} api={{.Server.APIVersion}} min={{.Server.MinAPIVersion}}'\n29.0.0 api=1.52 min=1.44",
+      "evidence_cmd": "docker logs traefik --since 8h",
+      "choices": [
+        {"text": "Connect it to the upgrade: check apt history for docker-ce and read Engine 29's release notes", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 15, "trust": 5}, "why": "Docker Engine 29 refuses API versions below 1.44, and this Traefik's Docker provider still asks for 1.24, so it can't list containers and has no routes."},
+        {"text": "Rewrite the Traefik labels on every service", "verdict": "bad", "effect": {"service": -5, "time": -15, "evidence": -5, "trust": 0}, "why": "Traefik can't read any labels at all. Changing them changes nothing."},
+        {"text": "Switch every site to Traefik's file provider by hand", "verdict": "risky", "effect": {"service": 10, "time": -15, "evidence": 0, "trust": 0}, "why": "It would work, but you'd be retyping a dozen routers under pressure and maintaining two configs afterwards."}
+      ]
+    },
+    {
+      "situation": "You have two ways back that people in the issue used.",
+      "choices": [
+        {"text": "Upgrade Traefik to a fixed 3.6 release, check it on staging first, then production", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 5, "trust": 5}, "why": "It fixes the real mismatch and keeps the patched Docker. A user confirmed v3.6.6 works on Docker 29, while v3.1.7 still failed."},
+        {"text": "Downgrade docker-ce and docker-ce-cli to 28.x and hold them with `apt-mark hold`", "verdict": "good", "effect": {"service": 15, "time": 0, "evidence": 0, "trust": 0}, "why": "Many users did this and it works, but you restart every container and freeze the engine until Traefik is upgraded."},
+        {"text": "Look up a daemon setting that re-allows old API versions and set it on production now", "verdict": "risky", "effect": {"service": 5, "time": -5, "evidence": -5, "trust": -5}, "why": "The thread doesn't use one. Changing the daemon blind on production, from a forum hint, is how one incident becomes two."}
+      ]
+    },
+    {
+      "situation": "Sites are back. Why was the monitor green for seven hours?",
+      "choices": [
+        {"text": "Probe a real route through Traefik for an app response, and alert on provider errors in its log", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 10, "trust": 10}, "why": "One user noted `/ping` still returned 200 while the provider was failing. It proves the process is alive, not that it routes anything."},
+        {"text": "Keep `/ping`; it was a one-off", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": -10}, "why": "The next provider failure will be just as silent."},
+        {"text": "Alert when Traefik's container restarts", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 5, "trust": 0}, "why": "It never restarted. Useful, but it wouldn't have caught this."}
+      ]
+    },
+    {
+      "situation": "How do engine upgrades happen from now on?",
+      "choices": [
+        {"text": "Hold docker-ce, read release notes for removed APIs, and upgrade staging before production", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 5, "trust": 10}, "why": "A major engine release can drop APIs your tools depend on. Staging finds that out for you."},
+        {"text": "Turn off unattended upgrades on the whole server", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -15}, "why": "You'd stop getting security fixes for everything to protect one package."},
+        {"text": "Always run the newest of everything; it'll be fine", "verdict": "risky", "effect": {"service": -5, "time": 0, "evidence": 0, "trust": -5}, "why": "That's exactly how last night happened."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 10 November 2025, right after Docker Engine 29.0.0, a user opened traefik/traefik #12253. Engine 29 serves API 1.52 and refuses clients older than 1.44, but Traefik's Docker provider (3.6.0 in the report) still asked for 1.24. The provider logged the \"client version 1.24 is too old\" error and kept retrying, so every route built from Docker labels disappeared. Reports came from Debian 12 and 13 and Ubuntu 22.04 and 24.04; Watchtower and other tools were hit too. The issue was labelled a confirmed P0 bug for the 3.6 milestone. Workarounds were downgrading docker-ce and docker-ce-cli to 28.x and holding them (`apt-mark hold`, `dnf versionlock`), or upgrading Traefik: a user confirmed v3.6.6 works on Docker 29 and v3.1.7 does not. Another noted that `/ping` still returned 200 while the provider failed.",
+    "lessons": ["A 404 from the proxy means \"no router\": read the proxy's log first.", "Hold the container engine and test major upgrades on staging.", "Health checks must exercise a real route, not just the process.", "Read release notes for removed APIs before patch night."],
+    "commands": ["docker logs traefik --since 8h", "docker version", "grep docker-ce /var/log/apt/history.log", "apt-mark hold docker-ce docker-ce-cli", "apt-mark showhold", "curl -sI https://shop.example.com"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "43-traefik-and-reverse-proxies.md", "heading": "7.2 Docker 29: every route vanished"},
+      {"file": "44-problems-docker-swarm-registry.md", "heading": "1.3 Docker 29: client version is too old"},
+      {"file": "27-learn-linux.md", "heading": "Holds, pinning and controlled upgrades"}
+    ],
+    "sites": [
+      {"label": "SadServers: San Juan, Traefik in Docker Compose", "url": "https://sadservers.com/scenario/san-juan"},
+      {"label": "SadServers Labs: Traefik guide and cheatsheet", "url": "https://sadservers.com/labs/traefik/"},
+      {"label": "Docker's Traefik guide", "url": "https://docs.docker.com/guides/traefik/"}
+    ]
+  }
+}

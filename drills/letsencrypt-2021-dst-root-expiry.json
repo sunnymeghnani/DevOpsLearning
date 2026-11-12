@@ -1,0 +1,70 @@
+{
+  "id": "letsencrypt-2021-dst-root-expiry",
+  "title": "Browsers are fine, the partner's cron job is not",
+  "level": "L1",
+  "track": "web",
+  "topics": ["tls-certs", "letsencrypt-acme", "http-curl"],
+  "minutes": 6,
+  "role": "You run the Nginx edge and Let's Encrypt certificates for a small company's public API.",
+  "source": {
+    "label": "Let's Encrypt: DST Root CA X3 expiration (September 2021)",
+    "url": "https://letsencrypt.org/docs/dst-root-ca-x3-expiration-september-2021/",
+    "org": "Let's Encrypt",
+    "date": "2021-09-30",
+    "read_on": "2026-11-07"
+  },
+  "brief": "It is the morning of 1 October 2021. A partner emails: their nightly import from `api.example.com` failed with *certificate has expired*. Your certificate was renewed three weeks ago, and the site loads fine in every browser on the team.",
+  "steps": [
+    {
+      "situation": "The partner's job runs on an old server you don't control. Your own browser shows a valid certificate until December.",
+      "choices": [
+        {"text": "Look at the whole chain your server sends, as an old client would see it", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 5}, "why": "The leaf certificate isn't the only thing that can expire. `openssl s_client -showcerts` shows every certificate in the chain and where verification stops."},
+        {"text": "Force-renew the certificate with certbot", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "Your certificate is valid; a new one has the same chain and the same problem. You also use up renewals against the rate limit."},
+        {"text": "Reply that it works for everyone else and close the ticket", "verdict": "bad", "effect": {"service": -5, "time": 0, "evidence": -5, "trust": -20}, "why": "Works in my browser is not evidence for their client. Today many older clients broke at once, and this partner is only the first to ask."}
+      ],
+      "evidence": "partner import log, 01 Oct 2021 02:00\n$ curl -sS https://api.example.com/v1/export\ncurl: (60) SSL certificate problem: certificate has expired"
+    },
+    {
+      "situation": "You test from an old CentOS box in the lab that has the same OpenSSL as the partner's.",
+      "evidence": "$ openssl version\nOpenSSL 1.0.2k-fips  26 Jan 2017\n$ openssl s_client -connect api.example.com:443 -showcerts </dev/null\n 0 s:/CN=api.example.com   i:/C=US/O=Let's Encrypt/CN=R3\n 1 s:/CN=R3                i:/O=Internet Security Research Group/CN=ISRG Root X1\n 2 s:/CN=ISRG Root X1      i:/O=Digital Signature Trust Co./CN=DST Root CA X3\nverify error:num=10:certificate has expired\nVerify return code: 10 (certificate has expired)",
+      "evidence_cmd": "openssl s_client -connect api.example.com:443 -showcerts",
+      "choices": [
+        {"text": "Note the client's OpenSSL version and which root the chain ends at", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 0}, "why": "The chain ends in a cross-sign from DST Root CA X3, which expired on 30 September 2021. OpenSSL 1.0.x follows that path and fails, even if ISRG Root X1 is in its trust store."},
+        {"text": "Tell the partner to add curl -k to the job", "verdict": "bad", "effect": {"service": 10, "time": 5, "evidence": 0, "trust": -20}, "why": "It works by turning off the check that stops someone in the middle from reading their data. Never suggest it for a production integration."},
+        {"text": "Switch the API to a paid CA tonight", "verdict": "risky", "effect": {"service": 5, "time": -15, "evidence": -5, "trust": -5}, "why": "A big change made in a hurry, before you have explained the failure. The client's old OpenSSL is still the weak point."}
+      ]
+    },
+    {
+      "situation": "You know the cause: an old OpenSSL client and an expired root in the chain. What fix do you ask for?",
+      "choices": [
+        {"text": "Ask the partner to update to OpenSSL 1.1.0+ and a current CA bundle; offer to test with them", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 10}, "why": "That is what Let's Encrypt advised: clients must trust ISRG Root X1 and use OpenSSL 1.1.0 or later. Testing together turns blame into a joint fix."},
+        {"text": "Strip the cross-signed certificate from the chain your server sends", "verdict": "good", "effect": {"service": 10, "time": 5, "evidence": 0, "trust": 0}, "why": "It can help clients that trust ISRG Root X1 but trip on the old path. But it changes the chain for every client, so very old Android devices may break. Test it and tell people first."},
+        {"text": "Copy a newer cacert.pem onto their server yourself over the VPN", "verdict": "risky", "effect": {"service": 10, "time": 0, "evidence": 0, "trust": -15}, "why": "Changing someone else's server without asking isn't your call, even if you can reach it. Their team won't know what changed or how to undo it."}
+      ]
+    },
+    {
+      "situation": "The partner is fixed. Other API customers may run old clients too.",
+      "choices": [
+        {"text": "Send a notice to all API users with the requirements, and monitor the chain, not just the leaf", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 15}, "why": "Telling people before they fail costs one email. A check that tests the full chain from an old client catches the next root change."},
+        {"text": "Wait for the others to email", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": 0, "trust": -15}, "why": "Each customer loses a day finding the cause alone, then asks why you didn't warn them."},
+        {"text": "Add a renewal reminder to the calendar", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": 0}, "why": "Renewal was never the problem. Your certificate was valid; the root above it expired."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "Let's Encrypt certificates chained up to its own ISRG Root X1 and, for older devices, to a cross-sign from the older DST Root CA X3. That root expired on 30 September 2021, as planned. Let's Encrypt said most websites would see little impact. Devices that don't trust ISRG Root X1 started showing certificate warnings, while old Android kept working thanks to a cross-sign that runs past the root's expiry. Clients on OpenSSL 1.0.x could fail even with ISRG Root X1 trusted, because of a verification quirk with the default chain. The advice was for API and IoT providers to make sure all clients trust ISRG Root X1, and for OpenSSL clients to run 1.1.0 or later.",
+    "lessons": ["Read the whole chain with openssl s_client -showcerts, not just the leaf.", "A browser working says nothing about curl, Java or IoT clients.", "Know which client versions your API consumers run before a root change.", "Never fix TLS errors with -k or verify=False in production."],
+    "commands": ["openssl s_client -connect api.example.com:443 -showcerts", "openssl version", "openssl x509 -noout -dates -issuer", "curl -v https://api.example.com/"]
+  },
+  "practise": {
+    "labs": ["11-http-curl"],
+    "handbook": [
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "6.1 Server sends only its own certificate"},
+      {"file": "28-learn-networking.md", "heading": "Certificates and the chain of trust"}
+    ],
+    "sites": [
+      {"label": "badssl.com: expired, untrusted and broken-chain test sites", "url": "https://badssl.com/"},
+      {"label": "SSL Labs Server Test", "url": "https://www.ssllabs.com/ssltest/"}
+    ]
+  }
+}

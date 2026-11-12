@@ -1,0 +1,6 @@
+{
+ "q1": "/etc/hosts",
+ "q2": "getent",
+ "q3": ".",
+ "q4": "visudo"
+}

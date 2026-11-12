@@ -1,0 +1,100 @@
+{
+ "id": "l2-netplan-lost-config",
+ "title": "The server that lost its network config",
+ "level": "L2",
+ "map_node": "ubuntu-netconfig",
+ "path": "mid",
+ "order": 19,
+ "minutes": 40,
+ "difficulty": "medium",
+ "source": {
+  "title": "No networking after upgrade to 8.2: \"bridge port eno8 does not exist\" (Proxmox forum)",
+  "url": "https://forum.proxmox.com/threads/no-networking-after-upgrade-to-8-2.145727/",
+  "note": "adapted"
+ },
+ "brief": "**#oncall 09:40 · web-04 · after the mainboard swap**\n\n> \"Hardware replaced the mainboard on web-04 last night (ticket in `~/HW-CHANGE.txt`). Since then it has no address: the console shows the NIC up, `ip -br -4 addr` shows nothing on it. The static IP has been in `/etc/netplan/01-static.yaml` for months and that file looks right to me. Find out why before we drive to the data centre again.\"\n\nThis lab can't change its network (no NET_ADMIN), like a box you only reach through a flaky console, so work the careful way: read what netplan *would* hand to systemd-networkd with `netplan get` and `netplan generate`, fix the YAML until the generated files are right, and leave `netplan apply` for the real console. Use the NIC name and MAC this machine shows you (it keeps the address Docker gave it; ignore that).",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "What would netplan actually configure?",
+   "text": "Start where the config owner starts. List every file netplan reads (`ls -l /etc/netplan /run/netplan /lib/netplan`); `sudo netplan get` shows the merged result. Then run `sudo netplan generate`: it only writes systemd-networkd files to `/run/systemd/network` and applies nothing. (Its `Failed to send reload request` line comes from `udevadm`: udev does not run in this lab, so ignore it.)\n\nRead those files. Which interface do they match, by name and by MAC, and is DHCP on? Compare that with `ip -br link` and the hardware ticket.\n\nDone when the generated files are up to date with the YAML. Run generate again after every edit in the next tasks.",
+   "points": 30,
+   "hints": [
+    "`sudo netplan get ethernets`: settings for the same interface ID are merged, and the file whose name sorts later wins. `sudo netplan generate && sudo cat /run/systemd/network/*.network`.",
+    "`DHCP=ipv4` and `PermanentMACAddress=3c:ec:ef:12:34:56` both come from the installer's cloud-init file. `ip -br link` lists the only real NIC: neither its name nor its MAC matches the config. Background: [42 §1.6](42-problems-network-dns-tls-vpn.md#16-a-server-or-nas-gets-no-ip-after-a-reset-or-a-hardware-change)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which file turns DHCP back on for the static interface?",
+     "format": "file name",
+     "answer_sha256": "cc09a66dcd59f4d140e14f56f959d2e9cd18aaebcf0e92d4a8d235c3249045c5"
+    },
+    {
+     "id": "q2",
+     "prompt": "What does the kernel call the NIC that exists now?",
+     "format": "interface name",
+     "answer_sha256": "9c32a8c7e59e7935b1e5d3eea04ed8e08c41c1d3da88b98a8ad15d38cfc55b00"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "`netplan generate` has run on the current YAML (files in /run/systemd/network)",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Win the merge, match the new NIC",
+   "text": "Two things keep the static address off the live NIC. Fix both in the files netplan owns:\n\n- the installer's cloud-init file wins the merge, and cloud-init rewrites it whenever it decides this is a new instance. Disable cloud-init's network config, then move its file out of the way;\n- the config is tied to a name and a MAC that left with the old board. Match the new NIC by `macaddress` and give it a stable name with `set-name` (for example `lan0`).\n\nKeep netplan files at mode 600. Done when the generated config matches the live NIC's MAC, renames it, and is static 192.0.2.10/24 without DHCP.",
+   "points": 40,
+   "hints": [
+    "The header of 50-cloud-init.yaml names the file to create in `/etc/cloud/cloud.cfg.d/` and its one line. Then `sudo mv /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.disabled`: netplan reads only `*.yaml`.",
+    "In 01-static.yaml replace `eno1:` with an ID such as `lan0:` holding `match:` / `macaddress: \"<MAC from ip -br link>\"` and `set-name: lan0`. `sudo netplan generate`, then read the new `.link` and `.network` files. The same YAML pattern is in [42 §1.6](42-problems-network-dns-tls-vpn.md#16-a-server-or-nas-gets-no-ip-after-a-reset-or-a-hardware-change)."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which file name does cloud-init's own header tell you to create?",
+     "format": "file name",
+     "answer_sha256": "b7ca60fd6ce27cdfbd60863e99564e029c1d3185265a102b5bcb5e0efac38c39"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "cloud-init network config disabled; the generated config matches the live NIC by MAC, renames it, static 192.0.2.10/24, no DHCP",
+     "script": "checks/t2.sh"
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "title": "A way out of the subnet",
+   "text": "An address alone is not enough: with no default route the box only reaches 192.0.2.0/24. Someone removed `gateway4` because netplan warns that it is deprecated, and never added the replacement. Add a default route via 192.0.2.1 the current way, keep the DNS server, and generate again: look for a `[Route]` section.\n\nOn the real console you would now apply it. Think about which command protects you if the new config cuts you off, and what it does when nobody confirms.\n\nDone when the generated config has a default route via 192.0.2.1 and no YAML uses `gateway4`.",
+   "points": 30,
+   "hints": [
+    "`routes:` is a list of maps with `to:` and `via:`. `sudo netplan generate` prints a deprecation warning while `gateway4` appears anywhere. `netplan try` applies, waits for Enter, and rolls back without it ([42 §1.1](42-problems-network-dns-tls-vpn.md#11-netplan-apply-locks-you-out)).",
+    "Under `lan0:` add `routes:` with one item `- to: default` / `via: 192.0.2.1`, then `sudo netplan generate; sudo cat /run/systemd/network/10-netplan-lan0.network`. The rollback default is in `grep -n TIMEOUT /usr/share/netplan/netplan_cli/cli/commands/try_command.py`."
+   ],
+   "questions": [
+    {
+     "id": "q4",
+     "prompt": "If nobody confirms, after how many seconds does `netplan try` roll back by default?",
+     "format": "seconds",
+     "answer_sha256": "2abaca4911e68fa9bfbf3482ee797fd5b9045b841fdff7253557c5fe15de6477"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the generated config has a default route via 192.0.2.1 (routes:, no gateway4) and keeps DNS 192.0.2.53",
+     "script": "checks/t3.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **Merge order:** netplan merges all `*.yaml` files in `/etc/netplan`, `/run/netplan` and `/lib/netplan` by file name; for the same interface ID, a later file overrides an earlier one. `50-cloud-init.yaml` sorts after `01-static.yaml`, so its `dhcp4: true` beat `dhcp4: false`.\n2. **Gone hardware:** cloud-init's file matched the old NIC's MAC (`3c:ec:ef:12:34:56`) and renamed it `eno1`. After the mainboard swap the only NIC has another MAC and name (`eth0` in this lab), so no config applied to it at all. That is the Proxmox case: a config that is correct, but for an interface that no longer exists.\n3. **No default route:** `gateway4` was deleted because it is deprecated, and nothing replaced it.\n\n### Task 1\n```bash\nls -l /etc/netplan /run/netplan /lib/netplan\nsudo netplan get ethernets          # eno1: dhcp4: true, addresses, match: macaddress 3c:ec:ef:12:34:56\nsudo netplan generate               # writes /run/systemd/network, applies nothing\nsudo cat /run/systemd/network/10-netplan-eno1.network   # DHCP=ipv4, PermanentMACAddress=3c:ec:ef:...\nip -br link                         # eth0 with another MAC\n```\n\n### Task 2\n```bash\necho 'network: {config: disabled}' | sudo tee /etc/cloud/cloud.cfg.d/99-disable-network-config.cfg\nsudo mv /etc/netplan/50-cloud-init.yaml /etc/netplan/50-cloud-init.yaml.disabled\nsudoedit /etc/netplan/01-static.yaml   # lan0: match: macaddress: \"<live MAC>\", set-name: lan0, dhcp4: false\nsudo chmod 600 /etc/netplan/01-static.yaml\nsudo netplan generate && sudo cat /run/systemd/network/10-netplan-lan0.link\n```\n*Why:* the file cloud-init owns is regenerated when cloud-init thinks it is a new instance, so turn its network module off before you move the file. A MAC match survives renames and slot changes, not a new NIC: record MACs in your inventory.\n\n### Task 3\n```yaml\n      routes:\n        - to: default\n          via: 192.0.2.1\n```\n```bash\nsudo netplan generate; sudo grep -A2 '^\\[Route\\]' /run/systemd/network/10-netplan-lan0.network   # Gateway=192.0.2.1\n# on the real console only:\nsudo netplan try            # applies, then rolls back after 120 s unless you press Enter\n```\n*Why:* `netplan generate` is the safe dry run; `netplan try` is the safe apply. `ip -br -4 addr` and `ip route` after a reboot prove the change persists.\n\nHandbook: 42 §1.6, \"A server or NAS gets no IP after a reset or a hardware change\" (anchor `#16-a-server-or-nas-gets-no-ip-after-a-reset-or-a-hardware-change`), and 42 §1.1 for `netplan try`.\n\n**Source (adapted):** [No networking after upgrade to 8.2](https://forum.proxmox.com/threads/no-networking-after-upgrade-to-8-2.145727/): after a kernel upgrade the NIC names changed, the journal said `vmbr0: bridge port eno8 does not exist`, and users fixed it by putting the new names from `ip a` into the config; others pinned names by MAC. Merge and cloud-init rules: [netplan(5)](https://manpages.ubuntu.com/manpages/noble/man5/netplan.5.html), [cloud-init network config](https://docs.cloud-init.io/en/latest/reference/network-config.html)."
+}

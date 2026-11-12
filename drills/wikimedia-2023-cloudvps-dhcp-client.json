@@ -1,0 +1,80 @@
+{
+  "id": "wikimedia-2023-cloudvps-dhcp-client",
+  "title": "The cleanup that uninstalled the network",
+  "level": "L4",
+  "track": "sre",
+  "topics": ["ansible-practice", "prometheus-alertmanager", "network-problems", "ansible"],
+  "minutes": 9,
+  "role": "You are one of the admins of a public OpenStack cloud hosting hundreds of community projects on Debian VMs, all managed by Puppet. Today you lead the response.",
+  "source": {
+    "label": "Wikimedia: Incidents/2023-09-29 CloudVPS vms losing network connectivity",
+    "url": "https://wikitech.wikimedia.org/wiki/Incidents/2023-09-29_CloudVPS_vms_losing_network_connectivity",
+    "org": "Wikimedia",
+    "date": "2023-09-29",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Friday, 07:06 UTC. You start work and notice the alerting system is down. On IRC, users have reported connection problems since 04:14, and one opened an outage task at 06:56. No page reached anyone.",
+  "steps": [
+    {
+      "situation": "Your dashboards are quiet. Users say their tools are unreachable.",
+      "choices": [
+        {"text": "Treat the silence as a symptom: check the monitoring stack itself and reproduce a user report", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 15, "trust": 5}, "why": "The monitoring VMs were hit too, so nothing could alert. The front proxy for all projects is unresponsive: that's a platform outage, not one user's tool."},
+        {"text": "No alerts, so it's the users' own projects", "verdict": "bad", "effect": {"service": -15, "time": -15, "evidence": -5, "trust": -15}, "why": "Monitoring that is down sends no alerts. Silence from it proves nothing."},
+        {"text": "Restart the alerting server and wait for its alerts", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 0}, "why": "It shares the fault, so it may not come back, and you lose time you could spend on the real fault."}
+      ]
+    },
+    {
+      "situation": "On a VM that still works you check its network setup, then its package log.",
+      "evidence": "$ command -v dhclient || echo missing\nmissing\n$ grep -B3 'Remove: isc-dhcp-client' /var/log/apt/history.log\nStart-Date: 2023-09-28  11:38:40\nCommandline: /usr/bin/apt-get -q -y remove isc-dhcp-client\nRemove: isc-dhcp-client:amd64",
+      "evidence_cmd": "grep -B3 'Remove: isc-dhcp-client' /var/log/apt/history.log",
+      "choices": [
+        {"text": "Read it: Puppet removed the DHCP client yesterday; VMs drop off as their leases expire", "verdict": "best", "effect": {"service": 10, "time": 10, "evidence": 20, "trust": 0}, "why": "Found by 07:18: a package cleanup in Puppet removed `isc-dhcp-client` from bullseye VMs. A working VM is just one whose lease hasn't run out yet."},
+        {"text": "Rebuild the broken VMs from images", "verdict": "bad", "effect": {"service": -10, "time": -20, "evidence": -10, "trust": -5}, "why": "Hundreds of VMs, their data, and a Puppet run that removes the client again."},
+        {"text": "Reboot the broken VMs", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -5, "trust": 0}, "why": "With no DHCP client they boot without an address, and the ones that still work lose theirs."}
+      ]
+    },
+    {
+      "situation": "You merge the revert at 07:23. But broken VMs can't reach the Puppet server, so they will never pick it up.",
+      "choices": [
+        {"text": "Two tracks at once: one admin scripts the fix for the whole fleet, another repairs core VMs by hand; email the users' announce list", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 0, "trust": 15}, "why": "What was done. Monitoring alerts came back by hand at 08:21, the script ran over the fleet from 08:35, and the first email went out at 07:31."},
+        {"text": "Wait for the Puppet agents to apply the revert", "verdict": "bad", "effect": {"service": -15, "time": -15, "evidence": 0, "trust": -10}, "why": "An agent without network can't fetch the revert. You'd wait forever."},
+        {"text": "Fix VMs one by one by hand, starting with whoever complains loudest", "verdict": "risky", "effect": {"service": 5, "time": -15, "evidence": 0, "trust": -5}, "why": "Too slow for a fleet, and in the wrong order: monitoring and the proxies serve everyone."}
+      ]
+    },
+    {
+      "situation": "Networking is back, but NFS clients hang: Kubernetes workers and grid nodes have stuck mounts. The NFS server's network setup needs a reboot and a Puppet run.",
+      "choices": [
+        {"text": "Reboot in order: the NFS servers first, then the clients with stuck handles, in batches", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 0, "trust": 5}, "why": "The NFS server was rebooted at 09:32, the Kubernetes workers from 09:37, and all grid nodes by 10:08. The grid reboot cookbook failed on stuck nodes because it doesn't force a reboot."},
+        {"text": "Reboot everything at once", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": -10}, "why": "Clients that come up before the NFS server hang again, and every hosted tool restarts at once."},
+        {"text": "Wait for the NFS mounts to recover by themselves", "verdict": "bad", "effect": {"service": -15, "time": -15, "evidence": 0, "trust": -5}, "why": "In this setup they don't. Stuck handles need the reboot."}
+      ]
+    },
+    {
+      "situation": "All services back at 11:46 on 29 September. Users found the outage before you did. What goes into the follow-up?",
+      "choices": [
+        {"text": "Fix paging, monitor the monitoring, build a console cookbook, make NFS recover without reboots, roll package removals to a canary group first", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 15}, "why": "The first four are the report's actions. A canary group is the general lesson: a removal you test on a few VMs fails there first."},
+        {"text": "Freeze all Puppet changes", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": -5}, "why": "Puppet is also how you fix the fleet. Make changes safer, not rare."},
+        {"text": "Find out who merged the cleanup and restrict their access", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "A routine cleanup did this; the gaps were no staging, no meta-monitoring and pages that went nowhere."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "At 11:07 UTC on 28 September 2023 a Puppet package-cleanup change was merged that removed `isc-dhcp-client` (which provides `dhclient`) from Debian 11 bullseye VMs on Cloud VPS. As DHCP leases expired, VMs lost their network: Toolforge, PAWS, Quarry and the external proxies went down, and so did the metricsinfra monitoring VMs, so no alert fired. NFS clients got stuck. Users reported problems on IRC from 04:14 on 29 September; at 07:06 an admin noticed Alertmanager was down, at 07:16 `dhclient` was found missing, and at 07:18 apt logs pointed at Puppet. The revert went in at 07:23, but Puppet could not run on broken VMs, so admins fixed them by hand and with a fleet script. NFS servers, Kubernetes workers and grid nodes were rebooted, and all services were back at 11:46 on 29 September. Actions: find out why no pages went out, meta-monitoring for metricsinfra, a cookbook to run commands through `virsh console`, and NFS that recovers without a reboot and Puppet run.",
+    "lessons": ["No alerts is not good news until you've checked the alerting.", "Package removals are changes: test them on a canary group.", "When config management can't reach hosts, a revert fixes nothing: have an out-of-band path.", "Recover in dependency order: monitoring and shared services first, NFS servers before clients."],
+    "commands": ["command -v dhclient", "grep -B3 Remove /var/log/apt/history.log", "ip -br addr", "virsh console vm-example", "sudo puppet agent --test"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "52-devops-day-to-day.md", "heading": "9.4 Users reported it before monitoring did"},
+      {"file": "49-observability-stack-problems.md", "heading": "8.1 Alerts fire but nobody is notified"},
+      {"file": "41-problems-linux-systems.md", "heading": "5.3 Locked out: recovering a server you can't reach"},
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Canary releases"}
+    ],
+    "sites": [
+      {"label": "Killercoda: Dev Bench, apt and dpkg (free account)", "url": "https://killercoda.com/barrymister/scenario/linux-learn-packages"},
+      {"label": "Killercoda: Ansible 101 to 103 scenarios (free account)", "url": "https://killercoda.com/ansible/scenario/ansible-en-101"},
+      {"label": "Alertmanager routing tree editor (free, in the browser)", "url": "https://prometheus.io/webtools/alerting/routing-tree-editor/"}
+    ]
+  }
+}

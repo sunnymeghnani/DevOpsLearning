@@ -1,0 +1,72 @@
+{
+  "id": "systemd-2020-journald-machine-id",
+  "title": "The journal cap that didn't cap",
+  "level": "L1",
+  "track": "linux",
+  "topics": ["journald-logs"],
+  "minutes": 5,
+  "role": "You maintain a Linux image (built with Yocto, systemd 243) that runs on many small devices. The persistent journal is capped with SystemMaxUse=128M so it can't fill the disk.",
+  "source": {
+    "label": "systemd/systemd #14583: Journal doesn't respect SystemMaxUse option (GitHub issue)",
+    "url": "https://github.com/systemd/systemd/issues/14583",
+    "org": "systemd",
+    "date": "2020-01-16",
+    "read_on": "2026-11-10"
+  },
+  "brief": "A test device reports low disk space. `/var/log/journal` is at 169M, more than its 128M cap, and still growing. journald itself claims it is well under the limit.",
+  "steps": [
+    {
+      "situation": "journald and du disagree by a factor of ten.",
+      "evidence": "$ grep -E 'Storage|MaxUse' /etc/systemd/journald.conf\nStorage=persistent\nSystemMaxUse=128M\nRuntimeMaxUse=64M\n$ journalctl -b -u systemd-journald | grep 'System Journal'\n... System Journal (/var/log/journal/4f1c...) is 16.0M, max 128.0M, 112.0M free.\n$ sudo du -sh /var/log/journal\n169M\t/var/log/journal",
+      "evidence_cmd": "sudo du -sh /var/log/journal",
+      "choices": [
+        {"text": "Look one level down: du per subdirectory, and count them", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "journald's 16M is for one directory. If du says 169M, something else is in `/var/log/journal`."},
+        {"text": "Lower SystemMaxUse to 64M", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": -5, "trust": 0}, "why": "journald already thinks it uses 16M. A lower cap trims that one directory and leaves the rest."},
+        {"text": "rm -rf /var/log/journal while journald runs", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": -20, "trust": -5}, "why": "The space comes back, the logs you'd need to understand the problem don't, and it will fill again."}
+      ]
+    },
+    {
+      "situation": "There are twelve subdirectories, each 8 to 25M, each named with 32 hex characters.",
+      "evidence": "$ sudo du -sh /var/log/journal/* | sort -h | tail -3\n19M\t/var/log/journal/a07e...\n22M\t/var/log/journal/5bd2...\n25M\t/var/log/journal/e93f...\n$ ls /var/log/journal | wc -l\n12\n$ cat /etc/machine-id\n4f1c...",
+      "evidence_cmd": "cat /etc/machine-id",
+      "choices": [
+        {"text": "Compare the directory names with /etc/machine-id", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "journald names its directory after the machine ID. Twelve directories means the ID has changed eleven times, and journald only manages the current one."},
+        {"text": "Delete the biggest directories by size", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": -10, "trust": 0}, "why": "You might delete the active one and keep the orphans, and you still don't know why there are twelve."},
+        {"text": "It's a journald bug: report it and wait for a fix", "verdict": "bad", "effect": {"service": -10, "time": -15, "evidence": 0, "trust": 0}, "why": "The maintainer closed exactly this report as not-a-bug: the setup was the problem."}
+      ]
+    },
+    {
+      "situation": "The image gives the device a fresh machine ID on every boot, but `/var` survives reboots. What do you change?",
+      "choices": [
+        {"text": "Keep /etc/machine-id stable (create it once, keep it), or, if it must change each boot, wipe /var each boot too", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "The maintainer's answer: a random ID per boot is supported only on fully stateless systems where `/var` is flushed as well."},
+        {"text": "Add a cron job that deletes old journal directories", "verdict": "risky", "effect": {"service": 10, "time": 0, "evidence": 0, "trust": 0}, "why": "It treats the symptom. Anything else keyed on the machine ID keeps changing every boot."},
+        {"text": "Turn the journal off: Storage=none", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -20, "trust": -5}, "why": "The disk is safe and you are blind on every device in the field."}
+      ]
+    },
+    {
+      "situation": "The image now keeps its machine ID. Eleven orphaned directories remain on each device.",
+      "choices": [
+        {"text": "Delete every directory whose name isn't the current machine ID, then check du against the cap", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "journald never touches them, so nobody else will. Leave the current one to journald's own cap and vacuum."},
+        {"text": "Leave them: the cap works now", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": 0, "trust": -5}, "why": "The cap covers only the current directory. The old 150M stays used forever."},
+        {"text": "Run journalctl --vacuum-size=100M and assume it covers all", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "Check with du afterwards. Don't assume a tool cleans up directories its daemon has stopped managing."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In January 2020 a user of systemd 243 on a Yocto system reported that the persistent journal ignored `SystemMaxUse=128M`. journald reported its system journal as 16.0M of 128.0M, but `du` showed 169M in `/var/log/journal`, spread over 12 directories named after machine IDs. Lennart Poettering pointed at the likely cause, an unstable `/etc/machine-id`: journald names its directory after it, and when the ID changes, journald starts a new directory and never cleans up the old ones. Random machine IDs are supported on stateless systems only if `/var` is also flushed on every boot; a changing ID with a persistent `/var` is not a supported mode. The issue was labelled not-a-bug and closed the same day without a code change. The fix is operational: keep the machine ID stable (or make `/var` stateless too) and remove the orphaned directories.",
+    "lessons": ["SystemMaxUse limits journald's current directory, not everything under /var/log/journal.", "Many journal directories = a machine ID that keeps changing.", "Images and VM templates must handle /etc/machine-id on purpose.", "When the tool and du disagree, look one directory level deeper."],
+    "commands": ["journalctl --disk-usage", "sudo du -sh /var/log/journal/*", "cat /etc/machine-id", "ls /var/log/journal | wc -l", "sudo journalctl --vacuum-size=100M"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "41-problems-linux-systems.md", "heading": "1.4 The journal eats /var"},
+      {"file": "27-learn-linux.md", "heading": "journald: how the journal works"},
+      {"file": "50-problems-cloud-iac-proxmox.md", "heading": "9.1 Cloned cloud-init VMs share an IP or miss keys"}
+    ],
+    "sites": [
+      {"label": "Killercoda: Dev Bench, journald and logrotate (free account)", "url": "https://killercoda.com/barrymister/scenario/linux-learn-logs"},
+      {"label": "SadServers: Saint John, what is writing to this log file? (free account)", "url": "https://sadservers.com/scenario/saint-john"}
+    ]
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "id": "ravelin-2019-ingress-502-sigterm",
+  "title": "502s every time a pod goes away",
+  "level": "L2",
+  "track": "kubernetes",
+  "topics": ["k8s-workloads", "deployment-patterns", "proxy-problems"],
+  "minutes": 7,
+  "role": "You look after an HTTP API that has just moved from VMs into a GKE cluster. It is exposed to the internet through a GKE Ingress.",
+  "source": {
+    "label": "Phil Pearl (Ravelin): Kubernetes' dirty endpoint secret and Ingress, July 2019",
+    "url": "https://philpearl.github.io/post/k8s_ingress/",
+    "org": "Ravelin",
+    "date": "2019-07-26",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Since the move, integration tests now and then fail with **502 Bad Gateway** from the load balancer. The app logs show no errors and every pod is Ready. Nobody changed the code.",
+  "steps": [
+    {
+      "situation": "The 502s are rare and come in small clusters. You line up their timestamps with what the cluster was doing.",
+      "evidence": "$ grep ' 502 ' it-run.log | tail -3\n14:02:11  POST /v1/score  502\n14:02:12  POST /v1/score  502\n14:31:47  POST /v1/score  502\n$ kubectl get events --sort-by=.lastTimestamp | grep Killing\n14:02:10  Normal  Killing  pod/api-6f9c-7xk2q  Stopping container api\n14:31:46  Normal  Killing  pod/api-6f9c-p9d4m  Stopping container api",
+      "evidence_cmd": "kubectl get events --sort-by=.lastTimestamp",
+      "choices": [
+        {"text": "Correlate the 502s with pod events: each burst starts as a pod is stopped", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "The errors line up with pods being terminated by a rollout or scale-down. Now you know where to look: what happens to traffic while a pod shuts down."},
+        {"text": "Add client-side retries so the tests stop failing", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": -10, "trust": -5}, "why": "It hides the symptom from your tests, not from real clients, and you still don't know why the load balancer is talking to a dead backend."},
+        {"text": "Open a ticket saying the cloud load balancer is flaky", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -10, "trust": -5}, "why": "You'd be blaming the provider without evidence. The timestamps point at your own pod lifecycle."}
+      ]
+    },
+    {
+      "situation": "On SIGTERM the app closes its listener, finishes in-flight requests and exits, the textbook graceful shutdown. Yet the load balancer still sends it new requests.",
+      "choices": [
+        {"text": "Check the ordering: endpoint removal and SIGTERM happen at the same time, and the Ingress updates slowly", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "Kubernetes doesn't wait for the pod to leave the endpoints before sending SIGTERM. Ingress controllers take much longer to reprogram than in-cluster Services, so new connections arrive after the listener is gone."},
+        {"text": "Shorten `terminationGracePeriodSeconds` so dying pods leave faster", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -5, "trust": 0}, "why": "The pod would go away even sooner while the load balancer still points at it: more 502s, not fewer."},
+        {"text": "Switch the Deployment to the Recreate strategy", "verdict": "risky", "effect": {"service": -15, "time": 0, "evidence": 0, "trust": -5}, "why": "Every deploy becomes a full outage, and scale-downs and node drains still remove pods the same way."}
+      ]
+    },
+    {
+      "situation": "You know the cause. Now change how pods stop.",
+      "choices": [
+        {"text": "Keep serving after SIGTERM for a while, send `Connection: close`, and set the grace period longer than the load balancer needs to reprogram", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 5, "trust": 5}, "why": "The pod keeps answering until the Ingress has really stopped routing to it, and the header nudges clients to open new connections elsewhere."},
+        {"text": "Add a `preStop` hook that sleeps before the app sees SIGTERM", "verdict": "good", "effect": {"service": 15, "time": 5, "evidence": 0, "trust": 5}, "why": "The article's answer for code you can't change. It works, as long as the grace period is longer than the sleep."},
+        {"text": "Ignore SIGTERM completely in the app", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": 0}, "why": "The kubelet then SIGKILLs the pod at the end of the grace period, cutting in-flight requests instead of finishing them."}
+      ]
+    },
+    {
+      "situation": "The change is merged. How do you know it worked?",
+      "choices": [
+        {"text": "Run the integration tests in a loop during a rollout and a scale-down, and count the 502s", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 15, "trust": 5}, "why": "You reproduce the exact trigger on purpose. Zero 502s across several pod removals is real evidence."},
+        {"text": "One deploy went fine, so close it", "verdict": "risky", "effect": {"service": 0, "time": 5, "evidence": -10, "trust": 0}, "why": "The errors were always intermittent. One clean deploy proves little."},
+        {"text": "Wait a month and see if anyone complains", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": -5}, "why": "Customers become your test suite."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In July 2019 Phil Pearl described what Ravelin found after moving its API layer from VMs to GKE behind a GKE Ingress: integration tests occasionally got 502s. When Kubernetes removes a pod, taking it out of the endpoints and sending it SIGTERM happen at roughly the same time, not one after the other, and Ingress controllers are much slower to update than ordinary Services. A pod that starts a classic graceful shutdown on SIGTERM therefore drops connections the load balancer is still sending it. The fix: keep serving new connections after SIGTERM, optionally answer with `Connection: close` so clients move on, make the termination grace period longer than the load balancer's reprogramming time, and for code you can't change, add a `preStop` hook that sleeps.",
+    "lessons": ["SIGTERM means \"you will be removed soon\", not \"no more traffic is coming\".", "Line up intermittent errors with pod lifecycle events before tuning anything.", "The grace period must cover load balancer reprogramming plus in-flight work.", "Test a fix by triggering rollouts on purpose under load."],
+    "commands": ["kubectl get events --sort-by=.lastTimestamp", "kubectl get endpointslices -l kubernetes.io/service-name=api -w", "kubectl rollout restart deploy/api", "kubectl rollout status deploy/api", "kubectl explain pod.spec.terminationGracePeriodSeconds"]
+  },
+  "practise": {
+    "labs": ["05-processes-signals"],
+    "handbook": [
+      {"file": "31-learn-kubernetes.md", "heading": "Termination and graceful shutdown"},
+      {"file": "45-dokploy-and-self-hosted-paas.md", "heading": "8.6 A few seconds of 502 on every deploy"}
+    ],
+    "sites": [
+      {"label": "iximiuz: Deployments, scale, roll out, roll back", "url": "https://labs.iximiuz.com/challenges/kubernetes-deployments-05d62520"},
+      {"label": "iximiuz: safe node drain with a disruption budget", "url": "https://labs.iximiuz.com/challenges/safe-node-drain-with-a-disruption-budget-8fc8f25e"},
+      {"label": "Kubernetes Failure Stories (k8s.af)", "url": "https://k8s.af/"}
+    ]
+  }
+}

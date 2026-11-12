@@ -1,0 +1,71 @@
+{
+  "id": "zalando-2019-coredns-oom",
+  "title": "A retry storm that took out cluster DNS",
+  "level": "L2",
+  "track": "kubernetes",
+  "topics": ["k8s-services-dns", "dns-deep", "k8s-incidents", "memory-oom"],
+  "minutes": 7,
+  "role": "You are on call for the aggregation service behind an online shop. It runs in a Kubernetes cluster that another team operates.",
+  "source": {
+    "label": "Zalando: total DNS outage in a Kubernetes cluster, January 2019 (post-mortem)",
+    "url": "https://github.com/zalando-incubator/kubernetes-on-aws/blob/dev/docs/postmortems/jan-2019-dns-outage.md",
+    "org": "Zalando",
+    "date": "2019-01-07",
+    "read_on": "2026-11-07"
+  },
+  "brief": "Product pages on the shop return errors at a high rate. Your aggregation service, a Node.js app, has opened circuit breakers to almost every downstream service. The Kubernetes on-call was not paged automatically.",
+  "steps": [
+    {
+      "situation": "Your pods are running, but their logs are full of lookup errors for every hostname, inside and outside the cluster.",
+      "evidence": "$ kubectl -n kube-system get pods -l k8s-app=kube-dns\nNAME                       READY  STATUS            RESTARTS\ncoredns-7d9f6c8b5d-4kx2p   0/1    CrashLoopBackOff  14\ncoredns-7d9f6c8b5d-q8w7z   0/1    CrashLoopBackOff  13\n$ kubectl -n kube-system describe pod coredns-7d9f6c8b5d-4kx2p | grep -A3 'Last State'\n    Last State:  Terminated\n      Reason:    OOMKilled\n    Limits:      memory: 100Mi",
+      "evidence_cmd": "kubectl -n kube-system get pods -l k8s-app=kube-dns",
+      "choices": [
+        {"text": "Check the cluster DNS pods, then describe one for the restart reason", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "When every name fails, look at the shared resolver first. CoreDNS is OOMKilled at its 100Mi limit and can't stay up under the load."},
+        {"text": "Roll the aggregation deployment to clear bad state", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -10, "trust": 0}, "why": "New pods need DNS too. They start, fail to resolve anything, and you've lost the logs of the old ones."},
+        {"text": "Scale the aggregation service up to handle the errors", "verdict": "bad", "effect": {"service": -15, "time": -5, "evidence": 0, "trust": 0}, "why": "More replicas send more DNS queries to a resolver that is already dying of load."}
+      ]
+    },
+    {
+      "situation": "CoreDNS belongs to the Kubernetes team, and their alerting is quiet because it runs inside the same broken cluster.",
+      "choices": [
+        {"text": "Phone the Kubernetes on-call directly and share what you found", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 0, "trust": 20}, "why": "Monitoring that lives in the cluster couldn't page anyone. That's exactly what happened at Zalando: the app on-call had to call the Kubernetes on-call by hand."},
+        {"text": "Post in their channel and keep digging alone", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 5, "trust": -5}, "why": "A message in a quiet channel at night may sit for an hour while the shop is down."},
+        {"text": "Edit the CoreDNS deployment yourself without telling them", "verdict": "bad", "effect": {"service": 10, "time": 5, "evidence": 0, "trust": -20}, "why": "It may work, but the owners will find a changed system component with no record, and may roll it back."}
+      ]
+    },
+    {
+      "situation": "Together you need DNS back now.",
+      "choices": [
+        {"text": "Raise CoreDNS memory requests and limits well above the old 100Mi", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 0, "trust": 5}, "why": "The Zalando engineer raised them from 100Mi to 2000Mi. CoreDNS stopped crashing, the circuit breakers closed and the shop recovered."},
+        {"text": "Delete the CoreDNS pods so they start fresh", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": 0}, "why": "They come back with the same 100Mi limit into the same flood and are OOMKilled again within seconds."},
+        {"text": "Add more CoreDNS replicas, keep the limit", "verdict": "risky", "effect": {"service": 10, "time": 0, "evidence": 0, "trust": 0}, "why": "It spreads the load and might hold, but each pod can still be OOMKilled at 100Mi during the next spike."}
+      ]
+    },
+    {
+      "situation": "DNS is stable. Why were there so many queries? You check a pod's resolver config.",
+      "evidence": "$ kubectl exec deploy/aggregator -- cat /etc/resolv.conf\nsearch shop.svc.cluster.local svc.cluster.local cluster.local eu-central-1.compute.internal\nnameserver 198.51.100.10\noptions ndots:5",
+      "evidence_cmd": "kubectl exec deploy/aggregator -- cat /etc/resolv.conf",
+      "choices": [
+        {"text": "Cut the query multipliers: retries, ndots:5, no app-side DNS cache, short connection lifetime", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 5}, "why": "One slow service caused retries. With `ndots:5` and four search domains, each external name cost 10 queries. Short-lived connections did more lookups still."},
+        {"text": "Keep 2000Mi and close the incident", "verdict": "risky", "effect": {"service": 5, "time": 5, "evidence": -10, "trust": -5}, "why": "The next, bigger spike hits the same single point. The memory fix treats the symptom."},
+        {"text": "Ask the app team to stop retrying entirely", "verdict": "bad", "effect": {"service": -5, "time": 0, "evidence": 0, "trust": -5}, "why": "Retries with backoff and a budget are healthy. The problem was retries piling onto retries."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 7 January 2019 calls from Zalando's aggregation layer to a minor downstream service started timing out. The resulting 404s made clients retry, and the spike in requests became a spike in DNS queries. CoreDNS, limited to 100Mi based on past usage, was OOMKilled and couldn't recover under constant load, so the whole cluster lost DNS for over an hour. The Node.js app had no DNS cache and used the default `ndots:5`, which turned each external lookup into 10 queries. Alerting lived inside the cluster, so the app's on-call had to phone the Kubernetes on-call. Raising CoreDNS memory to 2000Mi restored service. Actions: a node-local dnsmasq in front of CoreDNS, alerting from outside the cluster, and easier escalation.",
+    "lessons": ["Cluster DNS is shared: one app's query storm can take down everyone.", "Size system pods for spikes, not for yesterday's average.", "Count queries per lookup: ndots, search domains and caching multiply load.", "Alert from outside the thing being monitored."],
+    "commands": ["kubectl -n kube-system get pods -l k8s-app=kube-dns", "kubectl -n kube-system describe pod <coredns-pod>", "kubectl -n kube-system set resources deploy/coredns --limits=memory=2000Mi", "kubectl exec deploy/aggregator -- cat /etc/resolv.conf", "kubectl top pod -n kube-system"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "46-problems-kubernetes.md", "heading": "5.2 ndots:5, conntrack races and DNS storms"},
+      {"file": "31-learn-kubernetes.md", "heading": "Search domains, ndots and the node resolver"}
+    ],
+    "sites": [
+      {"label": "Killercoda CKA scenarios (free account)", "url": "https://killercoda.com/cka"},
+      {"label": "Kubernetes Failure Stories (k8s.af)", "url": "https://k8s.af/"}
+    ]
+  }
+}

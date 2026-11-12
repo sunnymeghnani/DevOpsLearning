@@ -1,0 +1,73 @@
+{
+  "id": "nada-2024-inodes-sessions",
+  "title": "Disk full, but df says 40% free",
+  "level": "L0",
+  "track": "linux",
+  "topics": ["disk-full", "shell-fhs", "time-scheduling", "linux-problems"],
+  "minutes": 5,
+  "role": "You are the junior on the ops rota for a PHP web portal on one Ubuntu server.",
+  "source": {
+    "label": "NADA issue #112: sessions folder pushes inodes to 100% (GitHub)",
+    "url": "https://github.com/ihsn/nada/issues/112",
+    "org": "IHSN NADA",
+    "date": "2024-08-21",
+    "read_on": "2026-11-07"
+  },
+  "brief": "Users of the data portal at `portal.example.com` get a blank page after login. The app log says it **can't write session data: No space left on device**. Priya, who set up the server, is sure the disk can't be full: it was resized last year.",
+  "steps": [
+    {
+      "situation": "You SSH in. `df -h` agrees with Priya: plenty of room. The error is real, though: new uploads and logins fail every time.",
+      "evidence": "$ df -h /\nFilesystem      Size  Used Avail Use% Mounted on\n/dev/sda2        78G   31G   43G  42% /\n$ df -i /\nFilesystem      Inodes   IUsed IFree IUse% Mounted on\n/dev/sda2      5.2M    5.2M     0  100% /",
+      "evidence_cmd": "df -h / && df -i /",
+      "choices": [
+        {"text": "Check inodes on the same mount with df -i", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 5}, "why": "Each file costs one inode as well as some bytes. Millions of tiny files can use every inode while the bytes stay free, and `df -i` shows that in one line."},
+        {"text": "Reboot the server, it clears temp files", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -15, "trust": -5}, "why": "The files live on the root filesystem, not in RAM, so a reboot frees nothing. Users get an outage on top of the broken logins, and you have learned nothing."},
+        {"text": "Ask for a bigger disk", "verdict": "risky", "effect": {"service": 0, "time": -15, "evidence": -5, "trust": 0}, "why": "Growing the disk adds bytes you don't need. ext4 fixes the bytes-per-inode ratio when the filesystem is made, so a grow adds inodes only in proportion, for the folder to fill again. You'd wait days for a change that only buys time."},
+        {"text": "Delete old .gz logs in /var/log to make room", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": -10, "trust": 0}, "why": "A few hundred log files free a few hundred inodes, which the app burns in minutes. You also throw away history you may need."}
+      ]
+    },
+    {
+      "situation": "Inodes are at 100%. Now find out where those millions of files are.",
+      "evidence": "$ sudo du --inodes -x / 2>/dev/null | sort -n | tail -4\n61204   /usr\n7057174 /var/www/html/nada/files/sessions\n7071950 /var/www/html/nada/files\n7212480 /",
+      "evidence_cmd": "sudo du --inodes -x / | sort -n | tail",
+      "choices": [
+        {"text": "Count inodes per directory with du --inodes -x", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "It ranks directories by file count, not size, and `-x` keeps it on this filesystem. One directory holds 7 million files."},
+        {"text": "Look for big files with find / -size +1G", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "You are hunting the wrong counter. The culprit is millions of files of a few bytes each, which a size search never shows."},
+        {"text": "Run ls -l in the app's files directories one by one", "verdict": "risky", "effect": {"service": 0, "time": -15, "evidence": 5, "trust": 0}, "why": "On a directory with millions of entries, `ls -l` sorts and stats every one and can hang for many minutes."}
+      ]
+    },
+    {
+      "situation": "`files/sessions` holds 7,057,174 session files (553 MB in total). They are old sessions nobody cleaned up. You need inodes back without breaking today's logins.",
+      "choices": [
+        {"text": "Delete only old files with find -mtime +1 -delete", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 5, "trust": 5}, "why": "`find -delete` removes files one at a time, so there's no argument-list limit, and anyone logged in today stays logged in (`-mtime +1` matches files at least two full days old). Check `df -i` as it runs."},
+        {"text": "Sync an empty directory over it with rsync -a --delete", "verdict": "good", "effect": {"service": 15, "time": 10, "evidence": 0, "trust": -5}, "why": "The maintainer suggested this as a fast way to empty a huge folder. It works, but it signs out every user, so tell them first."},
+        {"text": "rm -rf files/sessions/*", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 0}, "why": "The shell expands `*` into 7 million names and fails with `Argument list too long`. Nothing is deleted."},
+        {"text": "Delete the whole sessions directory and let the app recreate it", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": -5}, "why": "Many apps don't recreate it, or recreate it with the wrong owner, so logins fail again with a new error. Empty the directory and keep it."}
+      ]
+    },
+    {
+      "situation": "Inodes are back to 9%. Logins work. How do you keep this from coming back in six months?",
+      "choices": [
+        {"text": "Daily cron cleanup, an inode alert at 80%, and a note in the runbook", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "The app never deletes old sessions, so something else must. The alert catches the next growth source, and the note means the next on-call won't start from zero."},
+        {"text": "Rebuild the filesystem with more inodes", "verdict": "risky", "effect": {"service": -10, "time": -15, "evidence": 0, "trust": -5}, "why": "It needs downtime and a restore, and the folder still grows without limit. You've only moved the cliff."},
+        {"text": "Nothing: it was a one-off", "verdict": "bad", "effect": {"service": -5, "time": 0, "evidence": -5, "trust": -10}, "why": "The files came from normal traffic (later reports blamed crawlers). It will fill up again, probably at night."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In August 2024 an admin of a NADA 5.4.1 data catalog reported that the root disk had free space but inodes were at 100%. The `files/sessions` folder held 7,057,174 entries, only 553 MB in all. A maintainer explained that NADA keeps session files there and does not clean up old ones. The advice was to empty the folder and add a cron job that deletes files older than one day. Because `rm -rf` on that many files could take an hour or more, the maintainer suggested syncing an empty folder over it with `rsync --delete`. A second admin hit the same problem in 2025, blamed crawlers and bots, and asked for the install guide to cover the cron job.",
+    "lessons": ["`No space left on device` can mean bytes or inodes: run df -h and df -i.", "Rank directories with du --inodes -x, and never ls -l a folder of millions.", "Anything that creates a file per request needs a cleanup job and an owner.", "Alert on inode use as well as disk use."],
+    "commands": ["df -i", "du --inodes -x / | sort -n | tail", "find /var/www/html/nada/files/sessions -type f -mtime +1 -delete", "rsync -a --delete /tmp/empty/ /var/www/html/nada/files/sessions/", "crontab -e"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "41-problems-linux-systems.md", "heading": "1.3 No space left, but df shows free space"},
+      {"file": "27-learn-linux.md", "heading": "Files, inodes and links"}
+    ],
+    "sites": [
+      {"label": "SadServers: free disk and Linux scenarios (free account)", "url": "https://sadservers.com/scenarios"},
+      {"label": "KodeKloud Ubuntu playground (free account)", "url": "https://kodekloud.com/playgrounds/playground-ubuntu"}
+    ]
+  }
+}

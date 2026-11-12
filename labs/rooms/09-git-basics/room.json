@@ -1,0 +1,81 @@
+{
+ "id": "l0-git-basics",
+ "title": "Push declined, and a hotfix gone missing",
+ "level": "L0",
+ "map_node": "git-basics",
+ "path": "fresher",
+ "order": 9,
+ "minutes": 30,
+ "difficulty": "easy",
+ "source": {
+  "title": "Remove sensitive files and their commits from Git history (Stack Overflow)",
+  "url": "https://stackoverflow.com/questions/872565/remove-sensitive-files-and-their-commits-from-git-history",
+  "note": "adapted"
+ },
+ "brief": "**#shop-deploy · 09:02**\n\n> **dev:** my push of the rate-limit change is rejected: `push declined ... contains .env`. Can someone just turn the hook off? We need rate limiting before the 10:00 sale.\n\n> **night shift:** also, where did my hotfix go? On Sunday at 23:41 I checked out `v1.4` on the server, raised `proxy_read_timeout` to 30s, committed, switched back to main... and now it's not in `git log`. INC-977 is back.\n\nThe repo is `/home/deploy/shop` (origin: `/srv/git/shop.git`), owned by `deploy`: work as `sudo -iu deploy`. Keep the hook. Ship both changes to origin/main without the secret and without losing anyone's work.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Get the secret out, ship the change",
+   "text": "Look at the last commit (`git show --stat`): it added the rate limit **and** `.env` with a database password. That commit was never pushed, so you can rewrite it safely.\n\nRemove `.env` from the commit but keep the file on disk (the app reads it), make git ignore it for every clone, and push. Done when origin/main has `rate_limit=100`, no branch, tag or origin commit contains `.env`, and `.env` is still in the working tree but untracked and ignored.",
+   "points": 50,
+   "hints": [
+    "`git rm --cached .env` removes it from the index and leaves the file. Add `.env` to `.gitignore` and `git add .gitignore`.",
+    "`git commit --amend --no-edit` replaces the last commit with the cleaned one, then `git push origin main`. A password that was ever pushed or shared must be rotated as well."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which committed file makes git ignore `.env` in every clone?",
+     "format": "file name",
+     "answer_sha256": "bc37d034bad564583790a46f19d807abfe519c5671395fd494d8cce506c42947"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which git command removes a file from the index but keeps it on disk?",
+     "format": "git subcommand --option (no path)",
+     "answer_sha256": "a50d7d3ec927787527ce03e3b7782b4fe039c27b8a2d1cbba58ff19505e61f4a"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "origin/main has the rate limit, no commit carries .env, .env is kept, untracked and ignored",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Find the lost hotfix",
+   "text": "Checking out a tag puts you on a **detached HEAD**: new commits belong to no branch. When you switch away, nothing points to them any more. They are not deleted yet, though: git records every position of HEAD.\n\nFind the hotfix commit, bring it onto `main` without losing the rate-limit work, and push. Done when `main` and origin/main both contain the hotfix commit and `timeout.conf` says 30s.",
+   "points": 50,
+   "hints": [
+    "`git reflog` lists where HEAD has been, newest first. Look for the line with \"hotfix\" and note its short hash. `git show <hash>` confirms it.",
+    "On main: `git cherry-pick <hash>` (or `git branch hotfix-977 <hash>` and merge it), then `git push origin main`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which git command lists where HEAD has been, including commits no branch points to?",
+     "format": "git subcommand",
+     "answer_sha256": "beb05cb91404ecc78a7d9dd407d83e8b0ac2d6416a94b03d69769c22047d955a"
+    },
+    {
+     "id": "q4",
+     "prompt": "What is the state called when you commit on a checked-out tag?",
+     "format": "two words",
+     "answer_sha256": "375c8206b1565f71b079d22ab72213c55ba9fb59b85c3145b4bae38439f12158"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "main and origin/main contain the hotfix (30s) next to the rate limit",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. The commit \"Add rate limiting\" also added `.env` (database password). The server's `pre-receive` hook rejects any push containing `.env`, like GitHub/GitLab push protection.\n2. The hotfix was committed on a **detached HEAD** (`git checkout v1.4`). After `git checkout main`, no branch pointed to it. Only the reflog still listed it.\n\n### Task 1\n```bash\nsudo -iu deploy\ncd ~/shop\ngit status ; git log --oneline -3 ; git show --stat HEAD     # .env | 3 +++\ngit push origin main                                         # push declined ... contains .env\ngit rm --cached .env                                         # untrack, keep the file\necho .env >> .gitignore && git add .gitignore\ngit commit --amend --no-edit                                 # rewrite the unpushed commit\ngit push origin main\ngit check-ignore -v .env ; ls -l .env                        # .gitignore:1:.env  .env\n```\n*Why:* rewriting is safe only for commits nobody else has. Once a secret has been pushed or shared, removing it from history (`git filter-repo`, BFG) is not enough: **rotate the secret**, because clones, forks and caches keep copies.\n\n### Task 2\n```bash\ngit reflog | head -8          # ... checkout: moving from 1a2b3c4 to main\n                              # 1a2b3c4 HEAD@{2}: commit: hotfix: raise proxy_read_timeout to 30s (INC-977)\ngit show 1a2b3c4              # timeout.conf 10s -> 30s\ngit cherry-pick 1a2b3c4       # copy it onto main\ngit push origin main\ngit log --oneline -3 ; cat timeout.conf\n```\n*Why:* the reflog is local and expires (by default unreachable entries after 30 days, then `git gc` deletes the objects), so rescue lost commits soon. Next time, make a branch before committing: `git switch -c hotfix-977 v1.4`.\n\n**Source (adapted):** [Remove sensitive files and their commits from Git history](https://stackoverflow.com/questions/872565/remove-sensitive-files-and-their-commits-from-git-history): the answers stress that a pushed secret must be treated as compromised and changed. For the newest, unpushed commit, `git rm --cached` plus `git commit --amend` is enough."
+}

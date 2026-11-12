@@ -1,0 +1,69 @@
+{
+  "id": "github-2023-rsa-host-key-rotation",
+  "title": "REMOTE HOST IDENTIFICATION HAS CHANGED",
+  "level": "L2",
+  "track": "security",
+  "topics": ["ssh-basics", "secrets", "security-response", "ssh-hardening"],
+  "minutes": 6,
+  "role": "You own the CI runners and deploy servers that pull code from GitHub over SSH.",
+  "source": {
+    "label": "GitHub: we updated our RSA SSH host key (24 March 2023)",
+    "url": "https://github.blog/news-insights/company-news/we-updated-our-rsa-ssh-host-key/",
+    "org": "GitHub",
+    "date": "2023-03-24",
+    "read_on": "2026-11-07"
+  },
+  "brief": "Friday morning, 24 March 2023. Every deploy job that runs `git fetch` over SSH has failed since about 05:00 UTC. Builds that use HTTPS are fine. Sam has a fix ready: turn off host key checking in CI.",
+  "steps": [
+    {
+      "situation": "This is the error from a deploy runner.",
+      "evidence": "$ git fetch origin\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nIT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\nThe fingerprint for the RSA key sent by the remote host is\nSHA256:(a fingerprint you have never seen).\nOffending RSA key in /var/lib/deploy/.ssh/known_hosts:3\nHost key verification failed.",
+      "choices": [
+        {"text": "Treat it as a possible attack until GitHub's official channels explain it", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 5}, "why": "A changed host key means either the server's key was rotated or someone sits in the middle. GitHub's blog and status page said which: the RSA key had been replaced."},
+        {"text": "Set StrictHostKeyChecking no in the CI SSH config", "verdict": "bad", "effect": {"service": 15, "time": 10, "evidence": -10, "trust": -25}, "why": "Builds go green, but you've switched off the only check that would catch a real man-in-the-middle, at the very moment a key is in question."},
+        {"text": "Delete known_hosts on every runner and accept whatever key comes", "verdict": "risky", "effect": {"service": 10, "time": 5, "evidence": -10, "trust": -10}, "why": "You trust the first key you see without checking it, and you lose every other pinned host as well."}
+      ]
+    },
+    {
+      "situation": "GitHub says its RSA private key was briefly exposed in a public repository. It replaced the key at about 05:00 UTC and published the new one. ECDSA and Ed25519 keys did not change.",
+      "evidence": "$ ssh-keygen -R github.com\n# Host github.com found: line 3\n/var/lib/deploy/.ssh/known_hosts updated.\n$ curl -sL https://api.github.com/meta | jq -r '.ssh_keys[]' | sed 's/^/github.com /' >> ~/.ssh/known_hosts\n$ ssh-keygen -lf ~/.ssh/known_hosts | grep github.com",
+      "evidence_cmd": "ssh-keygen -R github.com",
+      "choices": [
+        {"text": "Remove the old entry, add keys from GitHub's API over HTTPS, compare the fingerprint with the blog", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 10, "trust": 5}, "why": "That's GitHub's documented fix. The key comes over a channel you can verify (HTTPS), and you check the fingerprint against a second source."},
+        {"text": "ssh once by hand and type yes", "verdict": "risky", "effect": {"service": 15, "time": 10, "evidence": -10, "trust": -5}, "why": "Usually fine, but you're trusting the key the network gave you instead of one you checked."},
+        {"text": "Switch all deploys to HTTPS with a personal token", "verdict": "risky", "effect": {"service": 10, "time": -10, "evidence": 0, "trust": -10}, "why": "A rushed change to every pipeline, and one person's long-lived token becomes a shared deploy secret."}
+      ]
+    },
+    {
+      "situation": "Two runners are fixed. Where else is the old key pinned?",
+      "choices": [
+        {"text": "Search config management, runner images and base images for the old key; fix it there and redeploy", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 10, "trust": 5}, "why": "Hand fixes are lost on the next rebuild. GitHub also warned that workflows using `actions/checkout` pinned to a commit with `ssh-key` needed an update."},
+        {"text": "Fix each server by hand when it fails", "verdict": "bad", "effect": {"service": -5, "time": -15, "evidence": 0, "trust": -5}, "why": "Failures keep coming for weeks, each one a fresh puzzle for whoever is on call."},
+        {"text": "Switch all hosts to ignore RSA and use Ed25519 only, today", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": 0}, "why": "A good long-term move, but changing key types across the fleet mid-incident adds risk. Plan it for after."}
+      ]
+    },
+    {
+      "situation": "In the review someone asks: what would we do if *our* private key leaked into a public repo?",
+      "choices": [
+        {"text": "Rotate at once, publish the new fingerprint, tell users what to do, and add secret scanning to every push", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 10, "trust": 20}, "why": "GitHub had no evidence of abuse and rotated anyway, out of caution. Once a key is public you can't know who copied it."},
+        {"text": "Delete the commit, force-push and hope nobody saw it", "verdict": "bad", "effect": {"service": 0, "time": 5, "evidence": -15, "trust": -25}, "why": "Bots scrape public pushes within minutes, and forks and caches keep copies. The key is burned the moment it's pushed."},
+        {"text": "Rotate quietly and say nothing", "verdict": "risky", "effect": {"service": -5, "time": 0, "evidence": 0, "trust": -15}, "why": "Users then see a scary warning with no explanation, and some will turn off checking to make it go away."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 24 March 2023 GitHub replaced the RSA SSH host key for github.com at about 05:00 UTC, after the private key was briefly exposed in a public GitHub repository. GitHub said it had no reason to believe the key was abused and acted out of caution. Only RSA was affected: ECDSA and Ed25519 host keys, HTTPS Git and web traffic were unchanged. Clients that had pinned the old RSA key saw the host-key-changed warning. GitHub's fix was to run `ssh-keygen -R github.com` and add the new key, either from the post or from `api.github.com/meta`, then check the published fingerprint. Workflows pinning `actions/checkout` to a commit SHA with `ssh-key` needed updating.",
+    "lessons": ["A host key warning is a security signal: verify out of band, never disable checking.", "Pin known_hosts through config management so rotations are one change.", "A leaked private key is burned: rotate at once and tell users how to verify.", "Scan every push for secrets before it reaches a public repo."],
+    "commands": ["ssh-keygen -R github.com", "ssh-keygen -lf ~/.ssh/known_hosts", "curl -sL https://api.github.com/meta | jq -r '.ssh_keys[]'", "ssh -T git@github.com"]
+  },
+  "practise": {
+    "labs": ["04-ssh-basics"],
+    "handbook": [
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Leaked secret response"},
+      {"file": "37-learn-security-devsecops.md", "heading": "13. Security incident response"}
+    ],
+    "sites": [
+      {"label": "OverTheWire Bandit: an SSH wargame (free, no account)", "url": "https://overthewire.org/wargames/bandit/"}
+    ]
+  }
+}

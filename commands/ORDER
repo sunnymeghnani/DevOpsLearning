@@ -1,0 +1,18 @@
+# family order on the Command Decoder page (files not listed here follow alphabetically)
+network.md
+dns-web-tls.md
+firewall-and-intrusion.md
+processes-cpu-memory.md
+disk-and-storage.md
+services-logs-boot.md
+users-permissions-ssh.md
+packages-and-supply-chain.md
+text-and-files.md
+shell-basics.md
+more-linux-tools.md
+docker-and-containers.md
+kubernetes.md
+cloud-iac-cicd.md
+databases-backup-observability.md
+more-apps-and-services.md
+windows-and-macos.md

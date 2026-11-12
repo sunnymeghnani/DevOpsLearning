@@ -1,0 +1,167 @@
+{
+  "domain": "k8s",
+  "problems": [
+    {
+      "title": "kubectl: The connection to the server localhost:8080 was refused",
+      "area": "kubectl / kubeconfig",
+      "tool": "kubectl, kubeadm, k3s, Helm",
+      "level": "L0",
+      "context": "First command after kubeadm init, after sudo -i, on a worker node, in a CI job, or with Helm on k3s. kubectl found no kubeconfig and fell back to its built-in default of http://localhost:8080.",
+      "error_text": "The connection to the server localhost:8080 was refused - did you specify the right host or port? | couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=32s\": dial tcp 127.0.0.1:8080: connect: connection refused | Error: Kubernetes cluster unreachable: Get \"http://localhost:8080/version\"",
+      "frequency_signal": "Most-viewed topic of all time on discuss.kubernetes.io (about 842k views, 76 replies). The API-group-list variant has about 160k views. k3s issue #1126 (Helm 3 'cluster unreachable') has 46 +1 reactions.",
+      "root_causes": [
+        "No kubeconfig for this user: kubeadm writes /etc/kubernetes/admin.conf, but it was never copied to ~/.kube/config, or you are now root or another user.",
+        "kubectl run on a worker node, which has no admin kubeconfig.",
+        "KUBECONFIG not exported in the shell, under sudo, in cron or in the CI job.",
+        "k3s and RKE2 write a root-only kubeconfig to /etc/rancher/k3s/k3s.yaml or /etc/rancher/rke2/rke2.yaml. Helm and a separately installed kubectl don't look there."
+      ],
+      "diagnosis": [
+        "kubectl config view --minify    # empty output means no kubeconfig was loaded",
+        "echo $KUBECONFIG; ls -l ~/.kube/config",
+        "sudo ls -l /etc/kubernetes/admin.conf /etc/rancher/k3s/k3s.yaml /etc/rancher/rke2/rke2.yaml",
+        "kubectl get nodes -v=6    # prints which config file and server URL it uses"
+      ],
+      "fix": [
+        "kubeadm: mkdir -p $HOME/.kube && sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && sudo chown $(id -u):$(id -g) $HOME/.kube/config",
+        "k3s: mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown $USER: ~/.kube/config && chmod 600 ~/.kube/config. Use --write-kubeconfig-mode 644 only on a lab box.",
+        "For remote use, copy the file and change server: https://127.0.0.1:6443 to the node or VIP address.",
+        "CI: store the kubeconfig as a file-type CI variable and export KUBECONFIG in the job."
+      ],
+      "prevention": "Give each admin their own kubeconfig instead of sharing admin.conf, name contexts clearly, and show the current context in the shell prompt (kube-ps1 or kubectx).",
+      "sources": [
+        {"title": "discuss.kubernetes.io: The connection to the server localhost:8080 was refused", "url": "https://discuss.kubernetes.io/t/the-connection-to-the-server-localhost-8080-was-refused-did-you-specify-the-right-host-or-port/1464", "type": "forum", "verified": true},
+        {"title": "discuss.kubernetes.io: Couldn't get current server API group list (localhost:8080)", "url": "https://discuss.kubernetes.io/t/couldnt-get-current-server-api-group-list-get-http-localhost-8080-api-timeout-32s-dial-tcp-127-0-0-1-connect-connection-refused/25471", "type": "forum", "verified": true},
+        {"title": "k3s #1126: Error: Kubernetes cluster unreachable with helm 3.0", "url": "https://github.com/k3s-io/k3s/issues/1126", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22connection+to+the+server+localhost%3A8080+was+refused%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "kubeadm init fails or the control plane keeps restarting: containerd has CRI disabled or the wrong cgroup driver",
+      "area": "containerd / kubeadm",
+      "tool": "containerd, kubeadm, kubelet",
+      "level": "L1",
+      "context": "Fresh Ubuntu 22.04/24.04 node with containerd.io from Docker's apt repo or Ubuntu's containerd package. The packaged /etc/containerd/config.toml is written for Docker, not for Kubernetes.",
+      "error_text": "[ERROR CRI]: container runtime is not running: ... rpc error: code = Unimplemented desc = unknown service runtime.v1.RuntimeService | later: kube-apiserver, etcd and the scheduler restart every few minutes, and 'The connection to the server <IP>:6443 was refused' comes and goes",
+      "frequency_signal": "Classic in CKA labs and homelabs. The Kubernetes container-runtimes page warns that containerd installed from a package may ship with the CRI plugin disabled.",
+      "root_causes": [
+        "The packaged config.toml contains disabled_plugins = [\"cri\"], so kubeadm and kubelet cannot talk CRI to containerd.",
+        "kubelet uses the systemd cgroup driver (the kubeadm default since v1.22) while containerd runs runc with SystemdCgroup = false (cgroupfs). On cgroup v2 hosts (Ubuntu 22.04+) this leads to sandbox restarts and a flapping control plane.",
+        "Old cgroup v1 hosts: according to the v1.35+ release notes, recent kubelets refuse to start on cgroup v1 by default (failCgroupV1)."
+      ],
+      "diagnosis": [
+        "sudo crictl --runtime-endpoint unix:///run/containerd/containerd.sock info | head",
+        "grep -nE 'disabled_plugins|SystemdCgroup' /etc/containerd/config.toml",
+        "stat -fc %T /sys/fs/cgroup    # cgroup2fs means cgroup v2",
+        "sudo journalctl -u kubelet -b --no-pager | grep -iE 'cgroup|sandbox' | tail -20",
+        "sudo crictl ps -a | grep -E 'kube-apiserver|etcd'    # a high attempt count means flapping"
+      ],
+      "fix": [
+        "sudo mkdir -p /etc/containerd && containerd config default | sudo tee /etc/containerd/config.toml",
+        "Set SystemdCgroup = true in the runc options of the file you just generated. containerd 1.7 uses config version 2 (plugins.\"io.containerd.grpc.v1.cri\"...runtimes.runc.options). containerd 2.x uses version 3 with different plugin names, so don't paste old snippets into a v3 file.",
+        "sudo systemctl restart containerd && sudo systemctl restart kubelet",
+        "If kubeadm init already half-ran: sudo kubeadm reset -f, then run init again."
+      ],
+      "prevention": "Template config.toml with Ansible, pin the containerd version, and keep kubelet cgroupDriver: systemd. Plan the move to containerd 2.x now: the current Kubernetes docs say kubelet's fallback for containerd 1.x (which lacks the RuntimeConfig RPC) is dropped in v1.38.",
+      "sources": [
+        {"title": "Kubernetes docs: Container Runtimes (cgroup drivers, containerd CRI plugin note)", "url": "https://kubernetes.io/docs/setup/production-environment/container-runtimes/", "type": "docs", "verified": true},
+        {"title": "Kubernetes docs: Troubleshooting kubeadm", "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22unknown+service+runtime.v1.RuntimeService%22", "type": "search", "verified": false},
+        {"title": "Reddit r/kubernetes search", "url": "https://www.reddit.com/r/kubernetes/search/?q=SystemdCgroup+apiserver+restarting&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Node NotReady and CoreDNS Pending: cni plugin not initialized",
+      "area": "CNI / kubeadm",
+      "tool": "kubelet, Flannel, Calico, Cilium",
+      "level": "L1",
+      "context": "Right after kubeadm init or join, or after upgrading or removing a CNI.",
+      "error_text": "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized | failed to find plugin \"flannel\" in path [/opt/cni/bin] | coredns-xxxx 0/1 Pending",
+      "frequency_signal": "kubeadm issue #1031 'runtime network not ready' has 72 comments. The kubeadm troubleshooting docs say CoreDNS stays Pending until a network add-on is installed.",
+      "root_causes": [
+        "No CNI installed yet. kubeadm doesn't pick one, so CoreDNS stays Pending by design.",
+        "The CNI DaemonSet pod is failing on that node: image pull, RBAC, a pod CIDR mismatch or a missing kernel module.",
+        "Binaries missing from /opt/cni/bin (flannel, bridge, loopback, portmap), or leftover config from a previous CNI in /etc/cni/net.d."
+      ],
+      "diagnosis": [
+        "kubectl get nodes -o wide; kubectl describe node NODE | grep -A6 Conditions",
+        "kubectl get pods -A -o wide | grep -Ei 'flannel|calico|cilium|coredns'    # Flannel runs in kube-flannel, operator-installed Calico in calico-system",
+        "ls /etc/cni/net.d /opt/cni/bin",
+        "sudo journalctl -u kubelet -b --no-pager | grep -i cni | tail -20"
+      ],
+      "fix": [
+        "Install exactly one CNI whose pod CIDR matches kubeadm init --pod-network-cidr. Flannel's default is 10.244.0.0/16.",
+        "If binaries are missing, install the CNI plugins into /opt/cni/bin (Ubuntu package containernetworking-plugins, or the upstream release tarball).",
+        "When switching CNIs: delete the old DaemonSet, remove stale /etc/cni/net.d/* files on every node, then restart containerd and kubelet or reboot."
+      ],
+      "prevention": "Choose pod and service CIDRs before kubeadm init, write them down, and install the CNI as part of the bootstrap playbook.",
+      "sources": [
+        {"title": "kubeadm #1031: runtime network not ready: NetworkReady=false", "url": "https://github.com/kubernetes/kubeadm/issues/1031", "type": "github-issue", "verified": true},
+        {"title": "Kubernetes docs: Troubleshooting kubeadm (coredns Pending, network add-on)", "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22cni+plugin+not+initialized%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "The connection to the server <IP>:6443 was refused: the API server is down after a reboot or a change",
+      "area": "kubeadm / control plane",
+      "tool": "kubelet, kube-apiserver static pod, etcd, containerd",
+      "level": "L2",
+      "context": "The cluster worked yesterday. After a reboot, power cut, OS update, full disk or IP change, kubectl is refused on 6443. On a homelab with one control-plane node, everything stops.",
+      "error_text": "The connection to the server 192.0.2.10:6443 was refused - did you specify the right host or port?",
+      "frequency_signal": "Second most-viewed topic on discuss.kubernetes.io (about 592k views, 81 replies). kubeadm issue #1026 'kubelet won't restart after reboot' has 67 comments.",
+      "root_causes": [
+        "kubelet isn't running, and it is what starts the static pods. Typical reasons: swap turned back on by /etc/fstab, containerd down, or a broken kubelet config.",
+        "etcd won't start (disk full, corrupt data, slow disk), so the API server crashes too.",
+        "Control-plane certificates expired after about a year, or the node IP changed (DHCP or a netplan edit), so the advertise address and certificates no longer match.",
+        "A cgroup driver mismatch makes the static pods restart over and over."
+      ],
+      "diagnosis": [
+        "sudo systemctl status kubelet containerd --no-pager",
+        "sudo journalctl -u kubelet -b -n 100 --no-pager",
+        "sudo crictl ps -a | grep -E 'kube-apiserver|etcd'; sudo crictl logs CONTAINER_ID",
+        "sudo ss -ltnp | grep 6443; swapon --show; df -h /var/lib/etcd; ip -4 addr",
+        "sudo kubeadm certs check-expiration"
+      ],
+      "fix": [
+        "Swap: sudo swapoff -a and comment out the swap line in /etc/fstab, unless you have configured NodeSwap on purpose.",
+        "Start the runtime before kubelet: sudo systemctl restart containerd kubelet",
+        "Expired certificates: sudo kubeadm certs renew all, restart the control-plane static pods, then copy /etc/kubernetes/admin.conf to ~/.kube/config again.",
+        "Changed IP: give control-plane nodes static IPs (netplan or a DHCP reservation) and use a DNS name or VIP as controlPlaneEndpoint. Otherwise the certificates and manifests have to be regenerated."
+      ],
+      "prevention": "Use static IPs or DHCP reservations for nodes, set controlPlaneEndpoint to a DNS name from day one, alert on certificate expiry and disk usage, and write down a shutdown and startup order (drain, stop kubelet, then power off).",
+      "sources": [
+        {"title": "discuss.kubernetes.io: The connection to the server <host>:6443 was refused", "url": "https://discuss.kubernetes.io/t/the-connection-to-the-server-host-6443-was-refused-did-you-specify-the-right-host-or-port/552", "type": "forum", "verified": true},
+        {"title": "kubeadm #1026: kubelet won't restart after reboot - connection refused", "url": "https://github.com/kubernetes/kubeadm/issues/1026", "type": "github-issue", "verified": true},
+        {"title": "Kubernetes docs: Troubleshooting kubeadm", "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/", "type": "docs", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=%22connection+to+the+server%22+6443+refused", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Nodes register with the wrong IP (multi-NIC servers, Vagrant 10.0.2.15): kubectl logs/exec fail and cross-node traffic breaks",
+      "area": "kubeadm / node networking",
+      "tool": "kubelet, Flannel, Calico",
+      "level": "L2",
+      "context": "Vagrant/VirtualBox labs, where every VM has the same NAT address 10.0.2.15 on eth0, and on-prem servers with separate management, storage or backup NICs.",
+      "error_text": "kubectl get nodes -o wide shows the same INTERNAL-IP on every node | Error from server: error dialing backend: dial tcp 10.0.2.15:10250: connect: connection refused | pods on different nodes cannot reach each other",
+      "frequency_signal": "The kubeadm troubleshooting docs give it two sections: the default NIC flannel picks under Vagrant, and a non-public IP being used for containers.",
+      "root_causes": [
+        "kubelet takes the IP of the interface that holds the default route, which may not be the cluster network.",
+        "Flannel and Calico autodetect the first interface and build their tunnels over the wrong network."
+      ],
+      "diagnosis": [
+        "kubectl get nodes -o wide",
+        "ip -4 route get 1.1.1.1; ip -br addr",
+        "kubectl -n kube-flannel logs ds/kube-flannel-ds | grep -i 'using interface'"
+      ],
+      "fix": [
+        "Set the kubelet node IP on Ubuntu: echo 'KUBELET_EXTRA_ARGS=--node-ip=192.0.2.21' | sudo tee /etc/default/kubelet && sudo systemctl restart kubelet",
+        "Pass kubeadm init --apiserver-advertise-address=CLUSTER_NIC_IP, and set node-ip under nodeRegistration.kubeletExtraArgs in the kubeadm config file.",
+        "Flannel: add --iface=enp0s8 (or --iface-regex) to the kube-flannel container args. Calico: set nodeAddressAutodetectionV4 (see the cross-node traffic problem)."
+      ],
+      "prevention": "Keep node-ip in the kubeadm config you store in Git. In Vagrantfiles, give every VM a private_network IP and template node-ip from it.",
+      "sources": [
+        {"title": "Kubernetes docs: Troubleshooting kubeadm (Default NIC with flannel in Vagrant; Non-public IP used for containers)", "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=kubernetes+node+internal+ip+10.0.2.15+vagrant", "type": "search", "verified": false},
+        {"title": "Reddit r/kubernetes search", "url": "https://www.reddit.com/r/kubernetes/search/?q=node-ip+wrong+interface&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    }
+    __NEXT_PROBLEMS__

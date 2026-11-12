@@ -1,0 +1,70 @@
+{
+  "id": "gitlab-2019-dind-tls-default",
+  "title": "Nobody touched the pipeline, and every build fails",
+  "level": "L1",
+  "track": "automation",
+  "topics": ["ci-debugging", "gitlab-ci-advanced", "docker-basics"],
+  "minutes": 6,
+  "role": "You maintain the self-hosted GitLab runners that build every team's Docker images.",
+  "source": {
+    "label": "GitLab: update on Docker-in-Docker with Docker 19.03 (31 July 2019)",
+    "url": "https://about.gitlab.com/blog/docker-in-docker-with-docker-19-dot-03/",
+    "org": "GitLab",
+    "date": "2019-07-31",
+    "read_on": "2026-11-07"
+  },
+  "brief": "Late July 2019. Since this morning every `docker build` job on your runners fails within seconds. The `.gitlab-ci.yml` files haven't changed in weeks. Developers are pinging you one by one in chat.",
+  "steps": [
+    {
+      "situation": "The job log ends the same way in every project.",
+      "evidence": "$ docker build -t registry.example.com/shop/api:$CI_COMMIT_SHORT_SHA .\ndocker: Cannot connect to the Docker daemon at tcp://docker:2375.\nIs the docker daemon running?.\nERROR: Job failed: exit code 1",
+      "choices": [
+        {"text": "Compare the last green job with the first red one: images, versions, runner", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "If your code didn't change, something underneath did. The `docker:dind` service image is untagged, so it now pulls a new major version."},
+        {"text": "Restart the runner service", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": 0}, "why": "Running jobs are killed, and the next job pulls the same new image and fails the same way."},
+        {"text": "Retry the failed jobs a few times", "verdict": "bad", "effect": {"service": 0, "time": -15, "evidence": 0, "trust": -5}, "why": "The failure is the same every time, so retries only fill the queue and the chat."}
+      ]
+    },
+    {
+      "situation": "The `docker:dind` service log in a failed job shows what changed.",
+      "evidence": "Using docker image docker:dind (Docker 19.03.0)\n... Generating TLS certificates in /certs\n... API listen on [::]:2376\n... API listen on /var/run/docker.sock",
+      "choices": [
+        {"text": "Read it: 19.03 dind now makes TLS certificates and listens with TLS, not on plain 2375", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 15, "trust": 0}, "why": "From 19.03 the image turns TLS on by default. Your jobs still talk plain TCP to port 2375, where nothing listens."},
+        {"text": "Blame the network team: port 2375 is being blocked", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -10, "trust": -15}, "why": "The service and the job share a network, and the log says the daemon moved. Read the evidence before opening a ticket against another team."},
+        {"text": "Set privileged = false to see if it helps", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -5, "trust": 0}, "why": "DinD needs privileged mode. You'd add a second failure on top of the first."}
+      ]
+    },
+    {
+      "situation": "Forty teams are blocked. You want builds green now, then the proper fix.",
+      "choices": [
+        {"text": "Pin the previous dind version in a shared CI template, tell the teams, then plan the TLS change", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 0, "trust": 10}, "why": "Pinning puts back the image that worked, a quick change you can undo. GitLab itself advises pinning a version instead of an untagged `docker:dind`."},
+        {"text": "Set DOCKER_TLS_CERTDIR to an empty string everywhere", "verdict": "good", "effect": {"service": 20, "time": 10, "evidence": 0, "trust": 0}, "why": "GitLab lists it as a valid fix when you can't change the runner's volumes. It gets builds going, but the daemon is back on plain TCP."},
+        {"text": "Mount the host's docker.sock into every job instead", "verdict": "risky", "effect": {"service": 15, "time": 5, "evidence": 0, "trust": -20}, "why": "Builds pass, but any job can now control the host's Docker, which is root on the runner. That's a security change nobody agreed to."}
+      ]
+    },
+    {
+      "situation": "Builds are green on the pinned version. Now do the TLS fix and stop this class of surprise.",
+      "evidence": "# config.toml on the runner\n[runners.docker]\n  privileged = true\n  volumes = [\"/certs/client\", \"/cache\"]\n\n# .gitlab-ci.yml\nvariables:\n  DOCKER_TLS_CERTDIR: \"/certs\"",
+      "choices": [
+        {"text": "Roll out the /certs/client volume and DOCKER_TLS_CERTDIR=/certs, keep versions pinned, upgrade on purpose", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 10}, "why": "That's GitLab's TLS setup: the dind service writes client certificates to the shared volume and the job uses them. Pinned images change when you decide, through a tested merge request."},
+        {"text": "Go back to untagged images once things work", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": 0, "trust": -5}, "why": "Then the next major release breaks every pipeline on someone else's schedule, just like today."},
+        {"text": "Move builds to a laptop runner until it's sorted", "verdict": "risky", "effect": {"service": 5, "time": -10, "evidence": 0, "trust": -10}, "why": "A single unmanaged machine becomes your release path, with secrets on it."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "Docker 19.03 changed the `docker:dind` image to generate TLS certificates and require them. GitLab jobs that used the untagged `docker:dind` service image started failing with *Cannot connect to the Docker daemon at tcp://docker:2375*. On 31 July 2019 GitLab published two fixes: configure TLS by setting `DOCKER_TLS_CERTDIR: \"/certs\"` and adding a `/certs/client` volume in the runner's `config.toml`, or turn TLS off with `DOCKER_TLS_CERTDIR: \"\"`. GitLab.com shared runners were already set up for this. GitLab also recommended pinning image versions such as `docker:19.03.0-dind` so that a new release doesn't break jobs without warning.",
+    "lessons": ["When unchanged code fails, compare image versions first.", "Pin CI images and service images; upgrade them through a merge request.", "Read the service container's log, not just the job's error line.", "A quick rollback first, then the proper fix, with a note to every team."],
+    "commands": ["docker version", "docker info", "gitlab-runner verify", "docker logs <dind-container>"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "47-cicd-gitlab-jenkins-actions-argocd.md", "heading": "6.1 Cannot connect to the Docker daemon in DinD"},
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Building images: DinD, kaniko, buildah"}
+    ],
+    "sites": [
+      {"label": "GitLab CI/CD tutorials (free gitlab.com account)", "url": "https://docs.gitlab.com/ci/quick_start/"},
+      {"label": "KodeKloud CI/CD playground (free account)", "url": "https://kodekloud.com/playgrounds/playground-ci-cd"}
+    ]
+  }
+}

@@ -1,0 +1,81 @@
+{
+ "id": "l0-http-curl",
+ "title": "Too many redirects, then an untrusted certificate",
+ "level": "L0",
+ "map_node": "http-curl",
+ "path": "fresher",
+ "order": 11,
+ "minutes": 30,
+ "difficulty": "easy",
+ "source": {
+  "title": "ERR_TOO_MANY_REDIRECTS after adding SSL using LE (Let's Encrypt Community)",
+  "url": "https://community.letsencrypt.org/t/err-too-many-redirects-after-adding-ssl-using-le/81291",
+  "note": "adapted"
+ },
+ "brief": "**PAGE 11:05 · shop.example.com · new web VM**\n\nThe new web VM was provisioned with a script this morning. Three reports so far:\n\n- Browsers say **ERR_TOO_MANY_REDIRECTS** on every shop page.\n- A colleague ran `curl http://127.0.0.1/` on the box, got \"Welcome to nginx!\" and concluded the shop isn't deployed.\n- The health check `curl -fsS https://shop.example.com/health` fails with `curl: (60) SSL certificate problem`. Someone suggested adding `-k`.\n\nThe certificate comes from our internal CA (`/etc/ssl/example-ca/`). `shop.example.com` resolves to this box. Use curl to see what really happens, then fix the server and the trust, not the client flags.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Follow the redirects",
+   "text": "First explain the \"Welcome to nginx\" report: one IP serves several sites, and nginx picks the server block from one request header. Compare `curl -sI http://127.0.0.1/` with `curl -sI http://shop.example.com/`.\n\nThen follow the chain: `curl -skIL --max-redirs 5 https://shop.example.com/docs/`. Find the config line that redirects HTTPS to itself and fix it so HTTPS serves files (and 404 for missing ones). Keep the single HTTP→HTTPS redirect. Done when HTTPS pages answer 200 with no redirect.",
+   "points": 50,
+   "hints": [
+    "`curl -v` shows the `Host:` header curl sends. Every HTTPS URL answers 301 with `Location: https://shop.example.com/`, which then redirects to itself. `sudo nginx -T | grep -n try_files`.",
+    "`try_files / =404;` checks for a directory named `/` and redirects. Use `try_files $uri $uri/ =404;` in `/etc/nginx/sites-available/shop`, then `sudo nginx -t && sudo systemctl reload nginx`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which request header decides which nginx server block answers?",
+     "format": "header name",
+     "answer_sha256": "4740ae6347b0172c01254ff55bae5aff5199f4446e7f6d643d40185b3f475145"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which status code did every HTTPS page return before your fix?",
+     "format": "3 digits",
+     "answer_sha256": "c3ea99f86b2f8a74ef4145bb245155ff5f91cd856f287523481c15a1959d5fd1"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "HTTPS pages answer 200/404 without redirects; HTTP redirects once to HTTPS",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Trust the internal CA",
+   "text": "Run the health check without `-k` and read the error. `curl -v` shows the certificate's issuer. `-k` turns off verification, so it would also accept an attacker's certificate. It's never the fix.\n\nThe server certificate is fine: it's signed by our internal CA, which this machine doesn't know yet. Add the CA to the **system** trust store, so curl and every other program on the box verify it. Done when `curl https://shop.example.com/health` prints `ok` without `-k`.",
+   "points": 50,
+   "hints": [
+    "`curl -v https://shop.example.com/health 2>&1 | grep -iE 'issuer|SSL certificate'`, and `openssl x509 -in /etc/ssl/example-ca/ca.crt -noout -subject`.",
+    "Ubuntu reads extra CAs from `/usr/local/share/ca-certificates/*.crt`: `sudo cp /etc/ssl/example-ca/ca.crt /usr/local/share/ca-certificates/example-internal-ca.crt && sudo update-ca-certificates`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which curl option skips certificate verification (and must not be the fix)?",
+     "format": "-x",
+     "answer_sha256": "2491456786e2f980156bb6d6932d5f25deea5b8b234c1a89766ff9280ab1f280"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which command rebuilds Ubuntu's CA bundle after you add a .crt file?",
+     "format": "command name",
+     "answer_sha256": "bb55cc761331b5476e50d548071f6094d2d50d4f8bc0efc6c2f712759bf1d38d"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the system trust store contains the internal CA; curl verifies the site without -k",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. The provisioning script wrote `try_files / =404;` in the HTTPS server block. For every URL nginx found the \"directory\" `/` and sent a **301** to `https://shop.example.com/`, which redirected to itself: a loop.\n2. The certificate is signed by \"Example Internal CA\", which was not in the system trust store, so verification failed with `unable to get local issuer certificate`.\n3. \"Welcome to nginx\" was not a bug: `curl http://127.0.0.1/` sends `Host: 127.0.0.1`, which matches no `server_name`, so the **default server** answered.\n\n### Task 1\n```bash\ncurl -sI http://127.0.0.1/ | head -1                     # 200, default site\ncurl -sI http://shop.example.com/ | grep -i location     # https://shop.example.com/\ncurl -skIL --max-redirs 5 https://shop.example.com/docs/ # 301 -> https://shop.example.com/ -> 301 -> ... Maximum (5) redirects followed\nsudo nginx -T | grep -n 'try_files'\nsudo sed -i 's|try_files / =404;|try_files $uri $uri/ =404;|' /etc/nginx/sites-available/shop\nsudo nginx -t && sudo systemctl reload nginx\ncurl -sk -o /dev/null -w '%{http_code} %{num_redirects}\\n' -L https://shop.example.com/docs/   # 200 0\n```\n*Why:* `-I` shows only headers, `-L` follows `Location`, `-w` prints facts such as `%{http_code}` and `%{redirect_url}`. A redirect whose target is the same URL is always a loop. A browser hides this; curl shows every hop.\n\n### Task 2\n```bash\ncurl -sS https://shop.example.com/health                # curl: (60) ... unable to get local issuer certificate\ncurl -v https://shop.example.com/health 2>&1 | grep -i issuer   # issuer: O=Example Org; CN=Example Internal CA\nsudo cp /etc/ssl/example-ca/ca.crt /usr/local/share/ca-certificates/example-internal-ca.crt\nsudo update-ca-certificates                             # 1 added\ncurl -sS https://shop.example.com/health                # ok\n```\n*Why:* the file must end in `.crt` in that directory. `update-ca-certificates` rebuilds `/etc/ssl/certs/ca-certificates.crt`, which curl, wget, Python, apt and most other tools use. Some runtimes keep their own store (Java keystore, Node's `NODE_EXTRA_CA_CERTS`), so check them too.\n\n**Source (adapted):** [ERR_TOO_MANY_REDIRECTS after adding SSL using LE](https://community.letsencrypt.org/t/err-too-many-redirects-after-adding-ssl-using-le/81291): the port-80 redirect was fine. The loop came from `try_files / =404;` in the 443 block, which made https redirect to https. Changing it to `try_files $uri $uri/ =404;` fixed it."
+}

@@ -1,0 +1,1417 @@
+{
+  "domain": "data",
+  "problems": [
+    {
+      "title": "Changed POSTGRES_PASSWORD (or MYSQL_ROOT_PASSWORD) in compose, but login still fails",
+      "area": "Databases in Docker/Dokploy",
+      "tool": "PostgreSQL / MySQL / MariaDB official Docker images",
+      "level": "L1 Operator",
+      "context": "A database container is redeployed with a new password in docker-compose or the Dokploy UI. The app or psql now fails, although the env var clearly shows the new value.",
+      "error_text": "FATAL:  password authentication failed for user \"postgres\"",
+      "frequency_signal": "Classic. The docker-library/postgres tracker has several highly reacted issues on it, and the Docker forums and app projects (Chatwoot, Outline) each have their own threads.",
+      "root_causes": [
+        "The image entrypoint only reads POSTGRES_PASSWORD/POSTGRES_USER/POSTGRES_DB (and MYSQL_*/MARIADB_*/MONGO_INITDB_*) when the data directory is empty, at first initialisation. A persisted volume keeps the old password.",
+        "The app connects to a different instance than you think: an old container, a stale named volume reused under the same project name, or the host's own PostgreSQL on 5432.",
+        "Special characters in the password break the connection URL unless they are URL-encoded."
+      ],
+      "diagnosis": [
+        "docker inspect -f '{{range .Mounts}}{{.Name}} {{.Source}} -> {{.Destination}}{{\"\\n\"}}{{end}}' CONTAINER",
+        "docker volume ls | grep PROJECT",
+        "docker logs CONTAINER 2>&1 | grep -iE 'skipping initialization|initdb'",
+        "sudo ss -ltnp 'sport = :5432'   # is another postgres on the host?"
+      ],
+      "fix": [
+        "Keep the data and change the password inside the DB: docker exec -it CONTAINER psql -U postgres -c \"ALTER USER postgres WITH PASSWORD 'NEW';\" (MySQL: ALTER USER 'root'@'%' IDENTIFIED BY 'NEW';)",
+        "Then update the secret in compose/Dokploy so the two match again.",
+        "Only for throwaway data: remove the volume (docker compose down -v) so the entrypoint re-initialises with the new env vars.",
+        "URL-encode special characters in DATABASE_URL (for example @ becomes %40)."
+      ],
+      "prevention": "Treat DB init env vars as first-boot only. Rotate passwords with SQL and a runbook, and keep secrets in one place (Dokploy env or a secret manager).",
+      "sources": [
+        {"title": "docker-library/postgres issues sorted by reactions (#679, #580 password/auth issues)", "url": "https://github.com/docker-library/postgres/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc", "type": "github-listing", "verified": true},
+        {"title": "Docker Community Forums: Error password authentication failed for user postgres", "url": "https://forums.docker.com/t/error-password-authentication-failed-for-user-postgres/119648", "type": "forum", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=docker+postgres+%22password+authentication+failed%22+POSTGRES_PASSWORD+volume", "type": "search", "verified": false},
+        {"title": "Reddit r/docker search", "url": "https://www.reddit.com/r/docker/search/?q=postgres+password+authentication+failed+volume&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "postgres:18 image ignores or rejects the volume mounted at /var/lib/postgresql/data",
+      "area": "Databases in Docker/Dokploy",
+      "tool": "PostgreSQL 18 official Docker image",
+      "level": "L1 Operator",
+      "context": "A compose file or Dokploy template that worked for postgres:16/17 is bumped to postgres:18 (or :latest). The container exits, or it starts with an empty database and data seems to vanish after a redeploy.",
+      "error_text": "there appears to be PostgreSQL data in: /var/lib/postgresql/data (unused mount/volume)",
+      "frequency_signal": "Became very common after PostgreSQL 18 shipped (Sep 2025). Many downstream projects filed issues and several blog posts cover it (docker-library/postgres#1370).",
+      "root_causes": [
+        "From 18 the image sets PGDATA=/var/lib/postgresql/18/docker and expects the volume at /var/lib/postgresql, so pg_upgrade --link can keep old and new clusters side by side.",
+        "A volume at the old path is now a sibling of PGDATA, so data goes to an anonymous volume and is lost on recreate. With old data present, the entrypoint refuses to start.",
+        "An old 17.x data directory cannot be read by 18 anyway, so this is also a hidden major upgrade."
+      ],
+      "diagnosis": [
+        "docker logs CONTAINER 2>&1 | head -30",
+        "docker exec CONTAINER sh -c 'echo $PGDATA; ls -la /var/lib/postgresql'",
+        "docker inspect -f '{{json .Mounts}}' CONTAINER   # look for an anonymous volume"
+      ],
+      "fix": [
+        "New 18 deployments: mount the volume at /var/lib/postgresql (volumes: - pgdata:/var/lib/postgresql).",
+        "Existing 17 data: stay on postgres:17 until you upgrade on purpose (pg_dumpall into a fresh 18 volume, or pg_upgrade).",
+        "If you must keep the old layout, set PGDATA=/var/lib/postgresql/data explicitly and mount there, but document it."
+      ],
+      "prevention": "Pin major tags (postgres:17-bookworm, never :latest), read image release notes before bumping, and test the bump on a copy of the volume.",
+      "sources": [
+        {"title": "docker-library/postgres#1370: mounting at /var/lib/postgresql/data fails on 18", "url": "https://github.com/docker-library/postgres/issues/1370", "type": "github-issue", "verified": true},
+        {"title": "PostgreSQL 18 won't take a volume at /var/lib/postgresql/data", "url": "https://basantbhattarai.com.np/writing/postgresql-18-docker-volume-path-change/", "type": "blog", "verified": true},
+        {"title": "Postgres 18 Docker silently ignores your named volume", "url": "https://rdiachenko.com/posts/databases/postgresql/postgres-18-docker-silently-ignores-your-named-volume/", "type": "blog", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=postgres+18+volume+%2Fvar%2Flib%2Fpostgresql%2Fdata&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Image tag bumped to a new PostgreSQL major: database files are incompatible with server",
+      "area": "Databases in Docker/Dokploy",
+      "tool": "PostgreSQL (Docker), pg_upgrade, pg_dumpall",
+      "level": "L2 Troubleshooter",
+      "context": "Someone changes postgres:15 to postgres:16 (or uses :latest and a redeploy pulls a new major). The container crash-loops. After a successful upgrade, queries are suddenly slow.",
+      "error_text": "FATAL:  database files are incompatible with server / DETAIL:  The data directory was initialized by PostgreSQL version 15, which is not compatible with this version 16.x",
+      "frequency_signal": "The single most-reacted issue in docker-library/postgres (#37, 140+ reactions, open for years). CircleCI's April 2025 incident came from stale planner statistics after a major upgrade.",
+      "root_causes": [
+        "The on-disk format changes between majors. The new binaries cannot open the old cluster, and the image does not run pg_upgrade for you.",
+        "pg_upgrade needs both the old and the new binaries, which a single-version image does not have.",
+        "After pg_upgrade, optimizer statistics are missing (before 18) until ANALYZE runs, so the planner picks bad plans."
+      ],
+      "diagnosis": [
+        "docker logs CONTAINER 2>&1 | grep -A2 incompatible",
+        "docker run --rm -v VOLUME:/data alpine cat /data/PG_VERSION",
+        "After the upgrade: SELECT relname, last_analyze, last_autoanalyze FROM pg_stat_user_tables ORDER BY 2 NULLS FIRST LIMIT 20;"
+      ],
+      "fix": [
+        "Roll the tag back to the old major to restore service.",
+        "Small or medium DB: docker exec OLD pg_dumpall -U postgres > all.sql, start the new major on a NEW volume, then psql -U postgres -f all.sql.",
+        "Large DB: pg_upgrade with both versions (tianon/postgres-upgrade or pgautoupgrade images), using --link when both dirs are on the same filesystem. Take a backup first.",
+        "Right after: vacuumdb -U postgres --all --analyze-in-stages, then check slow queries."
+      ],
+      "prevention": "Pin the major version, make upgrades a planned change with a tested rollback, and rehearse on a restored copy.",
+      "sources": [
+        {"title": "docker-library/postgres#37: Upgrading between major versions?", "url": "https://github.com/docker-library/postgres/issues/37", "type": "github-issue", "verified": true},
+        {"title": "CircleCI incident report (stale statistics after major upgrade), via Dan Luu's list", "url": "https://discuss.circleci.com/t/post-incident-report-april-4-2025-delays-in-starting-workflows/53113", "type": "postmortem", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22database+files+are+incompatible+with+server%22+docker", "type": "search", "verified": false},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=postgres+major+version+upgrade+docker&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Postgres in a container: could not resize shared memory segment ... No space left on device",
+      "area": "Databases in Docker/Dokploy/Kubernetes",
+      "tool": "PostgreSQL, Docker /dev/shm",
+      "level": "L2 Troubleshooter",
+      "context": "Big queries, parallel queries, index builds or analytics jobs fail randomly in a Postgres container, although the disk has plenty of space.",
+      "error_text": "ERROR:  could not resize shared memory segment \"/PostgreSQL.1234\" to 8388608 bytes: No space left on device",
+      "frequency_signal": "Recurring across docker-library/postgres#416, Nextcloud AIO, TimescaleDB and the pgsql mailing list. A Dokploy feature request (#3975) asks for SHM size on database services.",
+      "root_causes": [
+        "Docker gives each container a 64 MB /dev/shm by default. PostgreSQL's dynamic shared memory (parallel workers, hash joins) lives there.",
+        "Kubernetes pods have the same small /dev/shm unless you mount an emptyDir with medium: Memory.",
+        "It is not a disk problem, so df on the host looks fine."
+      ],
+      "diagnosis": [
+        "docker exec CONTAINER df -h /dev/shm",
+        "docker logs CONTAINER 2>&1 | grep -i 'shared memory segment'",
+        "psql -c 'SHOW dynamic_shared_memory_type; SHOW max_parallel_workers_per_gather;'"
+      ],
+      "fix": [
+        "Compose: shm_size: 256mb (or 1gb) on the db service, then recreate it.",
+        "docker run: --shm-size=256m. Daemon-wide: \"default-shm-size\": \"256M\" in /etc/docker/daemon.json.",
+        "Swarm/Dokploy services: mount a tmpfs at /dev/shm with a size limit (Dokploy advanced volume/mount settings), as Swarm ignores shm_size in older Docker versions.",
+        "Kubernetes: volume emptyDir {medium: Memory, sizeLimit: 1Gi} mounted at /dev/shm. It counts against the pod memory limit."
+      ],
+      "prevention": "Set shm_size in every Postgres template and keep it under the container memory limit.",
+      "sources": [
+        {"title": "docker-library/postgres#416: Hit by size limit of /dev/shm", "url": "https://github.com/docker-library/postgres/issues/416", "type": "github-issue", "verified": true},
+        {"title": "Dokploy#3975: Add SHM size configuration for database services", "url": "https://github.com/Dokploy/dokploy/issues/3975", "type": "github-issue", "verified": true},
+        {"title": "pgsql mailing list: could not resize shared memory segment", "url": "https://www.postgresql.org/message-id/20191216215314.qvrtgxaz4m755geq%40development", "type": "mailing-list", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22could+not+resize+shared+memory+segment%22+docker", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Postgres container cannot initialise its data directory on the mounted storage (ownership, NFS, lost+found)",
+      "area": "Databases in Docker/Kubernetes storage",
+      "tool": "PostgreSQL image, NFS, Kubernetes PVC",
+      "level": "L1 Operator",
+      "context": "The data directory is a bind mount, an NFS share or a fresh Kubernetes PVC (block volume formatted ext4). The container exits on its first start.",
+      "error_text": "chown: changing ownership of '/var/lib/postgresql/data': Operation not permitted | initdb: error: directory \"/var/lib/postgresql/data\" exists but is not empty | FATAL: data directory \"/var/lib/postgresql/data\" has wrong ownership",
+      "frequency_signal": "Three of the most-reacted docker-library/postgres issues (#116, #361, #435) plus #792 for NFS PVCs, and a long-running thread on discuss.kubernetes.io.",
+      "root_causes": [
+        "NFS root_squash (or SMB/CIFS, Windows mounts) stops the entrypoint from chowning the directory to UID 999 (postgres).",
+        "A freshly formatted ext4 volume contains lost+found, so initdb refuses to use the mount point itself.",
+        "Host directory owned by another UID, or the pod runs as non-root without a matching fsGroup."
+      ],
+      "diagnosis": [
+        "ls -lan /HOST/PATH   # numeric owner and mode",
+        "docker run --rm -v VOLUME:/d alpine ls -la /d   # lost+found?",
+        "kubectl describe pod POD; kubectl logs POD --previous",
+        "mount | grep nfs; cat /etc/exports   # root_squash?"
+      ],
+      "fix": [
+        "Use a subdirectory: PGDATA=/var/lib/postgresql/data/pgdata (Kubernetes: subPath: pgdata on the volumeMount).",
+        "Pre-create the directory owned by 999:999 with mode 0700 on the host or NFS server, or use a named Docker volume instead of a bind mount.",
+        "Kubernetes: securityContext.fsGroup: 999 (and runAsUser: 999) so the kubelet fixes ownership.",
+        "Avoid NFS for database files. Use local disks or block storage (Longhorn, Ceph RBD, cloud volumes)."
+      ],
+      "prevention": "Standardise one storage pattern for databases (local or block volume, subdirectory PGDATA, fsGroup) and keep it in your templates.",
+      "sources": [
+        {"title": "docker-library/postgres most-reacted issues (#116, #361, #435)", "url": "https://github.com/docker-library/postgres/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc", "type": "github-listing", "verified": true},
+        {"title": "docker-library/postgres#792: permission denied and directory exists but is not empty with NFS PVC", "url": "https://github.com/docker-library/postgres/issues/792", "type": "github-issue", "verified": true},
+        {"title": "Discuss Kubernetes: Postgres pod with local directory mounted for data", "url": "https://discuss.kubernetes.io/t/postgres-pod-with-local-directory-mounted-for-data/5517", "type": "forum", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=postgres+initdb+%22exists+but+is+not+empty%22+lost%2Bfound", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Can't connect to Postgres from another host: Connection refused vs no pg_hba.conf entry (including RDS 15+ forcing SSL)",
+      "area": "PostgreSQL networking and auth",
+      "tool": "PostgreSQL, UFW, AWS RDS",
+      "level": "L1 Operator",
+      "context": "An app on another VM, a GitLab runner or a laptop must reach Postgres on an Ubuntu server or RDS. psql works locally only.",
+      "error_text": "connection to server at \"10.0.0.5\", port 5432 failed: Connection refused | FATAL:  no pg_hba.conf entry for host \"10.0.0.7\", user \"app\", database \"app\", no encryption",
+      "frequency_signal": "One of the most viewed PostgreSQL questions for over a decade. Many pgsql-general threads. On RDS it came back when PostgreSQL 15+ parameter groups switched rds.force_ssl to 1.",
+      "root_causes": [
+        "Refused: listen_addresses = 'localhost' (Ubuntu package default), the service is down, or a firewall REJECTs. A timeout points to a firewall DROP or a security group instead.",
+        "no pg_hba.conf entry: the TCP connection arrived, but no rule matches the client IP, user, database and SSL state.",
+        "RDS PostgreSQL 15+: rds.force_ssl=1 by default, so non-TLS clients get the 'no encryption' variant."
+      ],
+      "diagnosis": [
+        "sudo ss -ltnp | grep 5432   # 127.0.0.1:5432 means localhost only",
+        "sudo -u postgres psql -c 'SHOW listen_addresses; SHOW hba_file;'",
+        "sudo tail -f /var/log/postgresql/postgresql-*-main.log",
+        "nc -vz DBHOST 5432; sudo ufw status verbose"
+      ],
+      "fix": [
+        "In postgresql.conf (/etc/postgresql/VERSION/main/), set listen_addresses = '*' or a specific IP, then restart.",
+        "In pg_hba.conf, add: hostssl app app 10.0.1.0/24 scram-sha-256. Then SELECT pg_reload_conf();",
+        "sudo ufw allow from 10.0.1.0/24 to any port 5432 proto tcp",
+        "RDS: connect with sslmode=require or verify-full and the RDS CA bundle. Only turn rds.force_ssl off in a custom parameter group if policy allows."
+      ],
+      "prevention": "Never expose 5432 to the internet. With Docker, don't publish the port, or bind it to 127.0.0.1 or a private IP, because published ports bypass UFW.",
+      "sources": [
+        {"title": "Fix no pg_hba.conf entry for host (cause map)", "url": "https://mydba.dev/blog/no-pg-hba-conf-entry-for-host-fix", "type": "blog", "verified": true},
+        {"title": "AWS docs: Using SSL with a PostgreSQL DB instance", "url": "https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/PostgreSQL.Concepts.General.SSL.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22no+pg_hba.conf+entry+for+host%22+listen_addresses", "type": "search", "verified": false},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=postgresql+remote+connection+refused+listen_addresses", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Connection exhaustion: sorry, too many clients already (Postgres) / Too many connections (MySQL)",
+      "area": "Database capacity",
+      "tool": "PostgreSQL, MySQL/MariaDB, PgBouncer",
+      "level": "L2 Troubleshooter",
+      "context": "After scaling an app to more replicas, adding workers, or a deploy with a connection leak, new requests fail, while the database CPU may be idle.",
+      "error_text": "FATAL:  sorry, too many clients already | FATAL:  remaining connection slots are reserved for roles with the SUPERUSER attribute | ERROR 1040 (HY000): Too many connections",
+      "frequency_signal": "Evergreen classic on every DB forum. Postmortems: incident.io pool exhaustion, GitHub ProxySQL connection exhaustion (Dan Luu's list).",
+      "root_causes": [
+        "Each app replica opens its own pool (replicas x pool size x processes), which quickly passes max_connections (Postgres default 100, MySQL 151).",
+        "Leaked connections, or sessions stuck 'idle in transaction', hold slots.",
+        "Serverless or cron bursts open many short connections. Raising max_connections costs memory per backend in Postgres."
+      ],
+      "diagnosis": [
+        "SELECT state, count(*) FROM pg_stat_activity GROUP BY 1 ORDER BY 2 DESC;",
+        "SELECT usename, application_name, client_addr, count(*) FROM pg_stat_activity GROUP BY 1,2,3 ORDER BY 4 DESC;",
+        "SHOW max_connections;   -- MySQL: SHOW GLOBAL STATUS LIKE 'Threads_connected'; SHOW PROCESSLIST;",
+        "Count the replicas and per-process pool size in the app config."
+      ],
+      "fix": [
+        "Stop the bleeding: terminate idle-in-transaction sessions with SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE state='idle in transaction' AND now()-state_change > interval '10 min';",
+        "Set idle_in_transaction_session_timeout (Postgres) or wait_timeout (MySQL), and fix the leak in the app.",
+        "Size pools so that replicas x pool <= max_connections minus a reserve.",
+        "Put PgBouncer (or ProxySQL for MySQL) in front so thousands of clients share a few server connections."
+      ],
+      "prevention": "Alert on connections used / max above 80% (postgres_exporter or mysqld_exporter) and keep a connection budget per service.",
+      "sources": [
+        {"title": "PgBouncer configuration (pool sizes, max_client_conn)", "url": "https://www.pgbouncer.org/config.html", "type": "docs", "verified": true},
+        {"title": "incident.io: connection pool exhaustion postmortem", "url": "https://incident.io/blog/database-performance", "type": "postmortem", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22sorry%2C+too+many+clients+already%22", "type": "search", "verified": false},
+        {"title": "Reddit r/PostgreSQL search", "url": "https://www.reddit.com/r/PostgreSQL/search/?q=too+many+clients+already+pgbouncer&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "PgBouncer transaction pooling breaks prepared statements and session features",
+      "area": "Connection pooling",
+      "tool": "PgBouncer",
+      "level": "L3 Platform",
+      "context": "PgBouncer is switched to pool_mode = transaction to save connections. Some requests now fail randomly, and session settings and advisory locks behave oddly.",
+      "error_text": "ERROR:  prepared statement \"S_1\" does not exist | ERROR:  prepared statement \"__asyncpg_stmt_1__\" already exists",
+      "frequency_signal": "The best-known PgBouncer pitfall. Drivers such as JDBC, asyncpg, Prisma and Rails hit it. Native support for protocol-level prepared statements arrived in PgBouncer 1.21.",
+      "root_causes": [
+        "In transaction mode, consecutive transactions from one client can run on different server connections, so state prepared on one backend is missing on another.",
+        "Session state does not survive between transactions: SET, LISTEN/NOTIFY, session advisory locks, temp tables, WITH HOLD cursors.",
+        "Old PgBouncer versions, or max_prepared_statements = 0, do not track prepared statements."
+      ],
+      "diagnosis": [
+        "psql -p 6432 -U ADMIN pgbouncer -c 'SHOW CONFIG;' | grep -E 'pool_mode|max_prepared'",
+        "psql -p 6432 pgbouncer -c 'SHOW VERSION;'",
+        "grep -iE 'prepared statement' app.log | head"
+      ],
+      "fix": [
+        "Upgrade PgBouncer (current 1.26) and set max_prepared_statements (current docs default 200; 0 disables tracking).",
+        "Or disable server-side prepares in the driver: JDBC prepareThreshold=0, asyncpg statement_cache_size=0, Prisma ?pgbouncer=true.",
+        "Use session mode for clients that need session features (migrations, LISTEN, advisory locks), for example a second pool/port for them.",
+        "Run migrations directly against Postgres, not through a transaction pooler."
+      ],
+      "prevention": "Document which services may use transaction pooling and test each driver against it in CI.",
+      "sources": [
+        {"title": "PgBouncer config: pool_mode, max_prepared_statements", "url": "https://www.pgbouncer.org/config.html", "type": "docs", "verified": true},
+        {"title": "PgBouncer homepage (latest release 1.26.0)", "url": "https://www.pgbouncer.org/", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=pgbouncer+%22prepared+statement%22+%22does+not+exist%22+transaction+mode", "type": "search", "verified": false},
+        {"title": "Reddit r/PostgreSQL search", "url": "https://www.reddit.com/r/PostgreSQL/search/?q=pgbouncer+transaction+mode+prepared+statements&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "PgBouncer login fails although psql directly to Postgres works (SCRAM, userlist, auth_query)",
+      "area": "Connection pooling",
+      "tool": "PgBouncer",
+      "level": "L2 Troubleshooter",
+      "context": "You first put PgBouncer in front of PostgreSQL 14+ (scram-sha-256 by default), often as a container next to the DB in Dokploy or Kubernetes.",
+      "error_text": "FATAL:  password authentication failed for user \"app\" | ERROR:  no such user: app | server login failed: wrong password type",
+      "frequency_signal": "Common setup question in the PgBouncer tracker and on Stack Overflow, especially since Postgres switched its default password_encryption to scram-sha-256.",
+      "root_causes": [
+        "auth_type (md5 default in PgBouncer) does not match how passwords are stored (SCRAM verifiers cannot be used for md5 auth).",
+        "userlist.txt (auth_file) is missing the user, has wrong quoting, or holds a plain or old hash after a password change.",
+        "auth_query is set but auth_user cannot read pg_authid / pg_shadow, or the lookup function is missing in that database."
+      ],
+      "diagnosis": [
+        "Check PgBouncer's log for 'login failed' and 'no such user'.",
+        "sudo -u postgres psql -Atc \"SELECT rolname, left(rolpassword,14) FROM pg_authid WHERE rolname='app';\"   # SCRAM-SHA-256$ or md5",
+        "grep -E 'auth_type|auth_file|auth_user|auth_query' /etc/pgbouncer/pgbouncer.ini",
+        "psql 'host=PGBOUNCER port=6432 dbname=app user=app' -c 'select 1'"
+      ],
+      "fix": [
+        "Set auth_type = scram-sha-256 and copy the exact SCRAM verifier into userlist.txt as \"app\" \"SCRAM-SHA-256$...\".",
+        "Or use auth_user plus auth_query with a SECURITY DEFINER lookup function, so password changes need no file edits.",
+        "Reload PgBouncer (RELOAD; on the admin console, or SIGHUP) after editing userlist.txt.",
+        "In containers, generate userlist.txt from secrets at start-up and don't bake it into the image."
+      ],
+      "prevention": "Use auth_query so passwords live in one place, and add a CI or health check that logs in through PgBouncer.",
+      "sources": [
+        {"title": "PgBouncer config: auth_type, auth_file, auth_query", "url": "https://www.pgbouncer.org/config.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=pgbouncer+scram-sha-256+%22password+authentication+failed%22", "type": "search", "verified": false},
+        {"title": "Reddit r/PostgreSQL search", "url": "https://www.reddit.com/r/PostgreSQL/search/?q=pgbouncer+scram+userlist&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Disk fills with pg_wal: inactive replication slot or failing archive_command (and replicas that fall too far behind)",
+      "area": "PostgreSQL WAL, replication and archiving",
+      "tool": "PostgreSQL",
+      "level": "L3 Platform",
+      "context": "The primary's disk grows for days although the tables don't. Later Postgres stops with disk-full errors, or a standby can no longer catch up.",
+      "error_text": "PANIC:  could not write to file \"pg_wal/xlogtemp.123\": No space left on device | FATAL:  could not receive data from WAL stream: ERROR:  requested WAL segment 0000000100000000000000A1 has already been removed",
+      "frequency_signal": "Top cause of surprise Postgres disk-full incidents (Debezium/CDC slots, removed replicas, broken archiving). GitLab's 2017 outage began with a lagging replica whose WAL had been removed.",
+      "root_causes": [
+        "A replication slot whose consumer is gone (old replica, Debezium, a pg_upgrade leftover) keeps all WAL forever. max_slot_wal_keep_size defaults to -1 (unlimited).",
+        "archive_command keeps failing (bad path, S3 credentials, pgBackRest stanza), so Postgres keeps every unarchived segment.",
+        "The opposite case: no slot and a small wal_keep_size, so a lagging standby needs segments already recycled."
+      ],
+      "diagnosis": [
+        "sudo du -sh /var/lib/postgresql/*/main/pg_wal",
+        "SELECT slot_name, active, wal_status, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained FROM pg_replication_slots;",
+        "SELECT archived_count, failed_count, last_failed_wal, last_failed_time FROM pg_stat_archiver;",
+        "SELECT client_addr, state, replay_lag FROM pg_stat_replication;"
+      ],
+      "fix": [
+        "Drop slots that are really dead: SELECT pg_drop_replication_slot('old_slot'); (never delete files in pg_wal by hand).",
+        "Fix archive_command (test it as the postgres user), and Postgres will drain the backlog by itself.",
+        "Set max_slot_wal_keep_size (PG13+) to a few hours of WAL so a dead slot cannot fill the disk.",
+        "A standby missing WAL must be re-seeded (pg_basebackup, or restore_command from your archive)."
+      ],
+      "prevention": "Alert on retained WAL per slot, pg_stat_archiver.failed_count and disk usage. Remove slots in the same change that removes a replica or CDC connector.",
+      "sources": [
+        {"title": "PostgreSQL docs: Replication settings (max_slot_wal_keep_size, wal_keep_size)", "url": "https://www.postgresql.org/docs/current/runtime-config-replication.html", "type": "docs", "verified": true},
+        {"title": "Gunnar Morling: Mastering Postgres replication slots", "url": "https://www.morling.dev/blog/mastering-postgres-replication-slots/", "type": "blog", "verified": true},
+        {"title": "GitLab 2017 database outage postmortem", "url": "https://about.gitlab.com/blog/2017/02/10/postmortem-of-database-outage-of-january-31/", "type": "postmortem", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=postgres+pg_wal+full+replication+slot", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "A schema migration freezes the whole app: ALTER TABLE waits for a lock and everything queues behind it",
+      "area": "Migrations in CI/CD",
+      "tool": "PostgreSQL (similar with MySQL metadata locks)",
+      "level": "L3 Platform",
+      "context": "The CI/CD pipeline runs a migration (add a column, add an FK, create an index) on a busy table. The migration itself is quick, but the site times out for minutes.",
+      "error_text": "ERROR:  canceling statement due to lock timeout (with lock_timeout set) | pg_stat_activity shows many queries with wait_event_type = Lock",
+      "frequency_signal": "Widely written up (postgres.ai, Xata, many engineering blogs). GitHub's availability reports describe outages caused by schema migrations on large MySQL tables.",
+      "root_causes": [
+        "ALTER TABLE needs an ACCESS EXCLUSIVE lock. While it waits for one long query or an idle-in-transaction session, every new query on that table queues behind it.",
+        "Some DDL rewrites or fully scans the table (type changes, a volatile DEFAULT, validating constraints, a plain CREATE INDEX that blocks writes).",
+        "No lock_timeout or statement_timeout on the migration session."
+      ],
+      "diagnosis": [
+        "SELECT pid, state, wait_event_type, now()-xact_start AS xact_age, left(query,60) FROM pg_stat_activity ORDER BY xact_start NULLS LAST;",
+        "SELECT pid, pg_blocking_pids(pid), left(query,60) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;",
+        "Look for 'idle in transaction' sessions that are hours old."
+      ],
+      "fix": [
+        "Cancel the migration first (SELECT pg_cancel_backend(PID);) to release the queue, then deal with the long blocker.",
+        "Run DDL with SET lock_timeout = '3s'; and retry in a loop with backoff.",
+        "Use online patterns: CREATE INDEX CONCURRENTLY (outside a transaction block), add constraints NOT VALID then VALIDATE CONSTRAINT, and batch backfills.",
+        "Set idle_in_transaction_session_timeout so stuck sessions cannot block DDL."
+      ],
+      "prevention": "Use a migration linter (for example squawk or strong_migrations), lock_timeout in every migration, and expand/contract steps for big tables.",
+      "sources": [
+        {"title": "postgres.ai: Zero-downtime schema migrations need lock_timeout and retries", "url": "https://postgres.ai/blog/20210923-zero-downtime-postgres-schema-migrations-lock-timeout-and-retries", "type": "blog", "verified": true},
+        {"title": "Xata: Postgres schema changes are still a PITA", "url": "https://xata.io/blog/postgres-schema-changes-pita", "type": "blog", "verified": true},
+        {"title": "GitHub availability report Nov 2021 (schema migration incident)", "url": "https://github.blog/2021-12-01-github-availability-report-november-2021/", "type": "postmortem", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=postgres+alter+table+lock+queue+lock_timeout+migration", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "32-bit counters run out: transaction ID wraparound and integer primary-key overflow",
+      "area": "PostgreSQL limits",
+      "tool": "PostgreSQL (int overflow also hits MySQL)",
+      "level": "L4 SRE",
+      "context": "A busy, long-lived database suddenly refuses writes, or inserts into one table start failing. It looks like an outage, but it is a slowly approaching limit nobody monitored.",
+      "error_text": "ERROR:  database is not accepting commands to avoid wraparound data loss in database \"app\" | WARNING:  database \"app\" must be vacuumed within 9763571 transactions | ERROR:  nextval: reached maximum value of sequence \"orders_id_seq\" (2147483647) | ERROR:  integer out of range",
+      "frequency_signal": "Famous postmortems: Sentry (2015) and Mandrill (2019) for wraparound; Strava, Basecamp, Heroku and GitHub (May 2021) for int overflow, all in Dan Luu's list.",
+      "root_causes": [
+        "Transaction IDs are 32-bit. Autovacuum must freeze old rows. Long-running transactions, abandoned replication slots or prepared transactions, or a disabled or throttled autovacuum stop it.",
+        "serial/int4 primary keys (and FK columns) top out at about 2.1 billion.",
+        "Nobody tracks age(datfrozenxid) or sequence headroom."
+      ],
+      "diagnosis": [
+        "SELECT datname, age(datfrozenxid) FROM pg_database ORDER BY 2 DESC;   -- alarm well before 2 billion",
+        "SELECT relname, age(relfrozenxid) FROM pg_class WHERE relkind='r' ORDER BY 2 DESC LIMIT 10;",
+        "SELECT pid, now()-xact_start, state FROM pg_stat_activity WHERE xact_start IS NOT NULL ORDER BY 2 DESC LIMIT 5;",
+        "SELECT schemaname, sequencename, last_value, max_value FROM pg_sequences ORDER BY last_value::numeric/max_value DESC LIMIT 10;"
+      ],
+      "fix": [
+        "Wraparound: end long transactions, drop dead slots and prepared xacts, then VACUUM (FREEZE, VERBOSE) the oldest tables. In the final stage, follow the docs' single-user or VACUUM procedure for your version.",
+        "Int overflow: migrate the column (and FKs) to bigint using a new column, backfill and swap. As a stop-gap, switch the sequence into the negative range while you migrate.",
+        "Tune autovacuum for big tables (autovacuum_vacuum_cost_limit, per-table scale factors)."
+      ],
+      "prevention": "Use bigint/identity for new keys, and alert on XID age (for example above 500M) and sequence usage above 70% (postgres_exporter).",
+      "sources": [
+        {"title": "Sentry: Transaction ID wraparound in Postgres", "url": "https://blog.sentry.io/2015/07/23/transaction-id-wraparound-in-postgres", "type": "postmortem", "verified": true},
+        {"title": "Mailchimp: What we learned from the recent Mandrill outage", "url": "https://mailchimp.com/what-we-learned-from-the-recent-mandrill-outage/", "type": "postmortem", "verified": true},
+        {"title": "Strava: The upload outage of July 29, 2014 (integer limit)", "url": "https://engineering.strava.com/the-upload-outage-of-july-29-2014/", "type": "postmortem", "verified": true},
+        {"title": "pganalyze: A62 not accepting commands to avoid wraparound", "url": "https://pganalyze.com/docs/log-insights/autovacuum/A62", "type": "docs", "verified": true}
+      ]
+    },
+    {
+      "title": "Backup container or CI job fails: pg_dump aborting because of server version mismatch",
+      "area": "Backups (logical)",
+      "tool": "pg_dump, backup sidecars, GitLab CI",
+      "level": "L2 Troubleshooter",
+      "context": "A cron container, Dokploy backup, GitLab CI job or app's built-in backup uses its own pg_dump. It worked until the database was upgraded.",
+      "error_text": "pg_dump: error: aborting because of server version mismatch / pg_dump: detail: server version: 16.4; pg_dump version: 15.8",
+      "frequency_signal": "Dozens of GitHub issues across backup images (docker-postgres-backup-local, doodba, Dolibarr), a GitLab forum thread and a DigitalOcean KB article. It was the root cause of GitLab's empty S3 backups in 2017.",
+      "root_causes": [
+        "pg_dump refuses to dump a server newer than itself. The client package in the backup image lags the server.",
+        "Distro repos (for example Ubuntu's postgresql-client) ship an older major than the Docker server image.",
+        "The job's failure goes nowhere (cron mail, unchecked exit code), so backups silently stop."
+      ],
+      "diagnosis": [
+        "docker exec BACKUP_CONTAINER pg_dump --version",
+        "psql -h DB -U app -Atc 'SHOW server_version;'",
+        "Check the backup job log and the size and date of the newest backup object."
+      ],
+      "fix": [
+        "Use a client at least as new as the server: the postgres:SERVER_MAJOR image as the CI job image, or install postgresql-client-16 from the PGDG apt repo.",
+        "Or run pg_dump inside the DB container: docker exec DB pg_dump -U app -Fc app > app.dump",
+        "Re-run the backup and do a test restore before you close the incident."
+      ],
+      "prevention": "Pin the backup image major to the DB major in the same change set, and alert when the newest backup is older than 26 hours or much smaller than the last one.",
+      "sources": [
+        {"title": "DigitalOcean KB: fix pg_dump aborting because of server version mismatch", "url": "https://docs.digitalocean.com/support/how-do-i-fix-the-pg_dump-aborting-because-of-server-version-mismatch-error/", "type": "vendor-kb", "verified": true},
+        {"title": "GitLab Forum: pg_dump server version mismatch", "url": "https://forum.gitlab.com/t/pg-dump-server-version-mismatch/80522", "type": "forum", "verified": true},
+        {"title": "GitLab 2017 postmortem (pg_dump 9.2 vs server 9.6, empty S3 bucket)", "url": "https://about.gitlab.com/blog/2017/02/10/postmortem-of-database-outage-of-january-31/", "type": "postmortem", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22aborting+because+of+server+version+mismatch%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Restore fails or half-works: wrong tool for the dump format, missing roles, restoring over existing objects",
+      "area": "Backups (logical restore)",
+      "tool": "pg_dump / pg_restore / psql",
+      "level": "L1 Operator",
+      "context": "Moving a database to Dokploy or a new server, or restoring a backup for the first time under pressure.",
+      "error_text": "pg_restore: error: input file appears to be a text format dump. Please use psql. | ERROR:  role \"olduser\" does not exist | ERROR:  relation \"users\" already exists",
+      "frequency_signal": "Perennial beginner questions. Dokploy has its own threads ('How to restore a database backup' #338, 'pg_restore continuously retrying' #1730).",
+      "root_causes": [
+        "Plain SQL dumps (-Fp, the default) restore with psql. Custom/directory/tar dumps (-Fc/-Fd/-Ft) restore with pg_restore.",
+        "The dump contains OWNER/GRANT statements for roles that do not exist on the target. pg_dump never includes roles.",
+        "Restoring into a non-empty DB, or a different extension or version set on the target."
+      ],
+      "diagnosis": [
+        "head -c 5 app.dump | xxd   # PGDMP = custom format; text = plain SQL",
+        "pg_restore -l app.dump | head   # list contents without restoring",
+        "psql -c '\\du'   # which roles exist on the target"
+      ],
+      "fix": [
+        "Plain: psql -v ON_ERROR_STOP=1 -U app -d app -f app.sql",
+        "Custom: pg_restore --no-owner --no-acl --role=app -d app -j 4 app.dump",
+        "Clean target: dropdb/createdb first, or pg_restore --clean --if-exists. Also restore globals: pg_dumpall --globals-only.",
+        "Restore into Dokploy DBs with docker exec -i DB_CONTAINER pg_restore ... < app.dump (or the UI restore), then check row counts."
+      ],
+      "prevention": "Standardise on -Fc dumps plus a separate globals dump, and keep a written restore command next to every backup job.",
+      "sources": [
+        {"title": "Dokploy issues about restoring databases (#338, #1730)", "url": "https://github.com/Dokploy/dokploy/issues?q=is%3Aissue+restore+database+sort%3Acomments-desc", "type": "github-listing", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22input+file+appears+to+be+a+text+format+dump%22", "type": "search", "verified": false},
+        {"title": "Reddit r/PostgreSQL search", "url": "https://www.reddit.com/r/PostgreSQL/search/?q=pg_restore+role+does+not+exist+no-owner&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "After an OS or base-image upgrade: database has a collation version mismatch",
+      "area": "PostgreSQL upgrades and OS changes",
+      "tool": "PostgreSQL, glibc, ICU",
+      "level": "L3 Platform",
+      "context": "The host goes from Ubuntu 22.04 to 24.04, or the postgres image moves to a newer Debian base, while the data directory stays. Postgres starts and logs warnings, and some indexes may now be silently wrong.",
+      "error_text": "WARNING:  database \"app\" has a collation version mismatch / DETAIL:  The database was created using collation version 2.35, but the operating system provides version 2.39. / HINT:  Rebuild all objects in this database that use the default collation and run ALTER DATABASE app REFRESH COLLATION VERSION",
+      "frequency_signal": "Frequent since glibc 2.28 changed sort order. There are troubleshooting pages from Kali and Broadcom, many blog posts, and pgsql-bugs threads.",
+      "root_causes": [
+        "Text indexes are sorted by the C library's collation rules. A new glibc can sort strings differently, so existing btree indexes no longer match.",
+        "Physical copies (rsync, volume reuse, pg_upgrade, streaming replicas) across OS versions carry the old ordering.",
+        "Replicas on a different OS than the primary have the same problem."
+      ],
+      "diagnosis": [
+        "SELECT datname, datcollate, datcollversion, pg_database_collation_actual_version(oid) FROM pg_database;",
+        "docker logs DB 2>&1 | grep -i 'collation version'",
+        "Optional check: CREATE EXTENSION amcheck; then run bt_index_check on large text indexes."
+      ],
+      "fix": [
+        "REINDEX DATABASE app; (on 12+ use REINDEX ... CONCURRENTLY per index to avoid long locks)",
+        "Then: ALTER DATABASE app REFRESH COLLATION VERSION; (PG15+; for individual collations, ALTER COLLATION ... REFRESH VERSION)",
+        "Fix duplicate keys that show up during the reindex of unique indexes, if any."
+      ],
+      "prevention": "Move between OS versions with dump/restore or logical replication, keep primary and replicas on the same OS, or use ICU or the builtin C.UTF-8 provider (PG17+).",
+      "sources": [
+        {"title": "Kali docs: Fixing PostgreSQL collation version mismatch", "url": "https://www.kali.org/docs/troubleshooting/postgresql-collation-mismatch-error/", "type": "docs", "verified": true},
+        {"title": "akrabat: Fixing PostgreSQL collation version mismatch", "url": "https://akrabat.com/fixing-postgresql-collation-version-mismatch/", "type": "blog", "verified": true},
+        {"title": "pgsql-bugs #18029: warning about collation changes with newer glibc", "url": "https://www.postgresql.org/message-id/18029-6efd479fc5d023dc@postgresql.org", "type": "mailing-list", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=postgres+%22collation+version+mismatch%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Dokploy app cannot reach the database it created (internal host, networks, isolated compose)",
+      "area": "Dokploy databases",
+      "tool": "Dokploy (Docker Swarm + dokploy-network)",
+      "level": "L2 Troubleshooter",
+      "context": "A Postgres, MySQL or MariaDB service is created in a Dokploy project and the app (an Application or Docker Compose) gets connection refused, a DNS error or a timeout.",
+      "error_text": "getaddrinfo ENOTFOUND my-db-xyz123 | connect ECONNREFUSED 127.0.0.1:5432 | could not translate host name \"my-db\" to address",
+      "frequency_signal": "Dokploy issues #507 (Internal Connection URL, 35 comments) and #2987 (database cannot be reached from an isolated compose).",
+      "root_causes": [
+        "The app uses localhost or 127.0.0.1. Inside a container, that is the app container itself, not the DB.",
+        "A Compose service with 'isolated deployment' runs on its own network and is not attached to the network where the project DB lives.",
+        "The external port was used from inside the cluster (or the internal name from outside), or the host name has a typo. The internal host is the service's app name."
+      ],
+      "diagnosis": [
+        "docker service ls | grep -i DBNAME; docker network inspect dokploy-network --format '{{range .Containers}}{{.Name}} {{end}}'",
+        "docker exec -it APP_CONTAINER getent hosts DB_APPNAME",
+        "docker run --rm -it --network dokploy-network nicolaka/netshoot nc -vz DB_APPNAME 5432"
+      ],
+      "fix": [
+        "Use the Internal Connection URL from the database page (host = service app name, internal port 5432/3306).",
+        "For isolated compose, define the DB inside the same compose file, or attach the service to dokploy-network explicitly (networks: dokploy-network: external: true).",
+        "Expose the external port only for admin access, and limit it with a firewall (published ports skip UFW), or use an SSH tunnel instead."
+      ],
+      "prevention": "Write down the network design per project: which services share which network, and how DB names are formed.",
+      "sources": [
+        {"title": "Dokploy#2987: database + isolated docker compose cannot reach database", "url": "https://github.com/Dokploy/dokploy/issues/2987", "type": "github-issue", "verified": true},
+        {"title": "Dokploy issues sorted by comments (#507 Internal Connection URL)", "url": "https://github.com/Dokploy/dokploy/issues?q=is%3Aissue+restore+database+sort%3Acomments-desc", "type": "github-listing", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+database+connection+internal&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Dokploy's own Postgres (dokploy-postgres) corrupted after repeated restarts",
+      "area": "Dokploy platform data",
+      "tool": "Dokploy, PostgreSQL",
+      "level": "L3 Platform",
+      "context": "The Dokploy panel restarts in a loop (failed update, low memory, Docker restarts). Afterwards the control plane database will not start and the UI is down.",
+      "error_text": "PANIC:  could not locate a valid checkpoint record | invalid record length / record with incorrect prev-link | getaddrinfo ENOTFOUND dokploy-postgres",
+      "frequency_signal": "Dokploy#2436 (20 comments), plus related threads: 'Migration failed after server restart' (#1869) and 'DB wipe after possible automatic Docker path update' (#3883).",
+      "root_causes": [
+        "Repeated hard kills of the Postgres container (OOM, docker daemon restarts, too-short stop grace) on storage that loses writes leave WAL and checkpoint records inconsistent.",
+        "No separate backup of Dokploy's own database and /etc/dokploy, so recovery means rebuilding projects by hand.",
+        "Small VPS memory makes OOM kills of the panel and its DB likely."
+      ],
+      "diagnosis": [
+        "docker service ps dokploy-postgres --no-trunc",
+        "docker service logs dokploy-postgres --tail 100",
+        "journalctl -k | grep -i -E 'killed process|out of memory'",
+        "df -h /var/lib/docker; docker system df"
+      ],
+      "fix": [
+        "Stop the restart loop first (scale the dokploy service to 0) so the DB is not killed again.",
+        "Copy the volume before touching anything (docker run --rm -v VOL:/src -v /backup:/dst alpine cp -a /src /dst).",
+        "Restore Dokploy's DB from its backup (Dokploy can back up itself to S3 in recent versions).",
+        "Last resort only, on the copy: pg_resetwal -f lets it start with possible data loss. Dump it immediately and restore into a fresh volume."
+      ],
+      "prevention": "Turn on Dokploy self-backups to off-site S3, give the host enough RAM and swap, and avoid unattended upgrades of Docker on the Dokploy node.",
+      "sources": [
+        {"title": "Dokploy#2436: dokploy-postgres volume corruption after repeated restarts", "url": "https://github.com/Dokploy/dokploy/issues/2436", "type": "github-issue", "verified": true},
+        {"title": "Dokploy issues mentioning backups (#709 Back ups for Dokploy, #1869)", "url": "https://github.com/Dokploy/dokploy/issues?q=is%3Aissue+backup+sort%3Acomments-desc", "type": "github-listing", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=postgres+%22could+not+locate+a+valid+checkpoint+record%22+docker", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Dokploy scheduled database backups fail, land in the wrong place or cannot be restored",
+      "area": "Dokploy databases / backups",
+      "tool": "Dokploy backups to S3-compatible destinations",
+      "level": "L2 Troubleshooter",
+      "context": "Backups are configured in the database's Backup tab with an S3 destination (AWS S3, MinIO, Garage, R2, B2). The test passes, but scheduled runs fail, files are missing, or restore does not work.",
+      "error_text": "Backup failed (see the deployment/backup log) | pg_restore continuously retrying | backup file has the wrong extension for MongoDB (.sql.gz)",
+      "frequency_signal": "Many Dokploy issues: #416 (more destinations, 50 comments), #2731 (Mongo backup format), #3516 (DB on a worker node), #2692 (swarm mode), #4051 (prefix change), #1730 (restore retry loop).",
+      "root_causes": [
+        "S3-compatible destination settings: endpoint without scheme, wrong region, or path-style needed by MinIO/Garage, so the test passes but uploads fail.",
+        "The DB service runs on a Swarm worker while the backup runs on the manager (known limitation in some versions).",
+        "Version bugs (Mongo dump format, prefix layout change). Nobody has ever restored a backup, so the bugs stay hidden."
+      ],
+      "diagnosis": [
+        "Open the backup run log in the Dokploy UI, then run 'Test' on the destination.",
+        "mc ls ALIAS/BUCKET/PREFIX/ --recursive | tail   (or aws s3 ls --endpoint-url https://S3HOST s3://BUCKET/PREFIX/)",
+        "docker service ps DB_SERVICE --format '{{.Node}}'   # which node runs the DB?"
+      ],
+      "fix": [
+        "Fix the destination: full https:// endpoint, correct region (often us-east-1 for MinIO), a bucket that exists, and keys with put/list/get rights.",
+        "Pin DB services to the manager, or upgrade to a version that supports remote-node backups.",
+        "Restore regularly into a scratch database (Dokploy restore, or download and pg_restore manually) and compare row counts.",
+        "Keep an independent second backup (restic/borg or pgBackRest) for important DBs."
+      ],
+      "prevention": "Treat a backup as working only after a restore has succeeded. Add monitoring for backup age and size, and read the release notes before upgrading Dokploy.",
+      "sources": [
+        {"title": "Dokploy docs: Database backups", "url": "https://docs.dokploy.com/docs/core/databases/backups", "type": "docs", "verified": true},
+        {"title": "Dokploy#2731: Backup issue on MongoDB", "url": "https://github.com/Dokploy/dokploy/issues/2731", "type": "github-issue", "verified": true},
+        {"title": "Dokploy issues about backups, sorted by comments", "url": "https://github.com/Dokploy/dokploy/issues?q=is%3Aissue+backup+sort%3Acomments-desc", "type": "github-listing", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+backup+s3&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Fresh MySQL on Ubuntu: ERROR 1698 Access denied for user 'root'@'localhost'",
+      "area": "MySQL/MariaDB auth",
+      "tool": "MySQL 8.x / MariaDB on Ubuntu",
+      "level": "L0 Foundations",
+      "context": "MySQL or MariaDB was just installed with apt. mysql -u root -p rejects every password, and phpMyAdmin or the app cannot log in as root.",
+      "error_text": "ERROR 1698 (28000): Access denied for user 'root'@'localhost'",
+      "frequency_signal": "One of the most visited MySQL questions on Ask Ubuntu and Stack Overflow, and countless blog fixes.",
+      "root_causes": [
+        "Ubuntu's packages create root with auth_socket (MySQL) or unix_socket (MariaDB): only the OS root user can log in, and passwords are ignored.",
+        "Apps should not use root anyway, so no app user was created."
+      ],
+      "diagnosis": [
+        "sudo mysql -e \"SELECT user, host, plugin FROM mysql.user;\"",
+        "sudo journalctl -u mysql -n 50 --no-pager"
+      ],
+      "fix": [
+        "Admin work: just use sudo mysql (socket auth).",
+        "Create an app user: CREATE USER 'app'@'localhost' IDENTIFIED BY '...'; GRANT ALL ON appdb.* TO 'app'@'localhost';",
+        "Only if you really need password login for root: ALTER USER 'root'@'localhost' IDENTIFIED WITH caching_sha2_password BY '...'; (MariaDB: ALTER USER root@localhost IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD('...');)"
+      ],
+      "prevention": "Keep root on socket auth and give every app its own least-privilege user.",
+      "sources": [
+        {"title": "phoenixNAP: How to fix Access denied for user root@localhost", "url": "https://phoenixnap.com/kb/access-denied-for-user-root-localhost", "type": "blog", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22ERROR+1698%22+%22Access+denied+for+user%22+root+localhost+auth_socket", "type": "search", "verified": false},
+        {"title": "Reddit r/linuxadmin search", "url": "https://www.reddit.com/r/linuxadmin/search/?q=mysql+root+auth_socket&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MySQL remote or container connections: Host is not allowed to connect, bind-address, and the socket error",
+      "area": "MySQL/MariaDB networking",
+      "tool": "MySQL / MariaDB",
+      "level": "L1 Operator",
+      "context": "An app on another VM or container, or a GUI client, cannot connect. Inside a container, mysql -h localhost fails although the server is running.",
+      "error_text": "ERROR 1130 (HY000): Host '10.0.0.7' is not allowed to connect to this MySQL server | ERROR 2002 (HY000): Can't connect to local MySQL server through socket '/var/run/mysqld/mysqld.sock' (2) | ERROR 2003 (HY000): Can't connect to MySQL server on '10.0.0.5:3306' (111)",
+      "frequency_signal": "Evergreen top questions on Stack Overflow and Server Fault.",
+      "root_causes": [
+        "1130: the account exists only as 'user'@'localhost'. MySQL accounts are user plus host.",
+        "2003 (111 refused): bind-address = 127.0.0.1 in /etc/mysql/mysql.conf.d/mysqld.cnf (or 50-server.cnf for MariaDB), or a firewall.",
+        "2002: '-h localhost' means 'use the Unix socket'. In a client container there is no server socket, so use 127.0.0.1 or the service name."
+      ],
+      "diagnosis": [
+        "sudo ss -ltnp | grep 3306",
+        "sudo mysql -e \"SELECT user, host FROM mysql.user WHERE user='app';\"",
+        "grep -R bind-address /etc/mysql/",
+        "mysql -h 127.0.0.1 -P 3306 -u app -p"
+      ],
+      "fix": [
+        "CREATE USER 'app'@'10.0.1.%' IDENTIFIED BY '...'; GRANT ALL ON appdb.* TO 'app'@'10.0.1.%';",
+        "Set bind-address to the private IP (or 0.0.0.0 behind a firewall), then sudo systemctl restart mysql.",
+        "sudo ufw allow from 10.0.1.0/24 to any port 3306 proto tcp",
+        "In containers and compose, connect to the service name and port 3306, never localhost."
+      ],
+      "prevention": "Use host-restricted accounts per app and never publish 3306 to the internet.",
+      "sources": [
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22is+not+allowed+to+connect+to+this+MySQL+server%22", "type": "search", "verified": false},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=mysql+bind-address+remote+connection+ERROR+2003", "type": "search", "verified": false},
+        {"title": "Reddit r/mysql search", "url": "https://www.reddit.com/r/mysql/search/?q=Host+is+not+allowed+to+connect&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MySQL 8.4+ authentication plugin errors: mysql_native_password not loaded / caching_sha2_password",
+      "area": "MySQL upgrades",
+      "tool": "MySQL 8.0, 8.4 LTS, 9.x; RDS for MySQL",
+      "level": "L2 Troubleshooter",
+      "context": "The image moves from mysql:8.0 to 8.4 (or 'latest'), or RDS upgrades. Old app users or old drivers can no longer log in.",
+      "error_text": "ERROR 1524 (HY000): Plugin 'mysql_native_password' is not loaded | Authentication plugin 'caching_sha2_password' cannot be loaded | Public Key Retrieval is not allowed",
+      "frequency_signal": "Very common since 8.4 (2024) disabled mysql_native_password by default. AWS re:Post, Mydbops and many blogs cover it, and MySQL 8.0 reached end of life in 2026, which pushes more upgrades.",
+      "root_causes": [
+        "8.0 made caching_sha2_password the default. 8.4 disables mysql_native_password unless enabled, and 9.x removes it.",
+        "Accounts created years ago still use mysql_native_password, and default_authentication_plugin no longer exists in 8.4.",
+        "Old client libraries cannot do caching_sha2. Without TLS, clients must be allowed to fetch the server's RSA key."
+      ],
+      "diagnosis": [
+        "SELECT user, host, plugin FROM mysql.user;",
+        "SELECT VERSION(); SHOW PLUGINS;",
+        "docker logs DB 2>&1 | grep -i native_password"
+      ],
+      "fix": [
+        "Migrate accounts: ALTER USER 'app'@'%' IDENTIFIED WITH caching_sha2_password BY '...';",
+        "Update drivers. Use TLS, or allowPublicKeyRetrieval=true (JDBC) / get-server-public-key only on trusted networks.",
+        "Temporary bridge on 8.4 only: mysql_native_password=ON in my.cnf (or --mysql-native-password=ON). It does not exist in 9.x."
+      ],
+      "prevention": "Before any major bump, inventory account plugins and client driver versions, and pin mysql:8.4 rather than latest.",
+      "sources": [
+        {"title": "MySQL 8.4 Reference Manual: Caching SHA-2 pluggable authentication", "url": "https://dev.mysql.com/doc/refman/8.4/en/caching-sha2-pluggable-authentication.html", "type": "docs", "verified": true},
+        {"title": "Mydbops: MySQL 8.4 upgrade guide, incompatible changes", "url": "https://www.mydbops.com/blog/mydbops-mysql-8-4-incompatible-changes-upgrade-guide", "type": "blog", "verified": true},
+        {"title": "AWS re:Post: MySQL upgrade to 8.4.3 unknown authentication method", "url": "https://repost.aws/questions/QUAYvOF4YxS3OFY-wgFjw9ZA/mysql-upgrade-to-8-4-3-unknown-authentication-method", "type": "forum", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22Plugin+%27mysql_native_password%27+is+not+loaded%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MariaDB 11 container: mysql/mysqladmin not found and the healthcheck keeps failing",
+      "area": "MySQL/MariaDB in Docker",
+      "tool": "MariaDB official Docker image",
+      "level": "L2 Troubleshooter",
+      "context": "A compose stack or CI service moves from mariadb:10.x to 11.x. The container is fine, but depends_on: service_healthy never passes, or backup scripts call mysqldump and fail.",
+      "error_text": "/bin/sh: 1: mysqladmin: not found | exec: \"mysql\": executable file not found in $PATH",
+      "frequency_signal": "A MariaDB.org blog post was written because so many people were surprised. There are issues in wallabag, Magento CI (mage-os) and Bitnami trackers.",
+      "root_causes": [
+        "From 11.0 the official image no longer ships the mysql-named compatibility executables (mysql, mysqladmin, mysqldump).",
+        "Copy-pasted healthchecks use 'mysqladmin ping', which also passes before InnoDB is ready.",
+        "A major bump without running mariadb-upgrade leaves system tables old."
+      ],
+      "diagnosis": [
+        "docker inspect --format '{{json .State.Health}}' DB",
+        "docker exec DB ls /usr/bin | grep -E '^(mysql|mariadb)'"
+      ],
+      "fix": [
+        "Healthcheck: test: [\"CMD\", \"healthcheck.sh\", \"--connect\", \"--innodb_initialized\"] (the script ships in the image).",
+        "Replace mysql/mysqldump/mysqladmin with mariadb/mariadb-dump/mariadb-admin in scripts.",
+        "Set MARIADB_AUTO_UPGRADE=1 so the entrypoint runs mariadb-upgrade after major bumps (take a backup first)."
+      ],
+      "prevention": "Pin the MariaDB major tag and keep healthchecks and backup scripts in the same repo as the compose file, tested in CI.",
+      "sources": [
+        {"title": "MariaDB.org: Docker official images healthcheck without mysqladmin", "url": "https://mariadb.org/mariadb-server-docker-official-images-healthcheck-without-mysqladmin/", "type": "blog", "verified": true},
+        {"title": "wallabag/docker#381: mariadb healthcheck fails, mysqladmin not included", "url": "https://github.com/wallabag/docker/issues/381", "type": "github-issue", "verified": true},
+        {"title": "mage-os/github-actions#365: mariadb:11.4 healthcheck uses removed mysqladmin", "url": "https://github.com/mage-os/github-actions/issues/365", "type": "github-issue", "verified": true}
+      ]
+    },
+    {
+      "title": "MySQL dump import fails: Unknown collation utf8mb4_0900_ai_ci, or server has gone away / max_allowed_packet",
+      "area": "MySQL/MariaDB migration and restore",
+      "tool": "mysql client, mysqldump, MariaDB",
+      "level": "L2 Troubleshooter",
+      "context": "You move a database from MySQL 8 to MariaDB (or an older MySQL), or import a large dump with big BLOB rows or extended INSERTs.",
+      "error_text": "ERROR 1273 (HY000) at line 22: Unknown collation: 'utf8mb4_0900_ai_ci' | ERROR 2006 (HY000): MySQL server has gone away | ERROR 1153 (08S01): Got a packet bigger than 'max_allowed_packet' bytes",
+      "frequency_signal": "Both are top MySQL import errors, with Plesk and nixCraft KB pages and many blog fixes.",
+      "root_causes": [
+        "utf8mb4_0900_ai_ci exists only in MySQL 8+. MariaDB and MySQL 5.7 do not know it.",
+        "A single statement is larger than max_allowed_packet on the server or the client.",
+        "Long imports idle past wait_timeout, or the server is OOM-killed during the import."
+      ],
+      "diagnosis": [
+        "grep -c utf8mb4_0900_ai_ci dump.sql",
+        "mysql -e \"SHOW VARIABLES WHERE Variable_name IN ('max_allowed_packet','wait_timeout');\"",
+        "journalctl -k | grep -i 'killed process'   # did mysqld die?"
+      ],
+      "fix": [
+        "Rewrite the collation: sed -i 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' dump.sql (keep the original file).",
+        "Raise packets on both sides: max_allowed_packet=256M in the server config and mysql --max_allowed_packet=256M ... < dump.sql",
+        "For huge data, consider mydumper/myloader or a physical backup tool instead of one giant SQL file."
+      ],
+      "prevention": "Dump with the target engine in mind, and test the import on a scratch instance of the same version before migration day.",
+      "sources": [
+        {"title": "Plesk KB: Unknown collation utf8mb4_0900_ai_ci", "url": "https://support.plesk.com/hc/en-us/articles/12389036812567-Unable-to-migrate-or-import-MySQL-8-databases-Unknown-collation-utf8mb4-0900-ai-ci", "type": "vendor-kb", "verified": true},
+        {"title": "TablePlus: MySQL server has gone away while importing", "url": "https://tableplus.com/blog/2018/11/mysql-server-has-gone-away-solved.html", "type": "blog", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22Unknown+collation%3A+%27utf8mb4_0900_ai_ci%27%22", "type": "search", "verified": false},
+        {"title": "Stack Overflow search (gone away)", "url": "https://stackoverflow.com/search?q=%22MySQL+server+has+gone+away%22+import+max_allowed_packet", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "mysqldump in a backup job: PROCESS privilege error, inconsistent dumps, DEFINER problems on restore",
+      "area": "MySQL backups",
+      "tool": "mysqldump / mariadb-dump",
+      "level": "L2 Troubleshooter",
+      "context": "A least-privilege backup user runs mysqldump from cron or CI. It broke after a minor upgrade, or restores into RDS or another server fail.",
+      "error_text": "mysqldump: Error: 'Access denied; you need (at least one of) the PROCESS privilege(s) for this operation' when trying to dump tablespaces | ERROR 1227 (42000): Access denied; you need (at least one of) the SUPER privilege(s) for this operation",
+      "frequency_signal": "MySQL bug #100219 after 8.0.21 / 5.7.31, plus vendor KBs (Acquia, Broadcom) and many hosting forums.",
+      "root_causes": [
+        "Since 8.0.21 and 5.7.31, reading INFORMATION_SCHEMA.FILES (tablespaces) needs the global PROCESS privilege.",
+        "Without --single-transaction, InnoDB dumps are not consistent, or they lock tables during the dump.",
+        "Dumps carry DEFINER=`user`@`host` and SET @@GLOBAL.GTID_PURGED, which managed targets such as RDS reject without SUPER."
+      ],
+      "diagnosis": [
+        "SHOW GRANTS FOR 'backup'@'localhost';",
+        "grep -m5 -E 'DEFINER|GTID_PURGED' dump.sql",
+        "echo $? after mysqldump in the script, and check that the file ends with '-- Dump completed'"
+      ],
+      "fix": [
+        "mysqldump --single-transaction --routines --triggers --no-tablespaces --set-gtid-purged=OFF -u backup appdb | gzip > appdb.sql.gz",
+        "Or grant PROCESS globally to the backup user if you need tablespaces.",
+        "Strip definers for managed targets (sed 's/DEFINER=[^ ]* //'), or set log_bin_trust_function_creators=1 in the RDS parameter group."
+      ],
+      "prevention": "Fail the job on any non-zero exit (set -o pipefail), verify the 'Dump completed' trailer, and test-restore weekly.",
+      "sources": [
+        {"title": "MySQL Bugs #100219: mysqldump Access denied error after upgrading to 8.0.21", "url": "https://bugs.mysql.com/bug.php?id=100219", "type": "bug-tracker", "verified": true},
+        {"title": "MySQL 8.0 Reference Manual: mysqldump", "url": "https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html", "type": "docs", "verified": true},
+        {"title": "Acquia: Access denied, you need the PROCESS privilege", "url": "https://docs.acquia.com/acquia-cloud-platform/help/93231-drush-throws-access-denied-you-need-least-one-process-privileges-error-message", "type": "vendor-kb", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=mysqldump+%22PROCESS+privilege%22+%22no-tablespaces%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Redis/Valkey rejects writes: MISCONF ... unable to persist to disk",
+      "area": "Redis/Valkey persistence",
+      "tool": "Redis / Valkey",
+      "level": "L1 Operator",
+      "context": "Sidekiq, Celery, a session store or a cache suddenly fails on every write, while reads still work. It often happens on a small VPS or a Docker host that is nearly full.",
+      "error_text": "MISCONF Redis is configured to save RDB snapshots, but it's currently unable to persist to disk. Commands that may modify the data set are disabled | Can't save in background: fork: Cannot allocate memory",
+      "frequency_signal": "One of the most viewed Redis errors ever. The GitHub gist about it has years of comments, and Netdata and others have guides.",
+      "root_causes": [
+        "The BGSAVE fork fails because vm.overcommit_memory=0 and the kernel thinks a copy of the whole dataset might be needed.",
+        "The disk holding the RDB/AOF is full, or the dump dir is not writable (wrong volume ownership, read-only mount).",
+        "stop-writes-on-bgsave-error yes (the default) blocks writes after a failed save, to protect data."
+      ],
+      "diagnosis": [
+        "redis-cli INFO persistence | grep -E 'rdb_last_bgsave_status|aof_last_write_status'",
+        "redis-cli CONFIG GET dir; df -h; ls -ld DIR",
+        "docker logs REDIS 2>&1 | grep -iE 'fork|overcommit|Background saving'",
+        "sysctl vm.overcommit_memory"
+      ],
+      "fix": [
+        "On the host (sysctls are not per container): echo 'vm.overcommit_memory = 1' | sudo tee /etc/sysctl.d/99-redis.conf && sudo sysctl --system",
+        "Free disk or fix permissions on the data volume (the official image runs as the redis user), then redis-cli BGSAVE.",
+        "For a pure cache that can be rebuilt, disable persistence (save \"\" and appendonly no) instead of turning off the safety check."
+      ],
+      "prevention": "Set the overcommit sysctl in your host baseline (Ansible), keep a maxmemory limit, and alert on rdb_last_bgsave_status and disk use.",
+      "sources": [
+        {"title": "Netdata: MISCONF Redis is configured to save RDB snapshots", "url": "https://www.netdata.cloud/guides/redis/redis-misconf-rdb-snapshots/", "type": "blog", "verified": true},
+        {"title": "GitHub gist: MISCONF error (long comment thread)", "url": "https://gist.github.com/kapkaev/4619127?permalink_comment_id=2739426", "type": "forum", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22MISCONF+Redis+is+configured+to+save+RDB+snapshots%22", "type": "search", "verified": false},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=redis+MISCONF&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Redis hits maxmemory: OOM command not allowed (and queues silently losing jobs after a policy change)",
+      "area": "Redis/Valkey memory",
+      "tool": "Redis / Valkey",
+      "level": "L2 Troubleshooter",
+      "context": "Redis serves as both cache and job queue (Celery, Sidekiq, BullMQ). Under load writes fail, or someone switches to an LRU policy and jobs start disappearing.",
+      "error_text": "OOM command not allowed when used memory > 'maxmemory'.",
+      "frequency_signal": "Common error, with dedicated guides from Netdata, OneUptime and others.",
+      "root_causes": [
+        "maxmemory is reached with maxmemory-policy noeviction (the safe default for queues).",
+        "Keys without TTLs, big backlogs of unprocessed jobs, or large values.",
+        "Mixing a cache (wants eviction) and a queue (must never evict) in one instance."
+      ],
+      "diagnosis": [
+        "redis-cli INFO memory | grep -E 'used_memory_human|maxmemory_human|maxmemory_policy|mem_fragmentation_ratio'",
+        "redis-cli --bigkeys",
+        "redis-cli INFO keyspace; redis-cli LLEN QUEUE_NAME"
+      ],
+      "fix": [
+        "Find what grew (backlog, big keys, missing TTLs) and fix the producer or consumer.",
+        "Cache-only instance: CONFIG SET maxmemory-policy allkeys-lru (and persist it in the config).",
+        "Queue instance: keep noeviction, raise maxmemory within the container limit, and alert early.",
+        "Split cache and queue into separate Redis/Valkey instances."
+      ],
+      "prevention": "Use one purpose per instance, alert on memory above 80% of maxmemory, and set the container memory limit above maxmemory plus fork overhead.",
+      "sources": [
+        {"title": "Netdata: Redis OOM command not allowed, causes and fixes", "url": "https://www.netdata.cloud/guides/redis/redis-oom-command-not-allowed/", "type": "blog", "verified": true},
+        {"title": "Why switching to LRU can cost you data", "url": "https://www.codewithkarani.com/blog/redis-oom-command-not-allowed-eviction-policy", "type": "blog", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22OOM+command+not+allowed+when+used+memory%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Redis exposed without a password (published port), or apps blocked by protected mode / NOAUTH",
+      "area": "Redis/Valkey security",
+      "tool": "Redis / Valkey official Docker images",
+      "level": "L1 Operator",
+      "context": "ports: - '6379:6379' was added for debugging. Days later Redis has unknown keys, a changed dir/dbfilename, or a crypto-miner is running on the host. Or the reverse: protected mode blocks a legitimate remote client.",
+      "error_text": "DENIED Redis is running in protected mode because protected mode is enabled and no password is set for the default user | NOAUTH Authentication required.",
+      "frequency_signal": "Internet-wide scanning for open 6379 is constant. The official image docs warn explicitly that the image turns protected mode off.",
+      "root_causes": [
+        "The official Docker image disables protected mode, so a published port is open to the world without auth. Docker-published ports also bypass UFW.",
+        "No requirepass or ACL user configured.",
+        "With protected mode on (bare-metal installs), remote clients are refused until auth is configured."
+      ],
+      "diagnosis": [
+        "sudo ss -ltnp | grep 6379; docker ps --format '{{.Names}} {{.Ports}}' | grep 6379",
+        "From outside: nc -vz PUBLIC_IP 6379 (should fail)",
+        "redis-cli CONFIG GET dir; redis-cli CONFIG GET dbfilename; redis-cli ACL LIST",
+        "Check for unknown keys and cron entries, and for odd processes (top, ps)."
+      ],
+      "fix": [
+        "Remove the published port. Apps reach Redis by service name on the Docker or Dokploy network. If you need host access, bind to 127.0.0.1:6379.",
+        "Set auth: requirepass or ACL users (redis-server --requirepass ... or a mounted redis.conf), and rename or disable CONFIG for app users via ACL.",
+        "If it was compromised, rebuild the host. Do not just restart Redis."
+      ],
+      "prevention": "Never publish database ports. Add a CI check or lint rule that rejects 6379/5432/3306/27017 in compose ports.",
+      "sources": [
+        {"title": "Docker Hub: redis official image (security note on protected mode)", "url": "https://hub.docker.com/_/redis", "type": "docs", "verified": true},
+        {"title": "docker-library/redis#58", "url": "https://github.com/docker-library/redis/issues/58", "type": "github-issue", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=redis+exposed+hacked+miner&restrict_sr=1", "type": "search", "verified": false},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22DENIED+Redis+is+running+in+protected+mode%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MongoDB 5.0+ crashes with Illegal instruction on a Proxmox/KVM VM (missing AVX)",
+      "area": "MongoDB on virtualised on-prem hosts",
+      "tool": "MongoDB, Proxmox VE / KVM",
+      "level": "L2 Troubleshooter",
+      "context": "A mongo container (for an app such as UniFi, Graylog, Wekan or LibreChat) exits immediately on a Proxmox VM, while the same compose file works on a laptop.",
+      "error_text": "WARNING: MongoDB 5.0+ requires a CPU with AVX support, and your current system does not appear to have that! | Illegal instruction (core dumped) | exited with code 132",
+      "frequency_signal": "Very common in homelab and self-hosting: issues in docker-library/mongo (#583), Graylog, Wekan and LibreChat, and Proxmox forum threads.",
+      "root_causes": [
+        "MongoDB 5.0+ x86 builds need AVX (Sandy Bridge or newer).",
+        "Proxmox's default virtual CPU models (kvm64 in older versions, x86-64-v2-AES in newer ones) hide AVX from the guest.",
+        "Very old physical CPUs, or some ARM boards, lack the needed instructions."
+      ],
+      "diagnosis": [
+        "grep -o -w avx /proc/cpuinfo | head -1   # inside the VM: empty means no AVX",
+        "docker logs MONGO; docker inspect -f '{{.State.ExitCode}}' MONGO   # 132 = SIGILL",
+        "On Proxmox: qm config VMID | grep cpu"
+      ],
+      "fix": [
+        "Set the VM CPU type to host (or x86-64-v3, which includes AVX/AVX2), then do a full stop/start of the VM.",
+        "If live migration between different CPUs matters, use the highest common CPU model that still includes AVX.",
+        "Last resort: mongo:4.4 (end of life, so no security fixes). Plan to move off it."
+      ],
+      "prevention": "Make your VM template use a CPU model that includes AVX, and check /proc/cpuinfo flags before you deploy databases.",
+      "sources": [
+        {"title": "docker-library/mongo#583: are avx and avx2 the only CPU flags needed?", "url": "https://github.com/docker-library/mongo/issues/583", "type": "github-issue", "verified": true},
+        {"title": "Graylog#13950: MongoDB 5.0 requires AVX CPU extensions", "url": "https://github.com/Graylog2/graylog2-server/issues/13950", "type": "github-issue", "verified": true},
+        {"title": "Proxmox forum: AVX/AVX2 CPU flags", "url": "https://forum.proxmox.com/threads/feature-suggestion-avx-avx2-cpu-flags.114688/", "type": "forum", "verified": true},
+        {"title": "Reddit r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=mongodb+avx+cpu+type&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MongoDB in Docker: Authentication failed although the user and password are right (authSource)",
+      "area": "MongoDB auth",
+      "tool": "MongoDB official Docker image",
+      "level": "L1 Operator",
+      "context": "Mongo is started with MONGO_INITDB_ROOT_USERNAME/PASSWORD and the app connects to mongodb://root:pw@mongo:27017/myapp.",
+      "error_text": "MongoServerError: Authentication failed. | MongoServerSelectionError: connect ECONNREFUSED 127.0.0.1:27017",
+      "frequency_signal": "Classic in docker-library/mongo (#346), MongoDB community forums and many blog notes.",
+      "root_causes": [
+        "The root user lives in the admin database. A connection string naming another DB authenticates against that DB unless ?authSource=admin is given.",
+        "The MONGO_INITDB_* variables only apply on first init with an empty /data/db, the same trap as Postgres.",
+        "ECONNREFUSED to 127.0.0.1: the app uses localhost inside its own container, or bindIp is 127.0.0.1 on a bare-metal install."
+      ],
+      "diagnosis": [
+        "docker exec -it MONGO mongosh -u root -p --authenticationDatabase admin --eval 'db.getSiblingDB(\"admin\").getUsers()'",
+        "docker logs MONGO 2>&1 | grep -i 'Authentication failed'",
+        "grep -A3 net: /etc/mongod.conf   # bindIp"
+      ],
+      "fix": [
+        "mongodb://root:PASS@mongo:27017/myapp?authSource=admin",
+        "Better: create an app user in the app DB (db.getSiblingDB('myapp').createUser({user:'app', pwd:'...', roles:[{role:'readWrite', db:'myapp'}]})) and connect without root.",
+        "Use the service name instead of localhost. On bare metal, set net.bindIp to the private IP and keep auth enabled."
+      ],
+      "prevention": "Use one app user per database, keep connection strings in secrets, and never publish 27017.",
+      "sources": [
+        {"title": "MongoDB in Docker: Authentication failed with a non-default database (authSource)", "url": "https://notes.dt.in.th/MongoDBAuthSource", "type": "blog", "verified": true},
+        {"title": "docker-library/mongo#346: Authentication/root user fails", "url": "https://github.com/docker-library/mongo/issues/346", "type": "github-issue", "verified": true},
+        {"title": "MongoDB Community Hub: docker compose authentication doesn't register", "url": "https://www.mongodb.com/community/forums/t/docker-compose-authentication-doesnt-register/174875", "type": "forum", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=mongodb+docker+%22Authentication+failed%22+authSource", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MinIO/S3 behind Traefik or nginx: SignatureDoesNotMatch, broken console redirects, bad presigned URLs",
+      "area": "Object storage behind reverse proxies",
+      "tool": "MinIO (and other S3-compatible servers), Traefik, nginx",
+      "level": "L2 Troubleshooter",
+      "context": "MinIO is published at https://s3.example.com through Traefik/Dokploy. The console loads, but uploads, mc, restic or app SDKs fail, or presigned links don't work.",
+      "error_text": "SignatureDoesNotMatch: The request signature we calculated does not match the signature you provided. Check your key and signing method.",
+      "frequency_signal": "Many MinIO issues and discussions (#1315, #11218, #19394, #20429, discussion #13768). One of the top MinIO support topics.",
+      "root_causes": [
+        "SigV4 signs the Host header (and sometimes others). A proxy that rewrites Host, adds or changes signed headers, or strips the port breaks the signature.",
+        "The API (9000) and console (9001) are routed to the wrong ports, or both share one hostname without path rules.",
+        "MINIO_SERVER_URL and MINIO_BROWSER_REDIRECT_URL are not set to the public URLs, so presigned URLs and console redirects point to internal names."
+      ],
+      "diagnosis": [
+        "mc alias set test https://s3.example.com KEY SECRET && mc ls test --debug 2>&1 | grep -iE 'host|signature'",
+        "curl -vI https://s3.example.com/minio/health/live",
+        "docker logs TRAEFIK 2>&1 | grep s3.example.com"
+      ],
+      "fix": [
+        "Use separate hostnames: s3.example.com to port 9000 (API) and console.example.com to port 9001 (console).",
+        "Pass the Host through unchanged (nginx: proxy_set_header Host $http_host;), and don't add rewriting middlewares on the S3 router.",
+        "Set MINIO_SERVER_URL=https://s3.example.com and MINIO_BROWSER_REDIRECT_URL=https://console.example.com.",
+        "Raise proxy body size and timeouts for big multipart uploads (nginx client_max_body_size 0; proxy_request_buffering off)."
+      ],
+      "prevention": "Test with mc and one real client (restic or the AWS CLI) after every proxy change. Keep S3 traffic off the shared middleware chain.",
+      "sources": [
+        {"title": "minio#20429: SignatureDoesNotMatch behind NGINX Ingress in Kubernetes", "url": "https://github.com/minio/minio/issues/20429", "type": "github-issue", "verified": true},
+        {"title": "minio discussion #13768: MinIO signature mismatch", "url": "https://github.com/minio/minio/discussions/13768", "type": "github-discussion", "verified": true},
+        {"title": "minio#11218: documentation is not valid for nginx proxy", "url": "https://github.com/minio/minio/issues/11218", "type": "github-issue", "verified": true},
+        {"title": "Reddit r/Traefik search", "url": "https://www.reddit.com/r/Traefik/search/?q=minio+signature&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "S3-compatible client misconfiguration: path-style, region, private CA, clock skew (Velero BSL Unavailable)",
+      "area": "Object storage clients",
+      "tool": "Velero, restic, pgBackRest, GitLab, aws-cli against MinIO/Garage/Ceph",
+      "level": "L2 Troubleshooter",
+      "context": "A backup tool or app points at your on-prem S3 (MinIO with a certificate from your private CA, like Harbor). Connection tests fail or the target shows as unavailable.",
+      "error_text": "BackupStorageLocation \"default\" is unavailable: ... BucketRegionError: incorrect region, the bucket is not in 'us-west-2' region | x509: certificate signed by unknown authority | RequestTimeTooSkewed: The difference between the request time and the server's time is too large",
+      "frequency_signal": "Velero issues #5511, #6691 and #7828 and its MinIO quick-start doc. The same settings come up for every S3-compatible client.",
+      "root_causes": [
+        "The SDK uses virtual-host style (bucket.s3.example.com), but the server only supports path-style. Velero: s3ForcePathStyle is not set.",
+        "Region mismatch (MinIO default us-east-1), or the S3 plugin is missing (Velero: no ObjectStore plugin named velero.io/aws).",
+        "The private CA is not trusted inside the client container or pod, or the client's clock is off by more than about 15 minutes (on-prem NTP blocked)."
+      ],
+      "diagnosis": [
+        "kubectl -n velero get backupstoragelocations; kubectl -n velero logs deploy/velero | grep -i backupstoragelocation",
+        "aws --endpoint-url https://s3.example.com s3 ls s3://BUCKET",
+        "openssl s_client -connect s3.example.com:443 -servername s3.example.com </dev/null | grep -E 'Verify return|issuer'",
+        "timedatectl; chronyc tracking"
+      ],
+      "fix": [
+        "Velero BSL config: region: us-east-1 (or minio), s3ForcePathStyle: \"true\", s3Url: https://s3.example.com, plus caCert (base64 CA) or --cacert.",
+        "restic: -o s3.bucket-lookup=path where needed. aws-cli: addressing_style = path. Other SDKs: forcePathStyle / use_path_style_endpoint.",
+        "Mount your CA into client containers (SSL_CERT_FILE, or update-ca-certificates in the image), as you already do for Harbor.",
+        "Fix NTP (chrony with an internal time source) on every node."
+      ],
+      "prevention": "Keep one tested S3 client profile per tool in Git, and monitor BSL phase and backup status in Prometheus.",
+      "sources": [
+        {"title": "velero#5511: BSL unavailable, BucketRegionError incorrect region", "url": "https://github.com/vmware-tanzu/velero/issues/5511", "type": "github-issue", "verified": true},
+        {"title": "velero#6691: BSL minio unavailable, unable to locate ObjectStore plugin", "url": "https://github.com/vmware-tanzu/velero/issues/6691", "type": "github-issue", "verified": true},
+        {"title": "Velero docs: Quick start evaluation install with MinIO", "url": "https://velero.io/docs/main/contributions/minio/", "type": "docs", "verified": true},
+        {"title": "Reddit r/kubernetes search", "url": "https://www.reddit.com/r/kubernetes/search/?q=velero+minio+backupstoragelocation+unavailable&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "New AWS SDK checksum defaults break uploads to S3-compatible storage (Velero AWS plugin and others)",
+      "area": "Object storage compatibility",
+      "tool": "velero-plugin-for-aws, AWS SDKs/CLI, Ceph RGW, older MinIO, other S3-compatible servers",
+      "level": "L3 Platform",
+      "context": "After upgrading Velero, its AWS plugin, or a tool built on newer AWS SDKs, uploads to on-prem S3 fail although credentials and endpoint did not change.",
+      "error_text": "V4 authentication signed header not found: accept-encoding | PutObject ... StatusCode: 400 ... InvalidArgument | multipart upload EOF on backups larger than 5 MiB",
+      "frequency_signal": "A chain of Velero issues: #7534 (checksum header breaks B2), #7828 (plugin 1.9.x vs S3-compatible), #9804 (checksumAlgorithm \"\" does not suppress trailing checksums on Ceph) and #10543 (multipart uploads force CRC32).",
+      "root_causes": [
+        "AWS SDKs started sending new integrity headers and trailing checksums by default. Many S3-compatible servers don't support them.",
+        "SDK v2 changed which headers are signed, and some gateways reject that.",
+        "Plugin options (checksumAlgorithm: \"\") cover single PUTs but not always multipart uploads."
+      ],
+      "diagnosis": [
+        "kubectl -n velero logs deploy/velero | grep -iE 'checksum|InvalidArgument|signed header'",
+        "kubectl -n velero get deploy velero -o jsonpath='{.spec.template.spec.initContainers[*].image}'   # plugin version",
+        "Reproduce with a small and a >5 MiB object using the same client."
+      ],
+      "fix": [
+        "Set config.checksumAlgorithm: \"\" on the BackupStorageLocation for S3-compatible targets.",
+        "If multipart still fails, pin the last plugin version that works with your storage and follow the open issues, or upgrade the storage server.",
+        "For aws-cli or boto3 against S3-compatible storage: AWS_REQUEST_CHECKSUM_CALCULATION=when_required and AWS_RESPONSE_CHECKSUM_VALIDATION=when_required."
+      ],
+      "prevention": "Upgrade backup tooling in staging first and run one large and one small test backup plus a restore against the real storage.",
+      "sources": [
+        {"title": "velero#7828: velero-plugin-for-aws 1.9.x no longer works with S3-compatible BSL", "url": "https://github.com/velero-io/velero/issues/7828", "type": "github-issue", "verified": true},
+        {"title": "velero#9804: checksumAlgorithm \"\" does not suppress trailing checksum (Ceph)", "url": "https://github.com/velero-io/velero/issues/9804", "type": "github-issue", "verified": true},
+        {"title": "velero#10543: multipart uploads force a CRC32 trailer", "url": "https://github.com/velero-io/velero/issues/10543", "type": "github-issue", "verified": true},
+        {"title": "velero-plugin-for-aws README (BSL config keys)", "url": "https://github.com/vmware-tanzu/velero-plugin-for-aws/blob/main/README.md", "type": "docs", "verified": true}
+      ]
+    },
+    {
+      "title": "Distributed MinIO will not start or serve: waiting for drives, insufficient drives online, endless healing",
+      "area": "Object storage clusters",
+      "tool": "MinIO (erasure-coded / distributed)",
+      "level": "L3 Platform",
+      "context": "A multi-drive or multi-node MinIO restarts after maintenance, a disk swap or a hostname change and will not come back, or only lists some buckets.",
+      "error_text": "Waiting for a minimum of 2 disks to come online | Insufficient number of drives online | Read failed. Insufficient number of drives online | drives stuck in healing",
+      "frequency_signal": "Among the most commented MinIO issues: #9052 (58 comments), #15452 (42), #14247 (43), #12426 (42).",
+      "root_causes": [
+        "Erasure sets need read and write quorum. Too many drives or nodes down, or mounted at different paths, means no quorum.",
+        "Nodes cannot resolve or reach each other (DNS, firewall, different MINIO_VOLUMES lists on nodes).",
+        "A drive was replaced or mounted elsewhere (format.json mismatch), or a node clock is skewed."
+      ],
+      "diagnosis": [
+        "mc admin info ALIAS",
+        "journalctl -u minio -n 100 --no-pager (or docker logs)",
+        "Check that every node has the identical MINIO_VOLUMES and that drives are mounted (lsblk, findmnt).",
+        "From each node: getent hosts OTHER_NODE; nc -vz OTHER_NODE 9000"
+      ],
+      "fix": [
+        "Bring the missing drives or nodes back first. MinIO heals once quorum is back. Don't wipe drives to 'fix' it.",
+        "Use identical, fstab-pinned mounts (by UUID) and stable hostnames on all nodes.",
+        "Replace a failed drive with an empty one of the same size at the same path, then watch mc admin heal ALIAS."
+      ],
+      "prevention": "Rehearse a drive failure and a node failure in a lab. Monitor drive state via the MinIO Prometheus metrics.",
+      "sources": [
+        {"title": "MinIO issues sorted by comments (#9052, #15452, #14247, #12426)", "url": "https://github.com/minio/minio/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-listing", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=minio+%22Insufficient+number+of+drives+online%22", "type": "search", "verified": false},
+        {"title": "Reddit r/homelab search", "url": "https://www.reddit.com/r/homelab/search/?q=minio+distributed+drives+quorum&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "MinIO Community Edition is archived: no new binaries or images and a stripped console. What now?",
+      "area": "Object storage strategy",
+      "tool": "MinIO CE vs AIStor, Garage, SeaweedFS, RustFS, Ceph RGW",
+      "level": "L4 SRE",
+      "context": "Your backups (restic, Velero, Dokploy, GitLab artifacts) depend on a self-hosted MinIO. A teammate notices that docker pull minio/minio no longer gets updates and the console lost its admin pages.",
+      "error_text": "THIS REPOSITORY IS NO LONGER MAINTAINED (minio/minio README); the repository is archived and read-only",
+      "frequency_signal": "Widely discussed through 2025-2026: the admin UI removal (Blocks and Files, June 2025), binary and image distribution ending (MinIO's own 'Docker release?' issue #21647 has 41 comments), the archive notice, and many 'MinIO alternatives' comparisons.",
+      "root_causes": [
+        "The vendor moved users to AIStor (Free and Enterprise editions). CE gets source code only under AGPLv3, with no maintenance.",
+        "Images pinned to an old tag keep working but get no security fixes, and a ':latest' tag may vanish or go stale.",
+        "Admin features (users, policies, lifecycle) are now CLI-only (mc admin) in CE builds."
+      ],
+      "diagnosis": [
+        "docker inspect -f '{{.Config.Image}}' MINIO; mc admin info ALIAS   # version and build date",
+        "List what depends on S3: backup tools, Dokploy destinations, GitLab object storage, Velero BSLs, app buckets."
+      ],
+      "fix": [
+        "Short term: pin the current image digest, restrict network access, and manage it with mc admin.",
+        "Decide on a target: AIStor Free (vendor edition), or open-source alternatives such as Garage (small, geo-distributed, AGPL), SeaweedFS (Apache-2.0, many features), RustFS (Apache-2.0, newer) or Ceph RGW (heavy but mature).",
+        "Migrate bucket by bucket with mc mirror or rclone sync, switch clients, and test restores from the new target before you retire MinIO."
+      ],
+      "prevention": "Track upstream health (releases, license, archive status) for every stateful dependency, and keep backups portable (restic/borg repos and plain S3 objects).",
+      "sources": [
+        {"title": "minio/minio repository (archived, 'no longer maintained' notice)", "url": "https://github.com/minio/minio", "type": "github-repo", "verified": true},
+        {"title": "Blocks and Files: MinIO users complain after admin UI removed from Community Edition", "url": "https://www.blocksandfiles.com/ai-ml/2025/06/19/minio-users-complain-after-admin-ui-removed-from-community-edition/1610856", "type": "news", "verified": true},
+        {"title": "RustFS vs SeaweedFS vs Garage: which MinIO alternative", "url": "https://blog.elest.io/rustfs-vs-seaweedfs-vs-garage-which-minio-alternative-should-you-pick/", "type": "blog", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=minio+alternative+garage+seaweedfs&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Backup repository is locked: restic 'already locked' / borg 'Failed to create/acquire the lock'",
+      "area": "Backups (restic, borg)",
+      "tool": "restic, BorgBackup",
+      "level": "L1 Operator",
+      "context": "The nightly backup fails after a reboot, an OOM kill, a network drop or an overlapping cron run. Every later run fails the same way until someone intervenes.",
+      "error_text": "Fatal: unable to create lock in backend: repository is already locked by PID 1234 on HOST by root | Failed to create/acquire the lock /repo/lock.exclusive (timeout).",
+      "frequency_signal": "The most common restic and borg support topic. Both projects document the unlock and break-lock commands for it.",
+      "root_causes": [
+        "A previous run was killed and left a stale lock file.",
+        "Two jobs really are running at once (cron overlap, a second host on the same repo, prune during backup).",
+        "Clock skew between hosts makes locks look fresh or stale wrongly."
+      ],
+      "diagnosis": [
+        "restic list locks; restic -r REPO list locks --no-lock",
+        "pgrep -a restic; pgrep -a borg   # on every host that uses the repo",
+        "systemctl list-timers | grep -iE 'restic|borg'"
+      ],
+      "fix": [
+        "After confirming nothing is running: restic unlock (removes stale locks only), or borg break-lock REPO.",
+        "Prevent overlap: run jobs from systemd timers (one instance at a time) or flock -n /run/backup.lock backup.sh.",
+        "restic: --retry-lock 30m lets a job wait for a lock instead of failing."
+      ],
+      "prevention": "Use one scheduler per repo, keep prune/forget out of the backup window, and alert on 'last successful snapshot' age.",
+      "sources": [
+        {"title": "restic docs: Troubleshooting (interrupted operations may need unlock)", "url": "https://restic.readthedocs.io/en/stable/077_troubleshooting.html", "type": "docs", "verified": true},
+        {"title": "BorgBackup FAQ", "url": "https://borgbackup.readthedocs.io/en/stable/faq.html", "type": "docs", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=restic+%22repository+is+already+locked%22", "type": "search", "verified": false},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=borg+break-lock+failed+to+acquire+lock&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "restic check reports a damaged repository: repository contains errors / ciphertext verification failed",
+      "area": "Backups (integrity)",
+      "tool": "restic (also borg check)",
+      "level": "L3 Platform",
+      "context": "A periodic restic check (or a restore) fails. The repo sits on a USB disk, NAS, SFTP box or S3, sometimes after a power loss or a flaky disk.",
+      "error_text": "Fatal: repository contains errors | ciphertext verification failed | pack ... contains N errors",
+      "frequency_signal": "Restic forum top topics: 'Fatal: repository contains errors => how best to respond?' and 'Recovery options for damaged repositories'. The repair commands were added in restic 0.16+.",
+      "root_causes": [
+        "Bad hardware (RAM, disk, USB bridge) corrupts data, and the corruption comes back unless the hardware is fixed.",
+        "Interrupted writes or non-atomic storage (some network filesystems or cloud sync folders).",
+        "Concurrent prune and backup from old versions, or manual edits of repo files."
+      ],
+      "diagnosis": [
+        "restic check --read-data-subset=10%   # sample, or --read-data for everything",
+        "smartctl -a /dev/sdX; dmesg | grep -iE 'I/O error|ata'",
+        "memtest86+ on the backup host if ciphertext errors repeat"
+      ],
+      "fix": [
+        "Stop all forget/prune jobs and copy the repo (at least index/ and snapshots/) before repairing.",
+        "restic repair index (or restic repair packs IDS if check names damaged packs)",
+        "Run a fresh restic backup so current data is re-uploaded, then restic repair snapshots --forget",
+        "restic check --read-data to confirm. Fix the hardware first if ciphertext errors appeared."
+      ],
+      "prevention": "Schedule restic check --read-data-subset weekly, keep a second copy (restic copy to another repo), and use reliable storage.",
+      "sources": [
+        {"title": "restic docs: Troubleshooting / repairing a repository", "url": "https://restic.readthedocs.io/en/stable/077_troubleshooting.html", "type": "docs", "verified": true},
+        {"title": "restic forum top topics (repository errors, damaged repositories, 22TB restore lessons)", "url": "https://forum.restic.net/top?period=all", "type": "forum", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=restic+%22repository+contains+errors%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Encrypted backups you cannot open: lost restic password or borg key",
+      "area": "Backups (keys and secrets)",
+      "tool": "restic, BorgBackup",
+      "level": "L1 Operator",
+      "context": "The server died, and the backup repo is fine on the NAS or S3, but the password lived only in the dead server's script, or borg keyfile mode kept the key in ~/.config/borg/keys/ on the dead machine.",
+      "error_text": "Fatal: wrong password or no key found | passphrase supplied in BORG_PASSPHRASE is incorrect",
+      "frequency_signal": "Recurring heartbreak threads. The restic forum's 'Will no backup or no password be ever implemented?' has 32 replies, and the borg FAQ stresses exporting keys.",
+      "root_causes": [
+        "Client-side encryption is real: without the password (restic) or key plus passphrase (borg), the data cannot be recovered by anyone.",
+        "Secrets were stored only on the machine being backed up.",
+        "borg keyfile mode puts the key outside the repo. In repokey mode the key is in the repo but still needs the passphrase."
+      ],
+      "diagnosis": [
+        "restic -r REPO key list (needs one working password)",
+        "borg key export REPO /safe/place/borg-key.txt (test that it works now, while you still can)",
+        "List where every backup secret is stored and who can reach it."
+      ],
+      "fix": [
+        "If a password is lost but another key still works: restic key add, then remove the old key.",
+        "If no key works, the data is gone. Start a new repo and treat it as an incident.",
+        "Store passwords and exported keys in a password manager and on paper, off the backed-up hosts."
+      ],
+      "prevention": "Include 'restore on a clean machine using only the vault' in your DR drill, so secret storage gets tested too.",
+      "sources": [
+        {"title": "BorgBackup FAQ (key export, repokey vs keyfile)", "url": "https://borgbackup.readthedocs.io/en/stable/faq.html", "type": "docs", "verified": true},
+        {"title": "restic forum top topics", "url": "https://forum.restic.net/top?period=all", "type": "forum", "verified": true},
+        {"title": "Reddit r/homelab search", "url": "https://www.reddit.com/r/homelab/search/?q=lost+restic+password&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "pgBackRest: WAL segment was not archived before the timeout / stanza mismatch after a major upgrade",
+      "area": "PostgreSQL physical backups and PITR",
+      "tool": "pgBackRest",
+      "level": "L3 Platform",
+      "context": "You set up pgBackRest (local repo, SFTP or S3/MinIO) for point-in-time recovery. pgbackrest check or the first backup fails, or archiving breaks right after upgrading PostgreSQL 15 to 16.",
+      "error_text": "ERROR: [082]: WAL segment 000000010000000000000003 was not archived before the 60000ms timeout | ERROR: [044]: PostgreSQL version 16, system-id ... do not match stanza version 15, system-id ...",
+      "frequency_signal": "Error 082 is the most repeated pgBackRest issue title (#1569, #1714, #1717, #2345, #2451, plus mailing list threads).",
+      "root_causes": [
+        "archive_command is wrong or missing (wrong --stanza, wrong path, archive_mode=off), so WAL never reaches the repo.",
+        "The postgres user cannot reach the repo (SSH keys, TLS server, S3 credentials or CA), or the network is too slow for archive-timeout.",
+        "After a major upgrade the stanza still describes the old cluster until stanza-upgrade runs."
+      ],
+      "diagnosis": [
+        "sudo -u postgres psql -c \"SHOW archive_mode;\" -c \"SHOW archive_command;\"",
+        "SELECT * FROM pg_stat_archiver;   -- failed_count, last_failed_wal",
+        "sudo -u postgres pgbackrest --stanza=main --log-level-console=info check",
+        "Read the PostgreSQL log for archive-push errors."
+      ],
+      "fix": [
+        "archive_mode = on and archive_command = 'pgbackrest --stanza=main archive-push %p' (restart for archive_mode).",
+        "Fix the repo access for the postgres user, then re-run check until it passes.",
+        "After pg_upgrade: sudo -u postgres pgbackrest --stanza=main --no-online stanza-upgrade, then take a new full backup.",
+        "For slow links: raise archive-timeout and enable archive-async with a spool path."
+      ],
+      "prevention": "Make pgbackrest check plus a weekly restore to a scratch host part of the runbook, and alert on pg_stat_archiver failures.",
+      "sources": [
+        {"title": "pgbackrest#2451: ERROR [082] WAL segment not archived before the 60000ms timeout", "url": "https://github.com/pgbackrest/pgbackrest/issues/2451", "type": "github-issue", "verified": true},
+        {"title": "pgbackrest#1569: standby fails with ERROR [082]", "url": "https://github.com/pgbackrest/pgbackrest/issues/1569", "type": "github-issue", "verified": true},
+        {"title": "pgBackRest homepage (current release 2.59.x)", "url": "https://pgbackrest.org/", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=pgbackrest+%22was+not+archived+before+the%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Velero backup shows Completed, but the restored database is empty or corrupt",
+      "area": "Kubernetes backup and restore",
+      "tool": "Velero (file-system backup with Kopia, CSI snapshots)",
+      "level": "L3 Platform",
+      "context": "Velero backs up a namespace with a Postgres or MySQL StatefulSet. In the first real restore the PVC is empty, or the database needs crash recovery and some data is missing.",
+      "error_text": "Backup phase Completed (or PartiallyFailed) with 0 pod volume backups; after restore the DB starts with an empty data directory or reports crash recovery",
+      "frequency_signal": "A frequent Velero surprise. Hybrid snapshot and file-system questions and requests for data-only restores are long-running, highly reacted issues (#2671, #7345).",
+      "root_causes": [
+        "File-system backup is opt-in: volumes are skipped unless pods carry backup.velero.io/backup-volumes or Velero was installed with --default-volumes-to-fs-backup.",
+        "No CSI snapshot support (no VolumeSnapshotClass or driver) and no node-agent DaemonSet, so only the manifests are saved.",
+        "File-level copies of a live database are not point-in-time consistent without pre/post hooks (fsfreeze, CHECKPOINT) or logical dumps."
+      ],
+      "diagnosis": [
+        "velero backup describe BACKUP --details   # look for Pod Volume Backups / CSI snapshots",
+        "velero backup logs BACKUP | grep -iE 'skipp|volume|error'",
+        "kubectl -n velero get ds node-agent; kubectl get volumesnapshotclass"
+      ],
+      "fix": [
+        "Annotate DB pods (backup.velero.io/backup-volumes=data) or use --default-volumes-to-fs-backup, and deploy the node agent.",
+        "Add backup hooks for consistency, for example pre: psql -c 'CHECKPOINT' or fsfreeze; or better, also run a logical dump or pgBackRest from the DB itself.",
+        "Test restores into a new namespace (velero restore create --namespace-mappings app:app-restore-test) and verify row counts."
+      ],
+      "prevention": "Back up databases with database-native tools (pgBackRest, operators) and use Velero for manifests and other volumes. Run monthly restore tests.",
+      "sources": [
+        {"title": "Velero docs: File System Backup (opt-in annotations, consistency limits, node-agent)", "url": "https://velero.io/docs/main/file-system-backup/", "type": "docs", "verified": true},
+        {"title": "Velero issues sorted by reactions (#2671 hybrid snapshot/restic, #7345 restore volume data only)", "url": "https://github.com/vmware-tanzu/velero/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc", "type": "github-listing", "verified": true},
+        {"title": "Reddit r/kubernetes search", "url": "https://www.reddit.com/r/kubernetes/search/?q=velero+restore+database+empty+pvc&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Proxmox Backup Server datastore full, and prune plus garbage collection do not free space",
+      "area": "Backups (VM/CT level)",
+      "tool": "Proxmox Backup Server (PBS)",
+      "level": "L2 Troubleshooter",
+      "context": "Backup jobs from Proxmox VE start failing with ENOSPC. You prune old snapshots, run garbage collection, and the disk is still full.",
+      "error_text": "ENOSPC: No space left on device | TASK ERROR: ... unable to update atime | garbage collection shows chunks as 'Pending removals'",
+      "frequency_signal": "Many Proxmox forum threads with near-identical titles: 'Proxmox Backup Server full', 'Disk full - unable to run garbage collection', 'The space on the backup server is full'.",
+      "root_causes": [
+        "Prune only removes snapshot indexes. Chunks are freed by GC, and only when unused for longer than the cutoff (24h 5m by default).",
+        "GC must update chunk atime, and on a 100% full ZFS pool even that fails (copy-on-write needs free space).",
+        "No retention or prune jobs, no quota, or no alert before 90%."
+      ],
+      "diagnosis": [
+        "proxmox-backup-manager datastore list; df -h /mnt/datastore/STORE (or zfs list)",
+        "Datastore > Prune & GC in the UI: last GC result and 'Pending removals'",
+        "proxmox-backup-manager garbage-collection status STORE"
+      ],
+      "fix": [
+        "Free a little space first (on ZFS remove an unneeded dataset or snapshot, or extend the pool), so GC can run.",
+        "Prune by your retention policy, run GC, and run GC again after the cutoff has passed. Newer PBS versions let you shorten the cutoff in datastore tuning options.",
+        "Add prune jobs and a scheduled GC per datastore, and set the ZFS quota below 100% of the pool."
+      ],
+      "prevention": "Alert at 80% datastore usage, size storage for retention times change rate, and run verify jobs so you know chunks are readable.",
+      "sources": [
+        {"title": "Proxmox forum: Disk full - unable to run garbage collection", "url": "https://forum.proxmox.com/threads/disk-full-unable-to-run-garbage-collection.81800/", "type": "forum", "verified": true},
+        {"title": "Proxmox forum: Proxmox Backup Server full", "url": "https://forum.proxmox.com/threads/proxmox-backup-server-full.119897/", "type": "forum", "verified": true},
+        {"title": "PBS documentation (4.x: garbage collection, prune jobs)", "url": "https://pbs.proxmox.com/docs/", "type": "docs", "verified": true},
+        {"title": "Reddit r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=PBS+datastore+full+garbage+collection&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "The backup job 'succeeded' for weeks but produced empty or unusable files",
+      "area": "Backup monitoring",
+      "tool": "cron/systemd timers, pg_dump/mysqldump scripts, any backup tool",
+      "level": "L2 Troubleshooter",
+      "context": "You only discover during an incident that the newest usable backup is weeks old, or that the .sql.gz files are 20 bytes.",
+      "error_text": "No error at all: 0-byte or tiny backup files, cron mail never read or rejected, exit code 0 from a broken pipeline",
+      "frequency_signal": "The core lesson of GitLab's 2017 outage (S3 bucket empty, failure emails silently rejected), repeated across postmortems.",
+      "root_causes": [
+        "pg_dump ... | gzip > file returns gzip's exit code, so a pg_dump failure is masked without set -o pipefail.",
+        "Cron runs with a minimal PATH and env (no PGPASSWORD, no .pgpass for that user) and sends errors to local mail nobody reads.",
+        "Nobody checks backup age, size trends or restores."
+      ],
+      "diagnosis": [
+        "ls -lh --time-style=long-iso /backups | tail; or mc ls / aws s3 ls with sizes and dates",
+        "journalctl -u backup.service --since '-7 days' (if it runs from a systemd timer)",
+        "bash -x /usr/local/bin/backup.sh as the same user the scheduler uses"
+      ],
+      "fix": [
+        "Script header: #!/usr/bin/env bash plus set -Eeuo pipefail; check the dump's trailer or pg_restore -l before uploading.",
+        "Run from a systemd timer (OnFailure= hook) instead of cron mail, and send a success ping to a dead-man's switch (Healthchecks-style) or a Prometheus textfile/Pushgateway metric.",
+        "Alert when the newest backup is older than 26h or less than 50% of the previous size."
+      ],
+      "prevention": "Monitor backups as a service with SLOs (age, size, restore test result) and review backup dashboards weekly.",
+      "sources": [
+        {"title": "GitLab 2017 postmortem (silent pg_dump failure, rejected cron emails)", "url": "https://about.gitlab.com/blog/2017/02/10/postmortem-of-database-outage-of-january-31/", "type": "postmortem", "verified": true},
+        {"title": "prodrigestivill/docker-postgres-backup-local#63 (backups failing with version mismatch)", "url": "https://github.com/prodrigestivill/docker-postgres-backup-local/issues/63", "type": "github-issue", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=cron+backup+script+empty+file+pipefail", "type": "search", "verified": false},
+        {"title": "Reddit r/sysadmin search", "url": "https://www.reddit.com/r/sysadmin/search/?q=backups+never+tested+restore+failed&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "No tested restore: RTO and RPO discovered during the disaster (and ransomware deleting the backups too)",
+      "area": "Disaster recovery",
+      "tool": "Any (pgBackRest, restic/borg, PBS, Velero, Dokploy backups, S3 object lock)",
+      "level": "L4 SRE",
+      "context": "The primary is gone (rm -rf on the wrong host, disk failure, ransomware). Backups exist, but the restore takes far longer than expected, misses data, or the attacker deleted the backups as well.",
+      "error_text": "Postmortem lines such as 'restoring from the snapshot took over 18 hours' or 'only daily backups were available'",
+      "frequency_signal": "GitLab 2017 (rm -rf on the primary, 18+ hour restore over slow disks), Keepthescore (production DB deleted, only daily backups) and other entries in Dan Luu's list, plus forum stories like the restic '22TB restore: Mistakes were made'.",
+      "root_causes": [
+        "Restore speed was never measured (network and disk throughput, decompression, WAL replay).",
+        "Backups are reachable and deletable with the same credentials as production (no append-only or immutability).",
+        "There is no runbook and no owner, and the steps exist only in one person's head."
+      ],
+      "diagnosis": [
+        "For each database, write down the RPO and RTO you have measured, not the ones you hope for.",
+        "Time a full restore of the biggest DB to a scratch host: wall clock from 'start' to 'app healthy'.",
+        "Check whether a production host's credentials can delete or overwrite its backups."
+      ],
+      "fix": [
+        "Follow 3-2-1: 3 copies, 2 media, 1 off-site. Add one immutable copy: S3 object lock, borg append-only via SSH forced command, restic rest-server --append-only, or PBS with separate credentials.",
+        "Add PITR for important Postgres (pgBackRest or WAL archiving) so RPO is minutes, not a day.",
+        "Run quarterly game days: restore, then run app-level checks, record the timings and update the runbook."
+      ],
+      "prevention": "A backup counts only when a restore test has passed. Put restore drills on the calendar like the CKA practice sessions.",
+      "sources": [
+        {"title": "GitLab 2017 postmortem", "url": "https://about.gitlab.com/blog/2017/02/10/postmortem-of-database-outage-of-january-31/", "type": "postmortem", "verified": true},
+        {"title": "Dan Luu's post-mortems list (database and data-loss entries)", "url": "https://github.com/danluu/post-mortems", "type": "postmortem-collection", "verified": true},
+        {"title": "BorgBackup FAQ (append-only mode)", "url": "https://borgbackup.readthedocs.io/en/stable/faq.html", "type": "docs", "verified": true},
+        {"title": "Reddit r/sysadmin search", "url": "https://www.reddit.com/r/sysadmin/search/?q=disaster+recovery+test+restore+backup&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Database StatefulSet stuck after a node failure: Multi-Attach error for volume",
+      "area": "Databases on Kubernetes",
+      "tool": "Kubernetes (StatefulSet, CSI, Longhorn and others)",
+      "level": "L3 Platform",
+      "context": "A worker running the Postgres or MySQL pod dies or is powered off. The replacement pod stays in ContainerCreating for a long time and the DB is down.",
+      "error_text": "Warning  FailedAttachVolume  Multi-Attach error for volume \"pvc-...\" Volume is already exclusively attached to one node and can't be attached to another",
+      "frequency_signal": "Long threads on discuss.kubernetes.io and Longhorn discussions, plus vendor KBs (Broadcom, IBM, Google Distributed Cloud).",
+      "root_causes": [
+        "RWO volumes can attach to one node only. The control plane cannot tell whether the dead node still writes, so it keeps the attachment.",
+        "StatefulSet pods on an unreachable node stay Terminating, by design, to avoid two writers.",
+        "A stale VolumeAttachment object stays behind after the node is deleted."
+      ],
+      "diagnosis": [
+        "kubectl describe pod DB-0 | sed -n '/Events/,$p'",
+        "kubectl get volumeattachments | grep PV_NAME",
+        "kubectl get nodes; kubectl get pod DB-0 -o wide"
+      ],
+      "fix": [
+        "If the node is really off: kubectl taint nodes NODE node.kubernetes.io/out-of-service=nodeshutdown:NoExecute (non-graceful node shutdown), so pods and attachments are cleaned up.",
+        "Or force-delete the stuck pod (kubectl delete pod DB-0 --grace-period=0 --force) after confirming the node is fenced.",
+        "Delete a stale VolumeAttachment that refers to a node that no longer exists. Remove the taint when the node comes back."
+      ],
+      "prevention": "Run HA databases through an operator (replicas on other nodes with failover) rather than one pod with an RWO disk, and practise a node-loss drill.",
+      "sources": [
+        {"title": "Discuss Kubernetes: Multi-Attach error for volume", "url": "https://discuss.kubernetes.io/t/multi-attach-error-for-volume-pvc-volume-is-already-exclusively-attached-to-one-node-and-cant-be-attached-to-another/18951", "type": "forum", "verified": true},
+        {"title": "Longhorn discussion #5369: Multi-Attach error", "url": "https://github.com/longhorn/longhorn/discussions/5369", "type": "github-discussion", "verified": true},
+        {"title": "Broadcom KB: persistent volumes cannot attach to a new node if previous node is deleted", "url": "https://knowledge.broadcom.com/external/article/327470/persistent-volumes-cannot-attach-to-a-ne.html", "type": "vendor-kb", "verified": true},
+        {"title": "Reddit r/kubernetes search", "url": "https://www.reddit.com/r/kubernetes/search/?q=Multi-Attach+error+statefulset+node+down&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Migration tool state breaks the pipeline: Liquibase 'Waiting for changelog lock' / Flyway checksum mismatch",
+      "area": "Migrations in CI/CD",
+      "tool": "Liquibase, Flyway (similar: Django, Prisma, Alembic)",
+      "level": "L2 Troubleshooter",
+      "context": "A deploy hangs forever at start-up, or the GitLab CI migrate job fails in staging or production although it passed locally.",
+      "error_text": "liquibase: Waiting for changelog lock.... | Validate failed: Migrations have failed validation / Migration checksum mismatch for migration version 2",
+      "frequency_signal": "Both are top results for their tools: Liquibase lock threads in Traccar, Micro Focus and university course notes, and Flyway #2983 plus many blog fixes.",
+      "root_causes": [
+        "A pod running migrations was killed (OOM, rollout, liveness probe) while holding the lock row in DATABASECHANGELOGLOCK.",
+        "Someone edited an already-applied migration (even whitespace or comments), so the stored checksum no longer matches.",
+        "Different branches created conflicting versions, or migrations ran out of order between environments."
+      ],
+      "diagnosis": [
+        "SELECT * FROM databasechangeloglock;   -- LOCKED, LOCKGRANTED, LOCKEDBY",
+        "SELECT version, checksum, success FROM flyway_schema_history ORDER BY installed_rank DESC LIMIT 5;",
+        "git log -p -- db/migration/V2__*.sql"
+      ],
+      "fix": [
+        "Liquibase: make sure no migration is running, then liquibase release-locks (or UPDATE databasechangeloglock SET locked=false WHERE id=1;).",
+        "Flyway: restore the original file from Git. Only if the change is intentional and already applied everywhere, run flyway repair.",
+        "Put changes in a new migration file. Never edit applied ones."
+      ],
+      "prevention": "Run migrations as one dedicated CI job or Kubernetes Job with enough memory and no liveness kill. Add a CI check that applied migration files are immutable.",
+      "sources": [
+        {"title": "Liquibase: Waiting for changelog lock (course notes)", "url": "https://ucsb-cs156.github.io/topics/liquibase/waiting_for_changelog_lock.html", "type": "blog", "verified": true},
+        {"title": "Kubernetes-aware Liquibase lock release", "url": "https://github.com/szintezisnet/Kubernetes-Liquibase-Lock-Release", "type": "github-repo", "verified": true},
+        {"title": "flyway#2983: Validate failed, migration checksum mismatch", "url": "https://github.com/flyway/flyway/issues/2983", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=liquibase+%22Waiting+for+changelog+lock%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Migrations in rolling deploys: every replica migrates at start-up, and old pods break on the new schema",
+      "area": "Migrations in CI/CD",
+      "tool": "GitLab CI / GitHub Actions / Jenkins / ArgoCD, Kubernetes, Dokploy",
+      "level": "L3 Platform",
+      "context": "The app runs 'migrate' in its entrypoint, and Dokploy, Swarm or Kubernetes start several replicas. Or one deploy renames or retypes a column while old pods still serve traffic.",
+      "error_text": "ERROR:  relation \"x\" already exists | duplicate key value violates unique constraint \"schema_migrations_pkey\" | old pods: column \"name\" does not exist",
+      "frequency_signal": "Classic design question for platform teams. Real postmortems: CircleCI 2021 (a deploy changed a field type) and GitHub 2021 (migration load caused cascading failures).",
+      "root_causes": [
+        "Concurrent migration runners without a lock (or a tool whose lock isn't used), all started at once by the orchestrator.",
+        "Breaking schema changes deployed in one step while old and new app versions overlap during a rolling update.",
+        "No separate, observable migration stage with its own rollback plan."
+      ],
+      "diagnosis": [
+        "Find where migrations run: grep -R 'migrate' Dockerfile entrypoint.sh .gitlab-ci.yml charts/",
+        "Check the migration table for duplicates or partially applied versions.",
+        "Compare deploy timeline vs error spike (Grafana annotations, kubectl rollout history)."
+      ],
+      "fix": [
+        "Run migrations once per release: a dedicated GitLab CI job before deploy, a Kubernetes Job or Helm pre-upgrade hook, or an ArgoCD PreSync hook. Never in every replica's entrypoint.",
+        "Use expand/contract: add the new column, deploy code that writes both, backfill, switch reads, and only drop the old column in a later release.",
+        "Make each step backward compatible with the previous app version, so app rollback stays possible."
+      ],
+      "prevention": "Write a migration policy (lock_timeout, expand/contract, one runner, reviewed in MR) and practise rolling back an app version over a migrated schema.",
+      "sources": [
+        {"title": "CircleCI incident report Nov 2021 (deploy changed a field type)", "url": "https://discuss.circleci.com/t/incident-report-november-8-2021-jobs-stuck-in-a-not-running-state/41890", "type": "postmortem", "verified": true},
+        {"title": "GitHub availability report Nov 2021", "url": "https://github.blog/2021-12-01-github-availability-report-november-2021/", "type": "postmortem", "verified": true},
+        {"title": "Bytebase: Postgres schema migration without downtime", "url": "https://www.bytebase.com/blog/postgres-schema-migration-without-downtime/", "type": "blog", "verified": true},
+        {"title": "Reddit r/devops search", "url": "https://www.reddit.com/r/devops/search/?q=database+migrations+kubernetes+deploy+job+init+container&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    }
+  ],
+__TOOLNOTES__

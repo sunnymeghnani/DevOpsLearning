@@ -1,0 +1,81 @@
+{
+ "id": "l0-users-sudo",
+ "title": "sudo: unable to resolve host",
+ "level": "L0",
+ "map_node": "users-sudo",
+ "path": "fresher",
+ "order": 3,
+ "minutes": 20,
+ "difficulty": "easy",
+ "source": {
+  "title": "Fixing 'sudo: unable to resolve host' Error in Linux (Linux Handbook)",
+  "url": "https://linuxhandbook.com/sudo-unable-resolve-host/",
+  "note": "adapted"
+ },
+ "brief": "**#ops-alerts · 10:12 · pipeline `shop-deploy` failed at step post-deploy**\n\nYesterday this VM was renamed `app-prod-01` to follow the new naming standard. Since then every `sudo` prints `sudo: unable to resolve host app-prod-01`, and the on-call is worried about what else the rename broke.\n\nThe pipeline's last step runs `/opt/ci/post-deploy.sh` as the `deploy` user. It fails although a sudo rule for deploy was added last week (ticket OPS-2981). The developer's suggestion: \"just put deploy in the sudo group\".\n\nKeep the new hostname. Make name resolution and the deploy rule work with **least privilege**: deploy may restart nginx and nothing else.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Make the new name resolve",
+   "text": "sudo looks up the machine's own name on every call to match host-specific rules. The lookup follows `/etc/nsswitch.conf`: first `files` (`/etc/hosts`), then DNS, and this internal name exists in no DNS.\n\nCompare `hostname`, `/etc/hostname` and `/etc/hosts`. Make `app-prod-01` resolve to this machine without removing the existing entries. Done when `getent hosts app-prod-01` answers with a local address and `sudo true` prints nothing.",
+   "points": 50,
+   "hints": [
+    "`getent hosts app-prod-01` uses the same resolver path as sudo. Empty output means no file or DNS server knows the name.",
+    "Ubuntu maps the machine's own name to the loopback alias 127.0.1.1. Append it: `echo '127.0.1.1 app-prod-01' | sudo tee -a /etc/hosts` (or `sudo nano /etc/hosts`; this lab's /etc/hosts is a bind mount, so `sed -i` cannot replace it)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which file should map `app-prod-01` to an address on this box?",
+     "format": "/absolute/path",
+     "answer_sha256": "4a666ea3a3b04a24f574974df10592d51bd191614ee41b02d09f6d13c0c2f52a"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which command queries name resolution through NSS, the way sudo does?",
+     "format": "command name",
+     "answer_sha256": "7cb158d7a60e1f39d37dadfa9c3ff6528458644bdcca680dc256e3dd0e5f7fe1"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the hostname is still app-prod-01, it resolves to this machine, sudo prints no warning",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "The sudo rule that never loaded",
+   "text": "Run the pipeline step yourself: `sudo -u deploy /opt/ci/post-deploy.sh`. Then compare what the rule file says with what sudo has really loaded for deploy (`sudo -l -U deploy`). Read the comment at the top of `/etc/sudoers` about `@includedir`.\n\nMake the existing rule take effect, check the syntax with visudo, and keep it at mode 0440. Don't add deploy to an admin group. Done when deploy can run `sudo -n systemctl restart nginx`, but not `id`, a shell or other systemctl actions.",
+   "points": 50,
+   "hints": [
+    "`sudo -l -U deploy` lists no rule at all, so the file is never read. sudo skips drop-in files whose name contains a `.` or ends with `~`.",
+    "`sudo mv /etc/sudoers.d/deploy.conf /etc/sudoers.d/deploy`, then `sudo visudo -c` and `sudo -l -U deploy`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which character in the drop-in's file name made sudo skip it?",
+     "format": "a single character",
+     "answer_sha256": "cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which command checks sudoers syntax (and is the safe way to edit sudoers files)?",
+     "format": "command name",
+     "answer_sha256": "8ce43c90047b2eb7dcf4fa3f596eaa25381609d619431b5e69a6188887c52d1b"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "deploy may run systemctl restart nginx without a password and nothing else; sudoers is valid",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. The hostname changed to `app-prod-01`, but `/etc/hosts` only knew the old name. sudo resolves the local host name (for `Host_List` matching), the lookup fell through to DNS, failed, and sudo printed `unable to resolve host`. On real servers this can also add a DNS timeout to every sudo call.\n2. The rule for deploy was saved as `/etc/sudoers.d/deploy.conf`. sudo's `@includedir` **silently skips** file names that contain a `.` or end in `~` (so editor and package backups are not loaded). visudo does not warn about this.\n\n### Task 1\n```bash\nhostname ; cat /etc/hostname ; cat /etc/hosts\ngrep ^hosts: /etc/nsswitch.conf          # files dns\ngetent hosts app-prod-01                 # empty = nobody knows the name\necho '127.0.1.1 app-prod-01' | sudo tee -a /etc/hosts\ngetent hosts app-prod-01 ; sudo true     # quiet now\n```\n*Why:* `getent` follows NSS exactly like sudo and most programs; `dig` and `nslookup` ask DNS only and would mislead you here. If the old name is still listed elsewhere, replace it. On cloud VMs, cloud-init may rewrite `/etc/hosts` (`manage_etc_hosts`), so make the change in its template too.\n\n### Task 2\n```bash\nsudo -u deploy /opt/ci/post-deploy.sh    # sudo: a password is required\nsudo -l -U deploy                        # no rule listed\nls -l /etc/sudoers.d/\nsudo mv /etc/sudoers.d/deploy.conf /etc/sudoers.d/deploy\nsudo visudo -c                           # all files parsed OK\nsudo -l -U deploy                        # (root) NOPASSWD: /usr/bin/systemctl restart nginx\nsudo -u deploy /opt/ci/post-deploy.sh    # nginx restarted\n```\n*Why:* a rule naming the exact command line is least privilege. Membership of `sudo` would give the pipeline full root. Always edit with `visudo -f /etc/sudoers.d/NAME`: a syntax error in any sudoers file can lock everyone out of sudo.\n\n**Source (adapted):** [Fixing \"sudo: unable to resolve host\" Error in Linux](https://linuxhandbook.com/sudo-unable-resolve-host/): after a hostname change, adding the new name to `/etc/hosts` removed the warning at once. The dotted drop-in name is the documented `@includedir` rule (see the comment in `/etc/sudoers` and `man sudoers`)."
+}

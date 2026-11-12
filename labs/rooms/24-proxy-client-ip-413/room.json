@@ -1,0 +1,75 @@
+{
+ "id": "l2-proxy-client-ip-413",
+ "title": "Behind the proxy: one IP for everybody, and 413 on uploads",
+ "level": "L2",
+ "map_node": "proxy-problems",
+ "path": "mid",
+ "order": 24,
+ "minutes": 30,
+ "difficulty": "medium",
+ "source": {
+  "title": "Nginx reverse proxy: error 413 on large file uploads (Nextcloud community forum)",
+  "url": "https://help.nextcloud.com/t/nginx-reverse-proxy-error-413-on-large-file-uploads/24335",
+  "note": "adapted"
+ },
+ "brief": "**#support 16:05 · uploads.example.com · two tickets, one box**\n\n> 1. \"Security asked why every login in the upload app's log comes from `127.0.0.1`. The rate limiter now blocks *everybody* at once, because to the app every user is the same client.\"\n> 2. \"Customers can't upload scans bigger than about 1 MB: the browser shows `413 Request Entity Too Large`. The app allows 10 MB, and its log shows nothing at all for those uploads.\"\n\nnginx proxies `uploads.example.com` to the app on `127.0.0.1:8000`; the app writes `/var/log/upload-app/access.log`. To be a different client, send from another loopback address: `curl --interface 127.0.0.77 http://uploads.example.com/`. A 2 MB test file is in `~/scan-2mb.pdf`.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Who is the client?",
+   "text": "Behind a proxy, the app's TCP peer is always the proxy. The client's address only reaches the app if the proxy writes it into request headers, and the app here trusts `X-Real-IP` from the local proxy. Send a request from 127.0.0.77 and read the app's log line, then read the site config (`sudo nginx -T`).\n\nMake nginx send `X-Real-IP` and `X-Forwarded-For` for every location that proxies. Careful: a `proxy_set_header` in a location replaces, not extends, the ones from the server block. Also try sending your own `X-Real-IP`: the proxy must overwrite it, not pass it on.\n\nDone when, for `/` and `/upload`, the app logs the real client and X-Forwarded-For ends with it.",
+   "points": 50,
+   "hints": [
+    "`curl -s --interface 127.0.0.77 http://uploads.example.com/; sudo tail -1 /var/log/upload-app/access.log` shows `client=127.0.0.1`. Add `-H 'X-Real-IP: 198.51.100.66'` and look again: without proxy headers nginx passes it through.",
+    "Put `proxy_set_header X-Real-IP $remote_addr;` and `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;` (plus `Host $host`) into **both** locations, or into a snippet included by both. `sudo nginx -t && sudo systemctl reload nginx`. Background: [29 §1.5](29-learn-webservers-proxies.md#15-x-forwarded-headers-and-real-client-ips)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which nginx variable holds the address of the client connected to nginx?",
+     "format": "$variable",
+     "answer_sha256": "f740484aaea025c52aedfd6346e61abdc70a92e4ed725155563c3444d264f2eb"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which variable appends that address to an incoming X-Forwarded-For?",
+     "format": "$variable",
+     "answer_sha256": "56d052a5198fa0b3f7aff2d5f1826405f793c6334f6b14497f81445c97629045"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "for / and /upload the app logs the real client (127.0.0.77) and X-Forwarded-For ends with it; a client-sent X-Real-IP is overwritten",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "413 before the app ever sees it",
+   "text": "Upload the test file: `curl -s -w '%{http_code}\\n' --data-binary @scan-2mb.pdf http://uploads.example.com/upload`. The app's log stays silent because nginx rejects the body itself. Its error log for this site names the reason.\n\nRaise the limit where uploads happen, and only there: the rest of the site has no reason to accept large bodies. Choose a ceiling a bit above the app's own 10 MB, not \"unlimited\". The directive works in the `http`, `server` and `location` contexts, and the most specific one wins.\n\nDone when a 2 MB upload to `/upload` stores all its bytes and a 2 MB POST to any other path still gets 413.",
+   "points": 50,
+   "hints": [
+    "`sudo tail -2 /var/log/nginx/uploads.error.log`: `client intended to send too large body: 2097152 bytes`. The directive is `client_max_body_size`; `sudo nginx -T | grep -n client_max_body_size` shows that nothing sets it yet.",
+    "Inside `location /upload { … }` add `client_max_body_size 25m;`, then `sudo nginx -t && sudo systemctl reload nginx` and repeat the upload: `stored 2097152 bytes`. See [43 §10.2](43-traefik-and-reverse-proxies.md#102-413-request-entity-too-large)."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "What is nginx's default client_max_body_size?",
+     "format": "size with unit, like 5m",
+     "answer_sha256": "ade5880f369fd9765fb6cffdf67b5d4dfb2cf650a49c848a0ce7be1c10e80b23"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "a 2 MB upload to /upload passes and the app stores all bytes; a 2 MB POST elsewhere still gets 413; the limit is not switched off",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **No client headers.** The proxy set no `X-Real-IP`/`X-Forwarded-For`, so the app saw only its TCP peer, nginx on 127.0.0.1. Worse, nginx passes client headers through by default, so a client could send its own `X-Real-IP` and the app (which trusts the proxy) believed it.\n2. **Header inheritance.** `location /upload` had its own `proxy_set_header Host $host;`. `proxy_set_header` is inherited from the enclosing level only when the current level has none, so headers added only at server level never reached `/upload`.\n3. **Body size.** `client_max_body_size` defaults to `1m`. nginx answered 413 itself (`client intended to send too large body`), so the app never logged the attempt.\n\n### Task 1\n```nginx\n# /etc/nginx/snippets/proxy-client-ip.conf, included in both locations\nproxy_set_header Host              $host;\nproxy_set_header X-Real-IP         $remote_addr;\nproxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;\nproxy_set_header X-Forwarded-Proto $scheme;\n```\n```bash\nsudo nginx -t && sudo systemctl reload nginx\ncurl -s --interface 127.0.0.77 -H 'X-Real-IP: 198.51.100.66' http://uploads.example.com/\nsudo tail -1 /var/log/upload-app/access.log    # client=127.0.0.77 xff=\"127.0.0.77\"\n```\n*Why:* `$remote_addr` is the address of whoever connected to nginx; `$proxy_add_x_forwarded_for` appends it to any incoming chain, so everything left of the last entry is whatever the client sent: read the entry your own proxy added, never the first one. The app must trust these headers only from its proxy (and the proxy, behind a CDN or load balancer, only from those: `set_real_ip_from` + `real_ip_header`), or any client can claim any IP.\n\n### Task 2\n```nginx\nlocation /upload {\n    include snippets/proxy-client-ip.conf;\n    client_max_body_size 25m;\n    proxy_pass http://127.0.0.1:8000;\n}\n```\n```bash\nsudo tail -1 /var/log/nginx/uploads.error.log   # client intended to send too large body: 2097152 bytes\ncurl -s --data-binary @scan-2mb.pdf http://uploads.example.com/upload   # stored 2097152 bytes\n```\n*Why:* the most specific context wins, so a limit in `http {}` is overridden by a smaller one in a server or location. `0` disables the check: avoid it on public endpoints. Every proxy in the chain (CDN, Traefik, ingress, nginx) has its own limit; the 413's HTML tells you which one answered.\n\n**Source (adapted):** [Nginx reverse proxy: error 413 on large file uploads](https://help.nextcloud.com/t/nginx-reverse-proxy-error-413-on-large-file-uploads/24335): uploads through the nginx proxies failed with 413 while the LAN worked; the poster had set `client_max_body_size` in only one place and fixed it by setting it in the `http` and the site's `server` context. The client-IP part follows forum threads such as [All visitors have same IP (my server IP)](https://ruby-forum.com/t/all-visitor-have-same-ip-my-server-ip/218759), where the answers were `proxy_set_header X-Real-IP $remote_addr;` and `X-Forwarded-For $proxy_add_x_forwarded_for;` plus making the backend trust them. Handbook: 43 §10.2."
+}

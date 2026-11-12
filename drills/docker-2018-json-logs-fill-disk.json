@@ -1,0 +1,71 @@
+{
+  "id": "docker-2018-json-logs-fill-disk",
+  "title": "The log rotation that never applied",
+  "level": "L0",
+  "track": "containers",
+  "topics": ["docker-basics", "compose-volumes", "container-incidents", "docker-problems"],
+  "minutes": 5,
+  "role": "You look after a small Docker host that runs the company API with Docker Compose.",
+  "source": {
+    "label": "docker/cli issue #1148: log rotation not working, the container log keeps growing (GitHub)",
+    "url": "https://github.com/docker/cli/issues/1148",
+    "org": "Docker",
+    "date": "2018-06-26",
+    "read_on": "2026-11-07"
+  },
+  "brief": "The disk alert for `docker1.example.com` fires at 96%. Last month Sam added `max-size` and `max-file` to `/etc/docker/daemon.json` and restarted Docker so this would never happen again. It is happening again.",
+  "steps": [
+    {
+      "situation": "`/var` is almost full and the API still answers, for now. Where is the space going?",
+      "evidence": "$ sudo du -xh /var/lib/docker --max-depth=2 | sort -h | tail -3\n4.1G  /var/lib/docker/overlay2\n38G   /var/lib/docker/containers/3f9c2a\n43G   /var/lib/docker\n$ sudo ls -lh /var/lib/docker/containers/3f9c2a/\n-rw-r----- 1 root root 38G  3f9c2a-json.log",
+      "evidence_cmd": "sudo du -xh /var/lib/docker --max-depth=2 | sort -h",
+      "choices": [
+        {"text": "Measure /var/lib/docker with du before touching anything", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "One container's `-json.log` is 38 GB. Now you know the fix is about logs, not images or volumes."},
+        {"text": "Run docker system prune -a --volumes", "verdict": "bad", "effect": {"service": -20, "time": 0, "evidence": -10, "trust": -15}, "why": "It deletes unused volumes, which may hold real data, and every unused image. It doesn't touch the log of a running container, so the disk stays full."},
+        {"text": "Restart Docker to make it rotate", "verdict": "bad", "effect": {"service": -15, "time": -5, "evidence": -5, "trust": -5}, "why": "Every container stops and starts, and the log file is still there, the same size."}
+      ]
+    },
+    {
+      "situation": "You need space back in the next few minutes. The container is still writing to that file.",
+      "choices": [
+        {"text": "Empty it in place: truncate -s 0 on the -json.log", "verdict": "best", "effect": {"service": 15, "time": 10, "evidence": -5, "trust": 0}, "why": "Docker keeps the file open, so truncating frees the space at once and Docker keeps writing. Copy the last lines elsewhere first if you need them."},
+        {"text": "rm the -json.log file", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -10, "trust": 0}, "why": "The name goes, but dockerd still holds the file open, so `df` doesn't move until the container restarts. `docker logs` also breaks."},
+        {"text": "Stop the API container until you've worked it out", "verdict": "risky", "effect": {"service": -20, "time": 0, "evidence": 5, "trust": -10}, "why": "It stops the growth, but you've turned a disk warning into an API outage."}
+      ]
+    },
+    {
+      "situation": "Space is back. But why didn't Sam's `daemon.json` limits work?",
+      "evidence": "$ docker inspect -f '{{json .HostConfig.LogConfig}}' api\n{\"Type\":\"json-file\",\"Config\":{}}\n$ docker inspect -f '{{json .HostConfig.LogConfig}}' worker\n{\"Type\":\"json-file\",\"Config\":{\"max-file\":\"5\",\"max-size\":\"50m\"}}",
+      "evidence_cmd": "docker inspect -f '{{json .HostConfig.LogConfig}}' api",
+      "choices": [
+        {"text": "Compare each container's LogConfig with docker inspect", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 5}, "why": "The API's config is empty and the newer worker's is not. The settings are there, but only containers created after the change got them."},
+        {"text": "Tell the team that Sam's change broke it", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "Sam's settings are correct. The gap is in how Docker applies them, and blaming people makes them hide the next mistake."},
+        {"text": "Edit daemon.json again and restart Docker", "verdict": "risky", "effect": {"service": -10, "time": -10, "evidence": -5, "trust": 0}, "why": "Another restart of every container, and the API still keeps the empty config it was created with."}
+      ]
+    },
+    {
+      "situation": "You want the API container to rotate its logs from now on.",
+      "choices": [
+        {"text": "Add a logging: block in compose, recreate the API in a quiet window, then check inspect", "verdict": "best", "effect": {"service": 10, "time": 5, "evidence": 10, "trust": 10}, "why": "Log options are fixed when the container is created. `docker compose up -d --force-recreate api` builds a new one with them. Putting them in the compose file makes the limits travel with the app."},
+        {"text": "docker restart api", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": 0}, "why": "A restart reuses the same container and the same empty config. People in the thread found this out the hard way."},
+        {"text": "Add a cron job that truncates the log every night", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": -10, "trust": 0}, "why": "It keeps the disk alive but throws away each day's logs, so the evidence is gone right when you need it."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In June 2018 a user reported that a container's json-file log grew past 400 MB despite `max-size` and `max-file`. Docker maintainers asked whether the options had actually reached the container, and a maintainer said \"You cannot change the configuration for existing containers.\" Over the next years other users hit the same wall: limits set in `daemon.json` or compose did nothing until the container was recreated, and `docker restart` was not enough. One user showed it with `docker inspect`: the recreated container had the limits, the old one had an empty `Config`. A few reports stayed unexplained, and later docs point to the `local` logging driver.",
+    "lessons": ["daemon.json log options only apply to containers created after the change.", "Check what a container really got with docker inspect, not what the config file says.", "Truncate an open log, don't rm it: deleted-but-open files keep their space.", "Put logging limits in the compose file so they travel with the service."],
+    "commands": ["du -xh /var/lib/docker --max-depth=2 | sort -h", "docker inspect -f '{{json .HostConfig.LogConfig}}' api", "truncate -s 0 /var/lib/docker/containers/<id>/<id>-json.log", "docker compose up -d --force-recreate api", "docker system df"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "44-problems-docker-swarm-registry.md", "heading": "2.2 Logs never rotate, or docker logs is empty"},
+      {"file": "30-learn-docker.md", "heading": "Log rotation and the journald driver"}
+    ],
+    "sites": [
+      {"label": "iximiuz Labs: Docker playground (free account)", "url": "https://labs.iximiuz.com/playgrounds/docker"},
+      {"label": "KodeKloud Docker playground (free account)", "url": "https://kodekloud.com/playgrounds/playground-docker"}
+    ]
+  }
+}

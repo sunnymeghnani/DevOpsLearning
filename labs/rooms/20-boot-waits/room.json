@@ -1,0 +1,75 @@
+{
+ "id": "l2-boot-waits",
+ "title": "Boot waits 90 seconds, then two minutes more",
+ "level": "L2",
+ "map_node": "kernel-boot",
+ "path": "mid",
+ "order": 20,
+ "minutes": 30,
+ "difficulty": "medium",
+ "source": {
+  "title": "Kubuntu 18.04 slow boot: a swap UUID in fstab that no longer exists (Dedoimedo)",
+  "url": "https://www.dedoimedo.com/computers/ubuntu-beaver-slow-boot.html",
+  "note": "adapted"
+ },
+ "brief": "**#oncall 07:55 · app-02 · after Sunday's kernel patching**\n\n> \"app-02 took three and a half minutes to come back after the reboot. The hypervisor console showed `A start job is running for /dev/disk/by-uuid/…` for a long time, then it sat at *Wait for Network to be Configured*. Nothing is broken once it's up, but the next patch night has 40 of these. I saved what I could in `~/boot-2026-11-09/`.\"\n\nA container never boots through fstab or the network wait, so this room is about reading the evidence and fixing the config that causes it. Read the recording, find which two waits cost the time, and make the next boot fast without throwing away config that the team still needs.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "The disk that isn't there",
+   "text": "Start with the totals in `systemd-analyze.txt`, then `blame.txt` and `critical-chain.txt`. `blame` lists what *ran* long; a wait for a device that never appears shows only as a gap in the critical chain and in the journal. Find the device, then the fstab line that asks for it.\n\nThe disk comes back next week, so keep the line. Make the missing disk harmless (no failed target) and make systemd give up on it after a few seconds. `findmnt --verify` still lists a source it can't find; check that it reports nothing else and that systemd has re-read the file.\n\nDone when the line has the right options and `findmnt --verify` shows no other problem.",
+   "points": 50,
+   "hints": [
+    "The journal shows `Job dev-disk-by…device/start timed out` after `1min 30s`, and critical-chain jumps from `@1.012s` straight to `sysinit.target @1min 30.152s`, and nothing in the chain explains the gap. The UUID is on the swap line of `/etc/fstab`.",
+    "Options `sw,nofail,x-systemd.device-timeout=10s` on that line, then `sudo systemctl daemon-reload` and `findmnt --verify`: the only `[E]` left is the missing source. Background: [41 §3.5](41-problems-linux-systems.md#35-boot-waits-two-minutes-for-the-network) and [42 §1.3](42-problems-network-dns-tls-vpn.md#13-boot-hangs-on-wait-for-network-to-be-configured)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "How long does systemd wait for a missing device by default?",
+     "format": "seconds",
+     "answer_sha256": "69f59c273b6e669ac32a6dd5e1b2cb63333d8b004f9696447aee2d422ce63763"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the swap line stays, with nofail and a device timeout of at most 30 s; findmnt --verify shows nothing else; systemd re-read fstab",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "The NIC with no cable",
+   "text": "The second wait is the network. By default `systemd-networkd-wait-online` waits until every interface networkd manages is configured, and `networkctl.txt` shows one that never will be. Its cable was pulled when the old NAS was retired, but a new NAS arrives next month on the same network.\n\nTell netplan that this interface may be down at boot, without removing its config and without making the uplink optional too (services that need the network must still wait for it). Also think about the other knob: an option that makes the wait succeed as soon as any interface is up.\n\nDone when `netplan get` shows the storage NIC optional and the uplink still required.",
+   "points": 50,
+   "hints": [
+    "`networkctl.txt`: ens19 is `no-carrier` and stays `configuring`. `sudo netplan get ethernets` shows both NICs; `optional: true` goes on one of them.",
+    "Add `optional: true` under `ens19:` in `/etc/netplan/01-netcfg.yaml`, check with `sudo netplan get ethernets.ens19`. The alternative is a drop-in (`systemctl edit systemd-networkd-wait-online.service`) that runs `/usr/lib/systemd/systemd-networkd-wait-online` with one extra option, see `/usr/lib/systemd/systemd-networkd-wait-online --help`."
+   ],
+   "questions": [
+    {
+     "id": "q2",
+     "prompt": "Which unit sits at the top of `blame`?",
+     "format": "unit name with suffix",
+     "answer_sha256": "8cd292188b9c89c99f767b9b34fcc3bb9a88010f8014f0ae8a0968a8f2b78d2b"
+    },
+    {
+     "id": "q3",
+     "prompt": "Which `systemd-networkd-wait-online` option succeeds as soon as any one interface is online?",
+     "format": "--option",
+     "answer_sha256": "b7bbf31ef31ab730f7ef7ec43c263548dfb838fb3c39500ce16b4e710cc34eec"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "netplan: ens19 is optional and keeps its address; the uplink ens18 is still required",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **A swap partition on a detached disk.** fstab still asked for `UUID=3f1c…`. systemd waits **90 s** (`DefaultDeviceTimeoutSec`) for every fstab device, then gives up. A missing swap only slows the boot: when the timer runs out, `swap.target` fails (`Dependency failed for swap.target`) and the boot goes on, because `sysinit.target` only wants it. A data mount without `nofail` is worse: it fails `local-fs.target` and drops the box into emergency mode.\n2. **A required NIC without a cable.** `systemd-networkd-wait-online` waits for all managed links until its own **120 s** timeout, and everything after `network-online.target` (docker here) waits with it.\n\n### Task 1\n```bash\ncat ~/boot-2026-11-09/systemd-analyze.txt        # 3min 34s in userspace\nhead -3 ~/boot-2026-11-09/blame.txt              # wait-online 2 min; the device wait is not here\ngrep -n -A1 sysinit.target ~/boot-2026-11-09/critical-chain.txt   # @1min 30.152s right after @1.012s\ngrep 'timed out' ~/boot-2026-11-09/journal.txt\nsudoedit /etc/fstab     # UUID=3f1c… none swap sw,nofail,x-systemd.device-timeout=10s 0 0\nsudo systemctl daemon-reload\nfindmnt --verify        # 0 parse errors; only the missing source remains\n```\n*Why:* `nofail` makes `swap.target` only *want* the swap, so a missing disk no longer fails the target. It does not shorten the wait: a swap unit is still ordered before `swap.target` (on a mount line, `nofail` would also drop the ordering before `local-fs.target`), so only `x-systemd.device-timeout=` cuts the 90 s. findmnt marks a missing source `[E]` unless the line is `noauto`; what you read is everything else, plus the \"systemd still uses the old version\" warning that means you forgot `daemon-reload`. When the disk is gone for good, delete the line (and any `RESUME=` that points at it, as in the source).\n\n### Task 2\n```yaml\n    ens19:\n      optional: true\n      addresses: [198.51.100.20/24]\n```\n```bash\nsudo netplan get ethernets.ens19\nsudo netplan apply            # on the real box; then systemd-analyze blame after the next reboot\n```\n*Why:* `optional: true` drops the link from what wait-online requires. `--any` (via a drop-in that clears and resets `ExecStart=`) succeeds as soon as one link is online: good for laptops and multi-homed boxes, but then services may start before the network they need. Masking the unit hides the problem and breaks units that really need the network.\n\n**Source (adapted):** [Kubuntu 18.04 slow boot](https://www.dedoimedo.com/computers/ubuntu-beaver-slow-boot.html): `critical-chain` showed a 70-80 s gap, the boot log a device job timing out after 1 min 30 s, and `blkid` that the swap UUID in fstab matched no device; fixing the fstab line took the boot from 3 min 28 s to 55 s. The wait-online part follows [Launchpad #2063331](https://bugs.launchpad.net/bugs/2063331), where NICs without a cable were written without `optional` and wait-online timed out on every boot until they were marked `optional: true`."
+}

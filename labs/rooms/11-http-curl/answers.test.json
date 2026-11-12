@@ -1,0 +1,6 @@
+{
+ "q1": "Host",
+ "q2": "301",
+ "q3": "-k",
+ "q4": "update-ca-certificates"
+}

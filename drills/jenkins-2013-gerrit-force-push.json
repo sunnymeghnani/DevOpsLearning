@@ -1,0 +1,70 @@
+{
+  "id": "jenkins-2013-gerrit-force-push",
+  "title": "186 repositories rewound overnight",
+  "level": "L1",
+  "track": "automation",
+  "topics": ["git-team", "jenkins"],
+  "minutes": 7,
+  "role": "You help run the GitHub organization of a big open-source project: more than 1,100 repositories and about 680 developers who can push to them.",
+  "source": {
+    "label": "Jenkins project: summary report, git repository disruption incident of Nov 10th (2013)",
+    "url": "https://www.jenkins.io/blog/2013/11/25/summary-report-git-repository-disruption-incident-of-nov-10th/",
+    "org": "Jenkins",
+    "date": "2013-11-10",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Sunday, 10 November 2013, early afternoon GMT. Developers write in: the last weeks of work have vanished from the main branches of their plugin repositories. Not one repository: dozens.",
+  "steps": [
+    {
+      "situation": "A plugin maintainer: \"master is two months old. Did someone delete my commits?\"",
+      "evidence": "$ git fetch origin\n + 9c41e07...2b7f3a1 master     -> origin/master  (forced update)\n$ git log --oneline -1 origin/master\n2b7f3a1 Release 1.12 (from September)\n$ git log --oneline -1 master\n9c41e07 Fix NPE in config page",
+      "evidence_cmd": "git fetch origin",
+      "choices": [
+        {"text": "Compare the server's branch head with an up-to-date clone, and check the push events", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 5}, "why": "`forced update` means the branch pointer was moved back, not that commits were deleted. The newer commits still exist in clones, and usually on the server too."},
+        {"text": "Ask maintainers to re-commit their work from memory", "verdict": "bad", "effect": {"service": -10, "time": -20, "evidence": -5, "trust": -10}, "why": "The commits aren't gone. Git keeps objects by hash; only the branch names point at old ones."},
+        {"text": "Tell everyone to force-push their local copy right now", "verdict": "risky", "effect": {"service": 5, "time": 5, "evidence": -10, "trust": 0}, "why": "Some clones are stale too, and repos with several maintainers get a race. Whoever pushes last wins."}
+      ]
+    },
+    {
+      "situation": "It's many repositories, all moved back to commits from about two months ago. What do you do before restoring anything?",
+      "evidence": "replication  push git@github.com:example-org/foo-plugin.git  +refs/heads/*:refs/heads/*  ok\nreplication  push git@github.com:example-org/bar-plugin.git  +refs/heads/*:refs/heads/*  ok\n... 184 more",
+      "choices": [
+        {"text": "Find the common pusher and stop it first, with GitHub support's help and the push logs", "verdict": "best", "effect": {"service": 10, "time": 10, "evidence": 15, "trust": 5}, "why": "The cause was found within hours from Gerrit's logs and GitHub support. Restoring while the pusher still runs would be undone again."},
+        {"text": "Start fixing repositories one by one", "verdict": "risky", "effect": {"service": 5, "time": -10, "evidence": 0, "trust": 0}, "why": "If the source is still pushing, your fixes get rewound. And you don't yet know which repos are hit."},
+        {"text": "Remove push access from all 680 developers", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": -20}, "why": "It locks out the very people with good clones, and the project's open commit policy is part of its culture."}
+      ]
+    },
+    {
+      "situation": "Cause found: one developer started Gerrit with a half-configured replication plugin. It pointed at a folder of 186 old clones and force-pushed them, its default. How do you restore?",
+      "choices": [
+        {"text": "Combine three things: up-to-date developers push, GitHub support resets heads, and a script on the events API checks every branch", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 10, "trust": 5}, "why": "This is what worked. Pushes fixed the popular plugins within a day; the events API script found about a dozen branches support had missed."},
+        {"text": "Leave it all to GitHub support", "verdict": "risky", "effect": {"service": 15, "time": 0, "evidence": -5, "trust": 0}, "why": "Support restored most heads, but not all. Without your own check, about a dozen branches would have stayed wrong."},
+        {"text": "Force-push whatever clone each admin has", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -10, "trust": -5}, "why": "An admin's clone can be older than the maintainer's. You'd rewind some branches a second time."}
+      ]
+    },
+    {
+      "situation": "Everything is back by the middle of the next week. What do you change?",
+      "choices": [
+        {"text": "Record every ref update (who and what) across the org, use per-repository access, ask the host for a no-force-push option", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 15, "trust": 10}, "why": "The project's own follow-ups. A ref log makes the next rollback a script instead of a week of detective work."},
+        {"text": "Ban force-push and call it solved", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "Helps, but the report notes that a deleted branch does similar damage. You still need a record of ref changes."},
+        {"text": "Name the developer in the report so it doesn't happen again", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "A plugin default and all-or-nothing access made the mistake possible. Blame hides that and teaches people to stay quiet."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "Early on 10 November 2013 one of about 680 Jenkins developers started Gerrit with a partly misconfigured replication plugin. It found a local folder with 186 clones of Jenkins repositories, about two months old, and replicated them back to GitHub with a forced push, the plugin's default. Branch heads moved back to old commits; no commits were deleted, only the pointers. Several developers noticed at 12:54 GMT, and the cause was found within hours from Gerrit's logs with GitHub support's help. Developers with current clones pushed them back, which restored the most popular plugins within 24 hours; GitHub support reset most other heads; the team's own script on the GitHub events API found about a dozen branches support had missed. All commits were recovered by the middle of the next week. Follow-ups: continuously record ref updates across the organization, per-repository access control, and a hoped-for option to disable forced pushes. Where you host Git yourself, the report suggests `core.logAllRefUpdates` on the server.",
+    "lessons": ["\"Forced update\" moves a pointer: the commits are usually still there.", "Find and stop the source of a mass change before you restore.", "Check the restore with data (push events, SHAs), not with hope.", "Protect main branches and log every ref update."],
+    "commands": ["git fetch origin", "git reflog show origin/master", "git log --oneline -1 origin/master", "git push origin 9c41e07:master", "git config core.logAllRefUpdates true"]
+  },
+  "practise": {
+    "labs": ["09-git-basics"],
+    "handbook": [
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Reflog rescue"},
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "A team branching workflow"}
+    ],
+    "sites": [
+      {"label": "Learn Git Branching (in the browser, free)", "url": "https://learngitbranching.js.org/"},
+      {"label": "GitHub Skills: change commit history (free)", "url": "https://github.com/skills/change-commit-history"}
+    ]
+  }
+}

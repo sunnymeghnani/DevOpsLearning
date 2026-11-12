@@ -1,0 +1,81 @@
+{
+ "id": "l0-files-permissions",
+ "title": "403 on the new docs release",
+ "level": "L0",
+ "map_node": "files-permissions",
+ "path": "fresher",
+ "order": 2,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "Nginx 403 forbidden for all files (Stack Overflow)",
+  "url": "https://stackoverflow.com/questions/6795350/nginx-403-forbidden-for-all-files",
+  "note": "adapted"
+ },
+ "brief": "**TICKET OPS-3107 · docs.example.com returns 403 Forbidden**\n\nWe moved the docs portal to a fresh Ubuntu 24.04 box. The `deploy` user ships releases into `/home/deploy/site/releases/<date>`, and `current` is a symlink to the newest one. nginx serves `/home/deploy/site/current`.\n\nEvery page answers **403**. The files are there and `ls` looks fine to the developer, who suggests `chmod -R 777 /home/deploy` \"to be sure\". Please don't. Last week security also added a line to deploy's shell profile that keeps new files private.\n\nFix it with the smallest permission change that works, and keep nginx running as `www-data`. The error log is `/var/log/nginx/error.log`.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Why can't nginx read index.html?",
+   "text": "Reproduce with `curl -I http://127.0.0.1/` and read the last lines of the error log. To open a file, a process needs read permission on the file **and** execute (search) permission on every directory above it. Walk the whole path as the nginx worker user would.\n\nGrant only what is missing, on only the directory that blocks it. Don't make anything world-writable, and don't run nginx as root or as deploy. Done when the docs page answers 200.",
+   "points": 50,
+   "hints": [
+    "`namei -l /home/deploy/site/current/index.html` prints owner and mode for each path component. Look for a directory where \"others\" have no `x`. Then try `sudo -u www-data cat` on the file.",
+    "`sudo chmod o+x /home/deploy` lets others pass through the home directory without listing or reading it. Mode 0751 or 0711 is enough; 0777 is never needed."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which permission does www-data need on every directory along the path?",
+     "format": "one word: read, write or execute",
+     "answer_sha256": "be6bdfe81ec4a456a537a4460f1f45e1fe33d30b4e220b0874299b82fd3a71e2"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which util-linux command lists the owner and mode of every component of a path?",
+     "format": "command name",
+     "answer_sha256": "cf1e93876e98e8cf8083bc0184e48e50835bb30faf5c693e0108a85ba078e3cb"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the docs page answers 200, nginx workers run as www-data, nothing is world-writable",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Assets of the new release are private",
+   "text": "The page loads now, but `/assets/app.css` still answers 403. Compare the modes of the assets with `index.html`. Something made the deploy job create private files: find **where** deploy's umask comes from.\n\nFix the files that already exist and the cause, so the next release (deployed by deploy in a new login session) is readable by nginx without anyone running chmod. Keep everything non-world-writable. Done when the CSS answers 200 and a file deploy creates in a fresh login shell is served too.",
+   "points": 50,
+   "hints": [
+    "`ls -l` the assets, then `sudo -iu deploy sh -c umask`. Search deploy's startup files: `grep -n umask ~deploy/.profile ~deploy/.bashrc`.",
+    "`sudo chmod -R u=rwX,go=rX /home/deploy/site/releases/2026-10-20`, then change `umask 077` to `umask 022` in `/home/deploy/.profile` (or 027 plus adding www-data to the deploy group)."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Under `umask 077`, what mode does a newly created regular file get?",
+     "format": "3 octal digits",
+     "answer_sha256": "284b7e6d788f363f910f7beb1910473e23ce9d6c871f1ce0f31f22a982d48ad4"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which file sets deploy's `umask 077`?",
+     "format": "/absolute/path",
+     "answer_sha256": "ebec23f02605cc36d75ebfd98ef01bdc3b8e343494dcc54be1549b506aad2b5a"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "/assets/app.css answers 200 and a file deploy creates in a new login shell is served",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. Ubuntu 21.04 and later create home directories with mode **0750**. `www-data` is not the owner or in the group, so it has no `x` (search) bit on `/home/deploy` and cannot reach anything below it, even files that are 0644. nginx logs `open() \".../index.html\" failed (13: Permission denied)` and answers 403.\n2. A hardening line `umask 077` in `~deploy/.profile` made the deploy job create files 0600 and directories 0700, so nginx could not read the new assets.\n\n### Task 1\n```bash\ncurl -I http://127.0.0.1/                      # 403\nsudo tail -n 3 /var/log/nginx/error.log        # (13: Permission denied)\nnamei -l /home/deploy/site/current/index.html  # drwxr-x--- deploy deploy deploy  <- no x for others\nsudo -u www-data cat /home/deploy/site/current/index.html   # reproduce as the worker user\nsudo chmod o+x /home/deploy                    # 0751: others may pass through, not list\ncurl -I http://127.0.0.1/                      # 200\n```\n*Why:* directory `x` means \"may use names inside this directory\". It is needed on **every** parent. `o+x` alone does not let anyone list your home directory. Alternatives: `usermod -aG deploy www-data` plus restarting nginx, or serve from `/var/www` or `/srv`, which is the cleaner long-term layout.\n\n### Task 2\n```bash\nls -l /home/deploy/site/current/assets/        # -rw------- app.css\nsudo -iu deploy sh -c umask                    # 0077\ngrep -n umask /home/deploy/.profile            # the SEC-142 line\nsudo chmod -R u=rwX,go=rX /home/deploy/site/releases/2026-10-20   # X = x only on directories\nsudo sed -i 's/^umask 077$/umask 022/' /home/deploy/.profile\nsudo -iu deploy sh -c 'umask; touch /tmp/t; ls -l /tmp/t'   # 0022, -rw-r--r--\n```\n*Why:* umask removes bits from the default mode (666 for files, 777 for directories): 666 & ~077 = 600. Fixing only the files would break again on the next release. Fix the setting that creates them, and talk to security about a umask that still works for web content (022, or 027 with a shared group).\n\n### Never\n`chmod -R 777` makes code writable by every account on the box. It hides the real problem and creates a new one.\n\n**Source (adapted):** [Nginx 403 forbidden for all files](https://stackoverflow.com/questions/6795350/nginx-403-forbidden-for-all-files): the accepted answer is that nginx needs execute permission on every parent directory of the web root, typically a home directory."
+}

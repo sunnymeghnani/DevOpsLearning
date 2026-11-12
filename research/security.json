@@ -1,0 +1,2103 @@
+{
+ "domain": "security",
+ "problems": [
+  {
+   "title": "Agent shows Never connected or Pending",
+   "tool": "Wazuh agent/manager",
+   "area": "Wazuh agents",
+   "level": "L1",
+   "error_text": "WARNING: (4101): Waiting for server reply (not started). Tried: 'MANAGER_IP'. / ERROR: (1216): Unable to connect to '[MANAGER_IP]:1514/tcp'",
+   "context": "Enrollment uses 1515/tcp (wazuh-authd), events use 1514/tcp (wazuh-remoted). A key can exist while the data channel is blocked.",
+   "frequency_signal": "Most asked Wazuh question; the docs have separate enrollment and connection troubleshooting pages.",
+   "root_causes": [
+    "1514/tcp blocked by UFW, a cloud security group or a corporate firewall while 1515 is open",
+    "Agent ossec.conf points to an old manager IP or a hostname that resolves elsewhere",
+    "Key mismatch after reinstalling the agent or removing it on the manager (manager logs '(1408): Invalid ID')",
+    "NAT or load balancer in the path without TCP passthrough"
+   ],
+   "diagnosis": [
+    "tail /var/ossec/logs/ossec.log on the agent",
+    "grep the server block in /var/ossec/etc/ossec.conf",
+    "cat /var/ossec/var/run/wazuh-agentd.state",
+    "nc -vz MANAGER 1514 and 1515",
+    "ss -ltnp on the manager; ufw status"
+   ],
+   "fix": [
+    "Open 1514/tcp (and 1515/tcp) from agent networks only",
+    "Fix the manager address and restart the agent",
+    "Remove the stale agent on the manager (manage_agents -r ID) and re-enroll"
+   ],
+   "prevention": "Test both ports in the agent install script; alert when never_connected > 0 for an hour; firewall rules as code.",
+   "sources": [
+    {
+     "title": "Wazuh docs: agent enrollment troubleshooting",
+     "url": "https://documentation.wazuh.com/current/user-manual/agent/agent-enrollment/troubleshooting.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: agent connection",
+     "url": "https://documentation.wazuh.com/current/user-manual/agent/agent-management/agent-connection.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Agent registration issue",
+     "url": "https://groups.google.com/g/wazuh/c/KIoGg4Ux2xc",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: wazuh agent never connected",
+     "url": "https://stackoverflow.com/search?q=wazuh+agent+never+connected",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: never connected",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=never+connected&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Agents flap between Active and Disconnected",
+   "tool": "Wazuh agent/manager",
+   "area": "Wazuh agents",
+   "level": "L2",
+   "error_text": "wazuh-agentd: WARNING: Server unavailable. Setting lock. / wazuh-remoted: WARNING: (1409): Authentication error. Wrong key or corrupt payload.",
+   "context": "Many agents, golden images, NAT/firewalls with idle timeouts, regressions in specific releases.",
+   "frequency_signal": "Disconnection reports are frequent in the group; GitHub #33038 (remoted crashing on 4.13.1/4.14.0) has 40+ comments.",
+   "root_causes": [
+    "VMs cloned from an image that already contained /var/ossec/etc/client.keys (two hosts share one agent ID)",
+    "Stateful firewall or NAT idle timeouts dropping the long-lived TCP session",
+    "Manager daemon crashes or restarts (remoted/modulesd regressions in a specific version)",
+    "Laptops or suspended VMs exceeding agents_disconnection_time"
+   ],
+   "diagnosis": [
+    "agent_control -l | grep -c Disconnected",
+    "grep -E '1409|Authentication error' /var/ossec/logs/ossec.log",
+    "compare the first field of client.keys across hosts",
+    "journalctl -u wazuh-manager | grep -iE 'core|segfault'"
+   ],
+   "fix": [
+    "Remove client.keys from templates and re-enroll clones with unique names",
+    "Upgrade to the fixed patch release or roll back",
+    "Keep keepalive (notify_time) below firewall idle timeouts"
+   ],
+   "prevention": "Golden images never carry client.keys; monitor the disconnected count; read open issues before upgrading.",
+   "sources": [
+    {
+     "title": "wazuh/wazuh #33038: Wazuh-remoted (4.13.1/4.14.0) crashing frequently",
+     "url": "https://github.com/wazuh/wazuh/issues/33038",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh #17928: Many agent disconnections in Footprint tests",
+     "url": "https://github.com/wazuh/wazuh/issues/17928",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: agent connection",
+     "url": "https://documentation.wazuh.com/current/user-manual/agent/agent-management/agent-connection.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: agents disconnected",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=agents+disconnected&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: wazuh agent disconnected",
+     "url": "https://stackoverflow.com/search?q=wazuh+agent+disconnected",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Duplicate agent name on re-enrollment",
+   "tool": "Wazuh authd",
+   "area": "Wazuh agents",
+   "level": "L1",
+   "error_text": "wazuh-agentd: ERROR: Duplicate agent name: web01 (from manager) / Duplicate name, rejecting enrollment",
+   "context": "A rebuilt host keeps its hostname but lost its key; the old entry is still on the manager.",
+   "frequency_signal": "Several group threads and GitHub #13580 / discussion #26268; a thread reports all agents failing after 4.13.1.",
+   "root_causes": [
+    "Old agent entry still registered under the same name",
+    "auth force settings: replacement only allowed after the old agent was disconnected for disconnected_time (default 1h)",
+    "Re-enrollment with a new key while the manager still holds the old one"
+   ],
+   "diagnosis": [
+    "agent_control -l | grep NAME",
+    "grep -i duplicate /var/ossec/logs/ossec.log",
+    "grep -A8 force /var/ossec/etc/ossec.conf"
+   ],
+   "fix": [
+    "Delete the old agent (manage_agents -r ID or API DELETE /agents)",
+    "Restart the agent to auto-enroll",
+    "Or enroll with a unique WAZUH_AGENT_NAME"
+   ],
+   "prevention": "Decommission runbook removes agents; scheduled API cleanup of agents disconnected > 30 days.",
+   "sources": [
+    {
+     "title": "wazuh/wazuh #13580: Duplicate name, rejecting enrollment",
+     "url": "https://github.com/wazuh/wazuh/issues/13580",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh discussion #26268: Duplicate agent name (from manager)",
+     "url": "https://github.com/wazuh/wazuh/discussions/26268",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Duplicate name, agent enrollment rejected",
+     "url": "https://groups.google.com/g/wazuh/c/Fuuzs1abBTI",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Upgraded to 4.13.1, agents can't connect due to agents duplicated",
+     "url": "https://groups.google.com/g/wazuh/c/DYzAh9h6ZhI",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: duplicate agent name",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=duplicate+agent+name&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Wazuh dashboard server is not ready yet",
+   "tool": "Wazuh dashboard/indexer",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L1",
+   "error_text": "Wazuh dashboard server is not ready yet / [ConnectionError]: connect ECONNREFUSED 127.0.0.1:9200 / Another OpenSearch Dashboards instance appears to be migrating the index",
+   "context": "After reboot, upgrade, IP change or on undersized VMs.",
+   "frequency_signal": "wazuh-docker #771 (30 comments) and many group threads per release (4.3 OVA, 4.9, 4.10, 4.12).",
+   "root_causes": [
+    "Indexer down or still starting (often OOM-killed)",
+    "opensearch.hosts points to an old IP",
+    "TLS or certificate permission problems",
+    "kibanaserver password changed without updating the dashboard keystore",
+    "Interrupted saved-object migration left a .kibana_N index"
+   ],
+   "diagnosis": [
+    "systemctl status wazuh-indexer wazuh-dashboard",
+    "journalctl -u wazuh-dashboard",
+    "grep opensearch.hosts /etc/wazuh-dashboard/opensearch_dashboards.yml",
+    "curl -k -u admin https://127.0.0.1:9200/_cluster/health"
+   ],
+   "fix": [
+    "Start/fix the indexer first",
+    "Correct opensearch.hosts",
+    "Delete only the half-migrated .kibana index named in the log, then restart the dashboard"
+   ],
+   "prevention": "Size the VM (8 GB minimum all-in-one); monitor indexer state; IP-change checklist.",
+   "sources": [
+    {
+     "title": "Wazuh docs: dashboard troubleshooting",
+     "url": "https://documentation.wazuh.com/current/user-manual/wazuh-dashboard/troubleshooting.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "wazuh-docker #771: Wazuh dashboard server is not ready yet",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/771",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: dashboard server is not ready yet",
+     "url": "https://groups.google.com/g/wazuh/c/CSCIP8NQymY",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: not ready yet after upgrade 4.12",
+     "url": "https://groups.google.com/g/wazuh/c/oDjE7uIa6D8",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: wazuh dashboard server is not ready yet",
+     "url": "https://stackoverflow.com/search?q=wazuh+dashboard+server+is+not+ready+yet",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: dashboard not ready yet",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=dashboard+not+ready+yet&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Wazuh API down or credentials rejected after a password change",
+   "tool": "Wazuh API/indexer security",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L2",
+   "error_text": "Wazuh API seems to be down / Error: No API available to connect / Unable to authenticate user [admin] for REST request",
+   "context": "Each component keeps its own copy of a credential: indexer internal users, Filebeat keystore, dashboard keystore, wazuh-keystore (indexer connector), wazuh.yml (API user).",
+   "frequency_signal": "wazuh-docker #838 and #712 (password change in Docker) have 15-21 comments each.",
+   "root_causes": [
+    "wazuh-manager/API stopped",
+    "wazuh.yml has old URL or wazuh-wui password",
+    "Password changed in one place only",
+    "Docker: env vars only seed first start; internal_users.yml hash and securityadmin must be updated"
+   ],
+   "diagnosis": [
+    "ss -ltnp | grep 55000",
+    "curl -k -u wazuh-wui -X POST https://127.0.0.1:55000/security/user/authenticate",
+    "filebeat test output",
+    "tail /var/ossec/logs/api.log"
+   ],
+   "fix": [
+    "Use wazuh-passwords-tool.sh (updates indexer users and keystores together)",
+    "Update wazuh.yml and wazuh-keystore",
+    "Docker: follow the documented hash.sh + securityadmin procedure"
+   ],
+   "prevention": "Change passwords only with the tool or documented Docker procedure; keep a five-place checklist.",
+   "sources": [
+    {
+     "title": "wazuh-docker #838: documented way to change admin/wazuh-wui passwords do not work",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/838",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh-docker #712: The default password can't be changed",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/712",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Error: No API available to connect",
+     "url": "https://groups.google.com/g/wazuh/c/-7gjBdnst50",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: dashboard troubleshooting",
+     "url": "https://documentation.wazuh.com/current/user-manual/wazuh-dashboard/troubleshooting.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: API seems to be down",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=API+seems+to+be+down&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Indexer cluster health yellow or red",
+   "tool": "Wazuh indexer",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L2",
+   "error_text": "\"status\" : \"yellow\" / unassigned_shards / a copy of this shard is already allocated to this node",
+   "context": "Single-node installs with replicas > 0; nodes lost; allocation retries exhausted after disk-full.",
+   "frequency_signal": "Recurring in the group ('Wazuh-indexer doesn't work'); standard OpenSearch operations knowledge.",
+   "root_causes": [
+    "Replicas configured on a single node",
+    "Node left the cluster",
+    "Disk above the low watermark",
+    "Corrupted primary after crash or disk-full (red)"
+   ],
+   "diagnosis": [
+    "_cluster/health",
+    "_cat/shards with unassigned.reason",
+    "_cluster/allocation/explain",
+    "_cat/allocation"
+   ],
+   "fix": [
+    "number_of_replicas 0 on single node",
+    "_cluster/reroute?retry_failed=true",
+    "Restore red indices from snapshot or delete them as a last resort"
+   ],
+   "prevention": "3+ indexer nodes with replicas for HA; snapshots; alert when health is not green.",
+   "sources": [
+    {
+     "title": "Wazuh docs: indexer cluster management",
+     "url": "https://documentation.wazuh.com/current/user-manual/wazuh-indexer-cluster/cluster-management.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Wazuh-indexer doesn't work",
+     "url": "https://groups.google.com/g/wazuh/c/nwTRrcV8Y40",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: opensearch cluster yellow unassigned shards single node",
+     "url": "https://stackoverflow.com/search?q=opensearch+cluster+yellow+unassigned+shards+single+node",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: indexer yellow",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=indexer+yellow&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Disk flood-stage watermark makes indices read-only",
+   "tool": "Wazuh indexer",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L2",
+   "error_text": "blocked by: [TOO_MANY_REQUESTS/12/disk usage exceeded flood-stage watermark, index has read-only-allow-delete block]",
+   "context": "No retention, archives enabled, small disk shared with the manager.",
+   "frequency_signal": "Several group threads (read-only, TOO_MANY_REQUESTS disk usage exceeded) and GitHub discussion #33799.",
+   "root_causes": [
+    "Indexer disk above 95% flood stage (85/90/95% defaults)",
+    "No ISM retention policy",
+    "wazuh-archives indices growing (logall_json)"
+   ],
+   "diagnosis": [
+    "df -h /var/lib/wazuh-indexer",
+    "_cat/allocation?v",
+    "_cat/indices sorted by size",
+    "grep flood-stage in Filebeat logs"
+   ],
+   "fix": [
+    "Delete oldest indices",
+    "Clear index.blocks.read_only_allow_delete if it was set manually",
+    "Disable archives, add ISM retention"
+   ],
+   "prevention": "ISM delete policy; disk alert at 75%; separate volume for indexer data.",
+   "sources": [
+    {
+     "title": "Wazuh group: TOO_MANY_REQUESTS/12/disk usage exceeded",
+     "url": "https://groups.google.com/g/wazuh/c/9mazw9zCz0w",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Wazuh read-only",
+     "url": "https://groups.google.com/g/wazuh/c/ST6OVgBrBm4",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh discussion #33799: dashboard loses events over time (disk pressure?)",
+     "url": "https://github.com/wazuh/wazuh/discussions/33799",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: index lifecycle management",
+     "url": "https://documentation.wazuh.com/current/user-manual/wazuh-indexer-cluster/index-lifecycle-management.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: read-only-allow-delete",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=read-only-allow-delete&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Maximum shards open (1000/1000) stops new daily indices",
+   "tool": "Wazuh indexer",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L2",
+   "error_text": "this action would add [3] total shards, but this cluster currently has [1000]/[1000] maximum shards open",
+   "context": "Daily wazuh-alerts indices with 3 primary shards each plus monitoring/statistics indices on one node.",
+   "frequency_signal": "Classic group thread 'maximum shards open limit'; common after 6-12 months without retention.",
+   "root_causes": [
+    "cluster.max_shards_per_node default 1000",
+    "No retention",
+    "3 primary shards per daily index on a single node"
+   ],
+   "diagnosis": [
+    "_cluster/health active_shards",
+    "count indices per prefix",
+    "grep 'maximum shards open' in Filebeat logs"
+   ],
+   "fix": [
+    "Delete old indices",
+    "Reduce shards per index in the Filebeat template and reload it",
+    "Raise the limit only temporarily"
+   ],
+   "prevention": "ISM retention; one shard per daily index on single node; alert when active shards > 800.",
+   "sources": [
+    {
+     "title": "Wazuh group: maximum shards open limit - looking for clues",
+     "url": "https://groups.google.com/g/wazuh/c/AungE5r1llI",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: Wazuh indexer indices",
+     "url": "https://documentation.wazuh.com/current/user-manual/wazuh-indexer/wazuh-indexer-indices.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: maximum shards open opensearch",
+     "url": "https://stackoverflow.com/search?q=maximum+shards+open+opensearch",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: maximum shards open",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=maximum+shards+open&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Indexer does not start: heap, vm.max_map_count, certificate permissions",
+   "tool": "Wazuh indexer",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L2",
+   "error_text": "max virtual memory areas vm.max_map_count [65530] is too low / Result: oom-kill / AccessDeniedException: /etc/wazuh-indexer/certs/indexer-key.pem",
+   "context": "Undersized all-in-one VMs, Docker/LXC hosts, manually copied certificates.",
+   "frequency_signal": "wazuh-docker #1076 (containers keep rebooting) and #903 (rlimits); frequent in the group.",
+   "root_causes": [
+    "RAM below requirements; heap too large",
+    "vm.max_map_count below 262144 on the host",
+    "Cert files not owned by wazuh-indexer or wrong mode"
+   ],
+   "diagnosis": [
+    "systemctl status / journalctl -u wazuh-indexer",
+    "sysctl vm.max_map_count; free -h",
+    "grep -Xm /etc/wazuh-indexer/jvm.options",
+    "ls -l /etc/wazuh-indexer/certs"
+   ],
+   "fix": [
+    "Give the VM 8 GB and set heap to about half",
+    "Raise vm.max_map_count persistently (only if lower)",
+    "chown wazuh-indexer, chmod 500 dir / 400 files"
+   ],
+   "prevention": "Size from the quickstart table; memory alerts; no other heavy services on the Wazuh VM.",
+   "sources": [
+    {
+     "title": "wazuh-docker #1076: Dashboard and Indexer containers keeps rebooting",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/1076",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh-docker #903: rlimits error",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/903",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: quickstart (requirements)",
+     "url": "https://documentation.wazuh.com/current/quickstart.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: indexer not starting",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=indexer+not+starting&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Certificate errors after the server IP changed",
+   "tool": "Wazuh certificates",
+   "area": "Wazuh indexer and dashboard",
+   "level": "L2",
+   "error_text": "x509: certificate is valid for 192.0.2.10, not 10.0.5.20 / Hostname/IP does not match certificate's altnames",
+   "context": "Certificates embed node IPs/names from config.yml at install time; DHCP, OVA imports, clones break them.",
+   "frequency_signal": "wazuh-docker #2063 'SSL Cert errors' (17 comments), #733 and #1142 about certificate generation.",
+   "root_causes": [
+    "New IP not in the SAN",
+    "Component certs generated from different root CAs",
+    "Expired certificates"
+   ],
+   "diagnosis": [
+    "openssl x509 -noout -subject -enddate -ext subjectAltName",
+    "compare root-ca fingerprints",
+    "filebeat test output"
+   ],
+   "fix": [
+    "Use a static IP/DNS name",
+    "Regenerate node certs with wazuh-certs-tool.sh and the same root CA",
+    "Update IPs in opensearch.yml, opensearch_dashboards.yml, filebeat.yml, ossec.conf, wazuh.yml"
+   ],
+   "prevention": "Static IP, DNS names in SAN, expiry monitoring; keep wazuh-install-files.tar safe.",
+   "sources": [
+    {
+     "title": "wazuh-docker #2063: SSL Cert errors",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/2063",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh-docker #733: Error when generate-indexer-certs",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/733",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh-docker #1142: certificate tool does not exist in any bucket",
+     "url": "https://github.com/wazuh/wazuh-docker/issues/1142",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: certificate ip change",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=certificate+ip+change&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Logs are collected but no alerts appear",
+   "tool": "Wazuh ruleset",
+   "area": "Wazuh rules and modules",
+   "level": "L2",
+   "error_text": "wazuh-logtest: No decoder matched. / logcollector: Could not open file",
+   "context": "New sources (Traefik JSON, app logs, Docker json-file) need a decoder and a rule above log_alert_level.",
+   "frequency_signal": "Group threads 'Wazuh cannot capture log' and 'Not showing alerts'; core docs topic (ruleset testing).",
+   "root_causes": [
+    "File not read (path, glob, agent not in group)",
+    "No decoder",
+    "Rule level 0 or below the alert threshold",
+    "only-future-events: old lines are never read",
+    "docker-listener missing Python docker module (PEP 668 on Ubuntu 24.04)"
+   ],
+   "diagnosis": [
+    "grep logcollector in the agent ossec.log",
+    "wazuh-logtest with a real line",
+    "temporarily enable logall_json and watch archives.json"
+   ],
+   "fix": [
+    "Write a decoder and a rule in local_decoder.xml / local_rules.xml",
+    "Prefer JSON logs",
+    "Restart the manager after testing"
+   ],
+   "prevention": "Test every new source with wazuh-logtest; ruleset in Git with a CI logtest step.",
+   "sources": [
+    {
+     "title": "Wazuh docs: testing decoders and rules",
+     "url": "https://documentation.wazuh.com/current/user-manual/ruleset/testing.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: custom rules",
+     "url": "https://documentation.wazuh.com/current/user-manual/ruleset/rules/custom.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: custom decoders",
+     "url": "https://documentation.wazuh.com/current/user-manual/ruleset/decoders/custom.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Wazuh cannot capture log",
+     "url": "https://groups.google.com/g/wazuh/c/gGoWhgbXSO0",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Not Showing Alerts or archives",
+     "url": "https://groups.google.com/g/wazuh/c/WCFSnM8uOZg",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Noisy rules, alert fatigue and flooded agent queues",
+   "tool": "Wazuh ruleset",
+   "area": "Wazuh rules and modules",
+   "level": "L2",
+   "error_text": "Agent event queue is full. Events may be lost. / Agent 'XXX' sync omitted due to abuse control / Trojaned version of file '/bin/diff' detected",
+   "context": "Internet-exposed SSH, busy Traefik access logs, FIM on changing paths, rootcheck/SCA heuristics.",
+   "frequency_signal": "GitHub #19346 (Trojaned /bin/diff, 61 comments), #19792 (SCA false positive, 74 comments), #25456 (abuse control, 30 comments).",
+   "root_causes": [
+    "Broad default rules",
+    "Chatty sources shipped in full",
+    "Agent client_buffer EPS limit",
+    "Heuristic false positives"
+   ],
+   "diagnosis": [
+    "Top rule IDs via an indexer terms aggregation",
+    "Agent buffer alerts",
+    "Review which sources dominate"
+   ],
+   "fix": [
+    "Level-0 child rules with if_sid and a precise condition",
+    "Filter at the source (Traefik accessLog filters.statusCodes)",
+    "Raise client_buffer only after filtering"
+   ],
+   "prevention": "Weekly top-10 review, alert budget, documented suppressions (reason, owner, date).",
+   "sources": [
+    {
+     "title": "wazuh/wazuh #19346: Trojaned version of file '/bin/diff' detected",
+     "url": "https://github.com/wazuh/wazuh/issues/19346",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh #19792: Windows SCA guest account false positive",
+     "url": "https://github.com/wazuh/wazuh/issues/19792",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh #25456: Agent sync omitted due to abuse control",
+     "url": "https://github.com/wazuh/wazuh/issues/25456",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: too many alerts",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=too+many+alerts&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: wazuh reduce alerts rule level 0",
+     "url": "https://stackoverflow.com/search?q=wazuh+reduce+alerts+rule+level+0",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "FIM real-time changes are not reported",
+   "tool": "Wazuh syscheck",
+   "area": "Wazuh rules and modules",
+   "level": "L2",
+   "error_text": "Unable to add inotify watch to real time monitoring ... The limit on the total number of inotify watches was reached",
+   "context": "Realtime only where configured; big trees (/var/lib/docker) exhaust inotify watches; whodata needs auditd.",
+   "frequency_signal": "Frequent configuration question; inotify limits are a Linux classic.",
+   "root_causes": [
+    "Directory not set to realtime (12h schedule)",
+    "inotify watch limit",
+    "Network filesystems",
+    "Audit rules conflicts for whodata"
+   ],
+   "diagnosis": [
+    "grep syscheck/inotify in ossec.log",
+    "sysctl fs.inotify.max_user_watches",
+    "auditctl -s"
+   ],
+   "fix": [
+    "Realtime only on small important dirs",
+    "Raise inotify limit",
+    "whodata on credential files"
+   ],
+   "prevention": "FIM scope = config, binaries, credentials; test with touch after every change.",
+   "sources": [
+    {
+     "title": "GitHub search: wazuh inotify realtime",
+     "url": "https://github.com/wazuh/wazuh/issues?q=inotify+realtime",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: wazuh syscheck realtime not working",
+     "url": "https://stackoverflow.com/search?q=wazuh+syscheck+realtime+not+working",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: fim realtime",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=fim+realtime&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Vulnerability detection empty or full of false positives",
+   "tool": "Wazuh vulnerability detection",
+   "area": "Wazuh rules and modules",
+   "level": "L2",
+   "error_text": "IndexerConnector initialization failed for index 'wazuh-states-vulnerabilities-...' / RocksDB errors / false positives for snap/ESM packages",
+   "context": "Since 4.8 results are written to the indexer by the indexer connector; feed downloaded from Wazuh CTI.",
+   "frequency_signal": "Many 4.8+ issues: #24113, #24171, #28563 (false positives), #24151 (RocksDB), #27260 (memory).",
+   "root_causes": [
+    "Indexer connector credentials missing after password change (wazuh-keystore)",
+    "No egress to the CTI feed",
+    "Syscollector disabled",
+    "Version translation false positives"
+   ],
+   "diagnosis": [
+    "grep vulnerability/indexer-connector in ossec.log",
+    "_cat/indices/wazuh-states-vuln*",
+    "API syscollector packages"
+   ],
+   "fix": [
+    "wazuh-keystore -f indexer -k username/password",
+    "Allow HTTPS egress or use offline update",
+    "Upgrade for FP fixes; document accepted findings"
+   ],
+   "prevention": "Run the password checklist; monitor the states index; treat findings as triage input.",
+   "sources": [
+    {
+     "title": "wazuh/wazuh #24113: old vulnerabilities in snap packages",
+     "url": "https://github.com/wazuh/wazuh/issues/24113",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh #24171: 4.8 false positives in firefox",
+     "url": "https://github.com/wazuh/wazuh/issues/24171",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh #24151: RocksDB errors during startup",
+     "url": "https://github.com/wazuh/wazuh/issues/24151",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: Vulnerability Management module stuck with errors",
+     "url": "https://groups.google.com/g/wazuh/c/BmHALiKqvZs",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: indexer integration",
+     "url": "https://documentation.wazuh.com/current/user-manual/manager/indexer-integration.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Manager disk fills with alerts and archives logs",
+   "tool": "Wazuh manager",
+   "area": "Wazuh rules and modules",
+   "level": "L1",
+   "error_text": "No space left on device (manager) / /var/ossec/logs/archives tens of GB",
+   "context": "Wazuh rotates and compresses local logs daily but does not delete them.",
+   "frequency_signal": "Common in long-running installs; GitHub discussion #33799 shows disk pressure on single nodes.",
+   "root_causes": [
+    "logall/logall_json left enabled",
+    "No local retention cron",
+    "Indexer and manager share one filesystem"
+   ],
+   "diagnosis": [
+    "df -h; du on /var/ossec",
+    "grep logall in ossec.conf"
+   ],
+   "fix": [
+    "Disable archives unless needed",
+    "cron.daily find -mtime +30 -delete for .gz/.sum",
+    "Separate volume"
+   ],
+   "prevention": "Disk alerts; documented retention; separate LV for /var/ossec.",
+   "sources": [
+    {
+     "title": "Wazuh docs: event logging (archives)",
+     "url": "https://documentation.wazuh.com/current/user-manual/manager/wazuh-archives.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh discussion #33799",
+     "url": "https://github.com/wazuh/wazuh/discussions/33799",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: wazuh disk full archives",
+     "url": "https://serverfault.com/search?q=wazuh+disk+full+archives",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Active response locks out admins or misses Docker traffic",
+   "tool": "Wazuh active response",
+   "area": "Wazuh rules and modules",
+   "level": "L2",
+   "error_text": "active-responses.log shows firewall-drop add for the office NAT IP",
+   "context": "firewall-drop inserts iptables DROP rules; shared NAT IPs and broad rules cause collateral damage.",
+   "frequency_signal": "Common lab mistake; documented use case 'Blocking SSH brute-force'.",
+   "root_causes": [
+    "No white_list for admin/VPN/NAT addresses",
+    "Rule too broad / no timeout",
+    "Docker-published ports and chain order"
+   ],
+   "diagnosis": [
+    "tail active-responses.log",
+    "iptables -S INPUT/FORWARD",
+    "grep active-response and white_list in manager ossec.conf"
+   ],
+   "fix": [
+    "Remove the DROP rules from the console",
+    "white_list admin ranges",
+    "One specific rule, location local, timeout"
+   ],
+   "prevention": "Lab first; console access before enabling; weekly review; CrowdSec at the HTTP edge.",
+   "sources": [
+    {
+     "title": "Wazuh docs: how to configure active response",
+     "url": "https://documentation.wazuh.com/current/user-manual/capabilities/active-response/how-to-configure.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Wazuh docs: blocking SSH brute-force with active response",
+     "url": "https://documentation.wazuh.com/current/user-manual/capabilities/active-response/ar-use-cases/blocking-ssh-brute-force.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: active response blocked",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=active+response+blocked&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Email or Slack alerts never arrive",
+   "tool": "Wazuh integrations",
+   "area": "Wazuh rules and modules",
+   "level": "L1",
+   "error_text": "wazuh-maild: ERROR: (1223): Error Sending email to ... (smtp server)",
+   "context": "maild has no SMTP authentication; integrations need egress and correct levels.",
+   "frequency_signal": "Classic FAQ: Wazuh needs a local relay such as Postfix for authenticated SMTP.",
+   "root_causes": [
+    "Direct SMTP to a provider requiring auth/TLS",
+    "email_alert_level/integration level too high",
+    "Wrong/revoked webhook",
+    "No egress"
+   ],
+   "diagnosis": [
+    "grep maild/integratord in ossec.log",
+    "integrations.log",
+    "nc -vz 127.0.0.1 25",
+    "curl the webhook from the manager"
+   ],
+   "fix": [
+    "Postfix satellite relay with SASL",
+    "Set levels deliberately",
+    "Enable integrator debug"
+   ],
+   "prevention": "Monthly synthetic notification test.",
+   "sources": [
+    {
+     "title": "Wazuh docs root",
+     "url": "https://documentation.wazuh.com/current/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: wazuh email alerts not working",
+     "url": "https://stackoverflow.com/search?q=wazuh+email+alerts+not+working",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: email alerts",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=email+alerts&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Wazuh dashboard and Traefik both want 443",
+   "tool": "Wazuh dashboard / Traefik",
+   "area": "Wazuh rules and modules",
+   "level": "L2",
+   "error_text": "listen tcp :443: bind: address already in use / EADDRINUSE 0.0.0.0:443",
+   "context": "Installing Wazuh all-in-one on the Dokploy host recreates the Apache-vs-Dokploy 443 conflict.",
+   "frequency_signal": "Reader's own incident pattern; port conflicts are a top community question.",
+   "root_causes": [
+    "Two listeners for one port",
+    "Dashboard binds 0.0.0.0:443 by default"
+   ],
+   "diagnosis": [
+    "ss -ltnp 'sport = :443'",
+    "docker ps for dokploy-traefik",
+    "journalctl -u wazuh-dashboard"
+   ],
+   "fix": [
+    "Move Wazuh to its own VM",
+    "Or move the dashboard to 8443 and route through Traefik with serversTransport rootCAs"
+   ],
+   "prevention": "Port plan; pre-install ss check.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: wazuh dashboard change port 443",
+     "url": "https://stackoverflow.com/search?q=wazuh+dashboard+change+port+443",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Wazuh search: change dashboard port",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=change+dashboard+port&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "An upgrade breaks the stack or agents are newer than the manager",
+   "tool": "Wazuh upgrades",
+   "area": "Wazuh rules and modules",
+   "level": "L3",
+   "error_text": "indexer connector HTTP 404 after 4.12->4.13 / Agent version must be lower or equal to manager version / dashboard not ready after upgrade",
+   "context": "Components must run the same version and be upgraded in order: indexer, server, dashboard, agents.",
+   "frequency_signal": "GitHub #32044 (84 comments), #33038, #32820; group threads after 4.9, 4.12, 4.13.1.",
+   "root_causes": [
+    "Partial apt upgrades with the repo left enabled",
+    "Wrong order",
+    "Config files replaced at dpkg prompts",
+    "Filebeat template not updated",
+    "Release regressions"
+   ],
+   "diagnosis": [
+    "apt list --installed | grep wazuh",
+    "dpkg.log",
+    "*.dpkg-dist files",
+    "opensearch-dashboards-plugin list"
+   ],
+   "fix": [
+    "Finish upgrading every component to the same version in order",
+    "Restore configs",
+    "apt-mark hold",
+    "Downgrade/pin agents"
+   ],
+   "prevention": "Snapshots, change window, read open issues, lab first.",
+   "sources": [
+    {
+     "title": "wazuh/wazuh #32044: indexer breaks when upgrading from 4.12 to 4.13",
+     "url": "https://github.com/wazuh/wazuh/issues/32044",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "wazuh/wazuh #32820: Wazuh-modulesd crashing frequently",
+     "url": "https://github.com/wazuh/wazuh/issues/32820",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: not ready yet after upgrade 4.12",
+     "url": "https://groups.google.com/g/wazuh/c/oDjE7uIa6D8",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Wazuh group: dashboard not ready, update to 4.9",
+     "url": "https://groups.google.com/g/wazuh/c/z4glUiL-hHs",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "CrowdSec decisions exist but nothing is blocked",
+   "tool": "CrowdSec / Traefik bouncer",
+   "area": "CrowdSec",
+   "level": "L1",
+   "error_text": "cscli decisions list shows the IP, yet requests still reach the app",
+   "context": "CrowdSec detects; bouncers (remediation components) enforce.",
+   "frequency_signal": "'Ban not working at all' and NPM 'ban only local' forum topics; plugin #120, #248.",
+   "root_causes": [
+    "No bouncer registered or bouncer cannot reach LAPI",
+    "Middleware not attached to routers",
+    "Simulation mode",
+    "Testing from a private IP (whitelisted by default)",
+    "Firewall bouncer not covering DOCKER-USER/forward"
+   ],
+   "diagnosis": [
+    "cscli decisions list",
+    "cscli bouncers list (last pull)",
+    "cscli simulation status",
+    "check entrypoint/router middlewares"
+   ],
+   "fix": [
+    "Register bouncer and attach middleware globally on the entrypoint",
+    "iptables_chains include DOCKER-USER",
+    "Test with a decision on an external test IP"
+   ],
+   "prevention": "Monthly synthetic ban test; alert when bouncer last pull is stale.",
+   "sources": [
+    {
+     "title": "CrowdSec forum: Ban not working at all",
+     "url": "https://discourse.crowdsec.net/t/ban-not-working-at-all/1311",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: Nginx-proxy-manager+crowdsec (Docker) ban only local",
+     "url": "https://discourse.crowdsec.net/t/nginx-proxy-manager-crowdsec-docker-ban-only-local/1638",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Traefik plugin #120: Bouncer not blocking banned IPs",
+     "url": "https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/issues/120",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Traefik plugin #248: Traefik Bouncer not pulling from CrowdSec API",
+     "url": "https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/issues/248",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/selfhosted search: crowdsec traefik bouncer not blocking",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=crowdsec+traefik+bouncer+not+blocking&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Every client shows the same IP",
+   "tool": "Traefik / Docker Swarm / CrowdSec",
+   "area": "CrowdSec",
+   "level": "L2",
+   "error_text": "Access log ClientHost is 10.0.0.2 or 172.18.0.1 for every request",
+   "context": "Swarm ingress mode SNATs; userland proxy for IPv6; CDNs without trusted forwarded headers.",
+   "frequency_signal": "Plugin #41 (clientTrustedIPs blocks every IP), #28; recurring Traefik/Swarm question.",
+   "root_causes": [
+    "Swarm ingress publish mode",
+    "docker-proxy for IPv6 clients",
+    "Untrusted X-Forwarded-For from a front proxy"
+   ],
+   "diagnosis": [
+    "Check ClientHost in the access log",
+    "docker service inspect ports PublishMode",
+    "ss -ltnp sport 443"
+   ],
+   "fix": [
+    "Publish 80/443 in host mode",
+    "forwardedHeaders.trustedIPs and forwardedHeadersTrustedIPs for real proxies only"
+   ],
+   "prevention": "After each proxy change, verify ClientHost from a known external IP.",
+   "sources": [
+    {
+     "title": "Traefik plugin #41: clientTrustedIPs blocks every IP",
+     "url": "https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/issues/41",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Traefik plugin #28: Bypassing Crowdsec for local IPs?",
+     "url": "https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/issues/28",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Traefik search: real ip swarm ingress",
+     "url": "https://www.reddit.com/r/Traefik/search/?q=real+ip+swarm+ingress&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: traefik swarm real client ip",
+     "url": "https://stackoverflow.com/search?q=traefik+swarm+real+client+ip",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "CrowdSec reads logs but parses none",
+   "tool": "CrowdSec acquisition",
+   "area": "CrowdSec",
+   "level": "L1",
+   "error_text": "cscli metrics: Lines read 18204, Lines parsed -, Lines unparsed 18204",
+   "context": "acquis type must match a parser; collection must be installed; container paths must be mounted.",
+   "frequency_signal": "Forum: parser failures for caddy logs, 'Not a standard directory for logs', how to read metrics.",
+   "root_causes": [
+    "Wrong labels.type",
+    "Collection missing",
+    "Log path not mounted into the CrowdSec container",
+    "Unexpected log format"
+   ],
+   "diagnosis": [
+    "cscli metrics",
+    "cscli collections list",
+    "cscli explain --file ... --type traefik"
+   ],
+   "fix": [
+    "Correct acquis.d file and install crowdsecurity/traefik",
+    "Mount the log dir read-only"
+   ],
+   "prevention": "Alert when parsed rate drops to zero (Prometheus 6060).",
+   "sources": [
+    {
+     "title": "CrowdSec forum: parser failures for caddy logs",
+     "url": "https://discourse.crowdsec.net/t/help-with-parser-failures-for-caddy-logs/1361",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: Not a standard directory for logs",
+     "url": "https://discourse.crowdsec.net/t/not-a-standard-directory-for-logs/152",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: how to read the metrics",
+     "url": "https://discourse.crowdsec.net/t/question-about-how-to-read-the-metrics/49",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "CrowdSec LAPI unreachable: port 8080 conflicts and keys",
+   "tool": "CrowdSec LAPI / bouncers",
+   "area": "CrowdSec",
+   "level": "L2",
+   "error_text": "listen tcp 127.0.0.1:8080: bind: address already in use / could not get jwt token / crowdsecQuery:unreachable / 403 Forbidden",
+   "context": "LAPI defaults to 127.0.0.1:8080; Traefik in Docker cannot reach host loopback; keys regenerate on reinstall.",
+   "frequency_signal": "Forum topics 'Could not get jwt token after apt install', 'Failed to start the firewall bouncer', 'Unable to get crowdsec to start'; plugin #251, #245.",
+   "root_causes": [
+    "Port 8080 already used",
+    "LAPI bound to loopback while the bouncer runs in a container",
+    "Stale or wrong API key",
+    "TLS misconfiguration in multi-server setups"
+   ],
+   "diagnosis": [
+    "ss -ltnp sport 8080",
+    "grep listen_uri config.yaml",
+    "cscli lapi status",
+    "Traefik logs for the plugin"
+   ],
+   "fix": [
+    "Move LAPI to a free port and update credentials/bouncer configs",
+    "Run CrowdSec on the Traefik Docker network",
+    "Recreate the bouncer key"
+   ],
+   "prevention": "Port inventory; alert on stale bouncer pulls.",
+   "sources": [
+    {
+     "title": "CrowdSec forum: Could not get jwt token after apt install",
+     "url": "https://discourse.crowdsec.net/t/could-not-get-jwt-token-after-apt-install/166",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: Failed to start the firewall bouncer",
+     "url": "https://discourse.crowdsec.net/t/failed-to-start-the-firewall-bouncer/973",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: Multi server TLS handshake error",
+     "url": "https://discourse.crowdsec.net/t/multi-server-tls-handshake-error/1302",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Traefik plugin #251: crowdsecQuery:unreachable",
+     "url": "https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/issues/251",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Traefik plugin #245: Bouncer returns 403 Forbidden",
+     "url": "https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/issues/245",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "CrowdSec false positives ban real users",
+   "tool": "CrowdSec scenarios",
+   "area": "CrowdSec",
+   "level": "L2",
+   "error_text": "Users get 403/ban page; decisions with crowdsecurity/http-probing",
+   "context": "Apps that legitimately produce many 404s/403s (Nextcloud, Matrix), monitors, CGNAT.",
+   "frequency_signal": "Forum: Nextcloud/Kavita false positives, Synapse bans, exceptions for allowed 404s.",
+   "root_causes": [
+    "Missing app collections/whitelists",
+    "Monitoring traffic",
+    "Shared NAT"
+   ],
+   "diagnosis": [
+    "cscli decisions list --ip",
+    "cscli alerts inspect -d"
+   ],
+   "fix": [
+    "Delete decision",
+    "Install app collections",
+    "Whitelist parser in s02-enrich",
+    "Simulation for noisy scenarios"
+   ],
+   "prevention": "Review top decisions weekly; new scenarios in simulation first.",
+   "sources": [
+    {
+     "title": "CrowdSec forum: false positives with Nextcloud and Kavita",
+     "url": "https://discourse.crowdsec.net/t/false-positives-occuring-with-nextcloud-and-ebook-reader-kavita/339",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: Frequent IP bans due to Synapse Matrix requests",
+     "url": "https://discourse.crowdsec.net/t/frequent-ip-bans-by-crowdsec-due-to-synapse-matrix-requests-seeking-help-and-solutions/1472",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: Adding exceptions for allowed 404 errors",
+     "url": "https://discourse.crowdsec.net/t/adding-exceptions-for-allowed-404-errors/764",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "CrowdSec forum: whitelist rules expression with portion of URL",
+     "url": "https://discourse.crowdsec.net/t/help-with-whitelist-rules-expression-with-portion-of-url/41",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Fail2ban bans do not stop traffic to Docker containers",
+   "tool": "Fail2ban / Docker",
+   "area": "Fail2ban",
+   "level": "L2",
+   "error_text": "Banned IP list shows the attacker, requests still succeed / iptables: No chain/target/match by that name",
+   "context": "Docker DNATs published ports through FORWARD; INPUT rules never see them.",
+   "frequency_signal": "Official wiki page 'Fail2Ban and Docker', issue #3894, many container image issues.",
+   "root_causes": [
+    "Default chain INPUT",
+    "iptables legacy vs nft mismatch in containers"
+   ],
+   "diagnosis": [
+    "fail2ban-client status JAIL",
+    "iptables -S | grep f2b",
+    "iptables -L DOCKER-USER"
+   ],
+   "fix": [
+    "chain = DOCKER-USER with iptables-allports",
+    "Match iptables backend"
+   ],
+   "prevention": "Test with a real external IP; CrowdSec bouncer at L7 for HTTP.",
+   "sources": [
+    {
+     "title": "Fail2ban wiki: Fail2Ban and Docker",
+     "url": "https://github.com/fail2ban/fail2ban/wiki/Fail2Ban-and-Docker",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "fail2ban #3894: iptables multiport for DOCKER-USER (or FORWARD) not working",
+     "url": "https://github.com/fail2ban/fail2ban/issues/3894",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "fail2ban discussion #3600: Running fail2ban on the host, monitoring docker containers",
+     "url": "https://github.com/fail2ban/fail2ban/discussions/3600",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "crazy-max/docker-fail2ban #112: Failure to add ban rule to iptables",
+     "url": "https://github.com/crazy-max/docker-fail2ban/issues/112",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Fail2ban fails to start on Ubuntu 24.04",
+   "tool": "Fail2ban",
+   "area": "Fail2ban",
+   "level": "L1",
+   "error_text": "ERROR Failed during configuration: Have not found any log file for sshd jail / ModuleNotFoundError: No module named 'asynchat'",
+   "context": "Journald-only systems without /var/log/auth.log; early noble package vs Python 3.12.",
+   "frequency_signal": "Very common after 24.04 upgrades (search links).",
+   "root_causes": [
+    "backend auto looks for files that do not exist",
+    "Old package incompatible with Python 3.12"
+   ],
+   "diagnosis": [
+    "systemctl status fail2ban",
+    "ls /var/log/auth.log",
+    "apt-cache policy fail2ban"
+   ],
+   "fix": [
+    "backend = systemd in jail.local",
+    "Upgrade the fail2ban package"
+   ],
+   "prevention": "Config management for jail.local; monitor fail2ban-client status.",
+   "sources": [
+    {
+     "title": "Fail2ban wiki: Troubleshooting",
+     "url": "https://github.com/fail2ban/fail2ban/wiki/Troubleshooting",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "linuxserver/docker-fail2ban #25: stopped working without me knowing",
+     "url": "https://github.com/linuxserver/docker-fail2ban/issues/25",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: fail2ban ubuntu 24.04 asynchat",
+     "url": "https://stackoverflow.com/search?q=fail2ban+ubuntu+24.04+asynchat",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/linuxadmin search: fail2ban 24.04",
+     "url": "https://www.reddit.com/r/linuxadmin/search/?q=fail2ban+24.04&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Fail2ban filter matches nothing",
+   "tool": "Fail2ban",
+   "area": "Fail2ban",
+   "level": "L2",
+   "error_text": "fail2ban-regex: Lines: 5214 lines, 0 ignored, 0 matched, 5214 missed",
+   "context": "Shipped traefik-auth filter expects common log format; JSON logs need a custom filter and datepattern.",
+   "frequency_signal": "Classic: filter/date mismatch (linuxserver/docker-swag #384).",
+   "root_causes": [
+    "Log format differs",
+    "Date not recognised / timezone",
+    "Wrong logpath",
+    "Proxy IP in the log"
+   ],
+   "diagnosis": [
+    "fail2ban-regex LOG FILTER",
+    "tail the log"
+   ],
+   "fix": [
+    "JSON failregex + datepattern + logtimezone"
+   ],
+   "prevention": "Filters and sample lines in Git with a fail2ban-regex check.",
+   "sources": [
+    {
+     "title": "Fail2ban wiki: Troubleshooting",
+     "url": "https://github.com/fail2ban/fail2ban/wiki/Troubleshooting",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "linuxserver/docker-swag #384: fail2ban not banning",
+     "url": "https://github.com/linuxserver/docker-swag/issues/384",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: fail2ban-regex 0 matched traefik",
+     "url": "https://stackoverflow.com/search?q=fail2ban-regex+0+matched+traefik",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Trivy DB download fails with TOOMANYREQUESTS",
+   "tool": "Trivy",
+   "area": "Trivy",
+   "level": "L2",
+   "error_text": "failed to download vulnerability DB ... TOOMANYREQUESTS: retry-after ..., allowed: 44000/minute",
+   "context": "Shared egress IPs pulling the DB from ghcr.io in every CI job; Harbor's Trivy adapter too.",
+   "frequency_signal": "Trivy discussion #7668 'Solve once for all the TOOMANYREQUESTS issues' and several related threads (2024-2025).",
+   "root_causes": [
+    "Rate limit on ghcr.io per IP",
+    "No DB cache in CI"
+   ],
+   "diagnosis": [
+    "trivy image --debug",
+    "check cache dir"
+   ],
+   "fix": [
+    "--db-repository mirror list (mirror.gcr.io first)",
+    "Cache the DB in CI",
+    "Mirror the DB into Harbor for air-gapped use"
+   ],
+   "prevention": "Recent Trivy defaults to mirror.gcr.io; one scheduled DB refresh job.",
+   "sources": [
+    {
+     "title": "aquasecurity/trivy discussion #7668: Solve once for all the TOOMANYREQUESTS issues",
+     "url": "https://github.com/aquasecurity/trivy/discussions/7668",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "aquasecurity/trivy discussion #7641: DB blocked by rate limiter",
+     "url": "https://github.com/aquasecurity/trivy/discussions/7641",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "aquasecurity/trivy-action #389: rate limiting downloading DB from ghcr.io",
+     "url": "https://github.com/aquasecurity/trivy-action/issues/389",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #21163: ghcr rate limit for Trivy - overriding DB repositories",
+     "url": "https://github.com/goharbor/harbor/issues/21163",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Trivy x509 errors scanning images in Harbor",
+   "tool": "Trivy / Harbor",
+   "area": "Trivy",
+   "level": "L2",
+   "error_text": "tls: failed to verify certificate: x509: certificate signed by unknown authority",
+   "context": "Trivy talks to the registry directly with Go TLS; /etc/docker/certs.d does not apply.",
+   "frequency_signal": "Private-CA registries are a top CI problem (handbook 37 scenario).",
+   "root_causes": [
+    "Private CA missing in the job image",
+    "SSL_CERT_FILE replaced the system bundle with only the private CA",
+    "No registry credentials"
+   ],
+   "diagnosis": [
+    "openssl s_client issuer",
+    "trivy --debug"
+   ],
+   "fix": [
+    "Add CA to the trust store or SSL_CERT_FILE with full bundle",
+    "TRIVY_USERNAME/TRIVY_PASSWORD with a Harbor robot account"
+   ],
+   "prevention": "CI base images with the CA baked in.",
+   "sources": [
+    {
+     "title": "GitHub search: trivy x509 unknown authority",
+     "url": "https://github.com/aquasecurity/trivy/issues?q=x509+unknown+authority",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: trivy x509 certificate signed by unknown authority",
+     "url": "https://stackoverflow.com/search?q=trivy+x509+certificate+signed+by+unknown+authority",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Trivy gate blocks every pipeline on unfixable CVEs",
+   "tool": "Trivy / GitLab CI",
+   "area": "Trivy",
+   "level": "L2",
+   "error_text": "Total: 23 (HIGH: 19, CRITICAL: 4) and exit code 1 on unchanged code",
+   "context": "New CVEs appear daily; a gate on all findings is not actionable.",
+   "frequency_signal": "Recurring DevSecOps debate (search links).",
+   "root_causes": [
+    "Gate includes unfixed findings",
+    "Old base image",
+    "No exception process"
+   ],
+   "diagnosis": [
+    "trivy image --severity HIGH,CRITICAL",
+    "--ignore-unfixed comparison"
+   ],
+   "fix": [
+    "Gate on fixable HIGH/CRITICAL",
+    ".trivyignore.yaml with statement and expired_at",
+    "Weekly base image rebuilds"
+   ],
+   "prevention": "Exception list with owners and expiry; renovate base images.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: trivy ignore-unfixed exit-code gitlab",
+     "url": "https://stackoverflow.com/search?q=trivy+ignore-unfixed+exit-code+gitlab",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: trivy gate unfixed cve",
+     "url": "https://www.reddit.com/r/devops/search/?q=trivy+gate+unfixed+cve&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Vault is sealed after every restart",
+   "tool": "HashiCorp Vault / OpenBao",
+   "area": "Vault and OpenBao",
+   "level": "L2",
+   "error_text": "Code: 503. Errors: * Vault is sealed / Failed to lock memory: cannot allocate memory",
+   "context": "Shamir seal needs key holders after each restart; containers restart often.",
+   "frequency_signal": "Several discuss.hashicorp.com threads and GitHub #5593, #25360.",
+   "root_causes": [
+    "Shamir seal without auto-unseal",
+    "Restarts from updates/reboots",
+    "post-unseal setup failed (storage/network)",
+    "mlock in containers without IPC_LOCK"
+   ],
+   "diagnosis": [
+    "vault status",
+    "docker inspect restarts",
+    "logs for seal/mlock"
+   ],
+   "fix": [
+    "vault operator unseal by key holders",
+    "Auto-unseal (transit/KMS/HSM)",
+    "disable_mlock = true with integrated storage or IPC_LOCK"
+   ],
+   "prevention": "Unseal runbook; monitor seal status (exit code 2).",
+   "sources": [
+    {
+     "title": "HashiCorp Discuss: Vault is sealed and unable to unseal it",
+     "url": "https://discuss.hashicorp.com/t/vault-is-sealed-and-unable-to-unseal-it/71604",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "HashiCorp Discuss: Vault is sealed after post-unseal setup failed",
+     "url": "https://discuss.hashicorp.com/t/vault-is-sealed-after-post-unseal-setup-failed/32236",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "hashicorp/vault #5593: Vault is sealed randomly",
+     "url": "https://github.com/hashicorp/vault/issues/5593",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Vault docs: status command",
+     "url": "https://developer.hashicorp.com/vault/docs/commands/status",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Permission denied on KV v2 secrets",
+   "tool": "HashiCorp Vault / OpenBao",
+   "area": "Vault and OpenBao",
+   "level": "L2",
+   "error_text": "Code: 403. Errors: * permission denied",
+   "context": "KV v2 API paths include data/ and metadata/.",
+   "frequency_signal": "Classic Vault beginner question (search links).",
+   "root_causes": [
+    "Policy written for secret/app/* instead of secret/data/app/*",
+    "Token lacks the policy"
+   ],
+   "diagnosis": [
+    "vault token lookup",
+    "vault policy read",
+    "vault kv get -output-curl-string"
+   ],
+   "fix": [
+    "Policy on secret/data/... and secret/metadata/...",
+    "vault token capabilities"
+   ],
+   "prevention": "Policies as code with capability tests.",
+   "sources": [
+    {
+     "title": "Vault docs root",
+     "url": "https://developer.hashicorp.com/vault/docs",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: vault kv v2 permission denied policy data",
+     "url": "https://stackoverflow.com/search?q=vault+kv+v2+permission+denied+policy+data",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Vault raft node cannot join the cluster",
+   "tool": "HashiCorp Vault / OpenBao",
+   "area": "Vault and OpenBao",
+   "level": "L3",
+   "error_text": "failed to join raft cluster / x509: certificate is valid for vault-1.example.com, not 10.0.30.11",
+   "context": "Integrated storage uses 8201 with TLS; api_addr/cluster_addr must be reachable.",
+   "frequency_signal": "hashicorp/vault #25360 'nodes join, but cant unseal' and #9618.",
+   "root_causes": [
+    "Cert SAN mismatch / missing leader CA",
+    "8201 blocked",
+    "Wrong api_addr/cluster_addr",
+    "Joined node still sealed"
+   ],
+   "diagnosis": [
+    "vault operator raft list-peers",
+    "nc -vz 8201",
+    "grep addrs in vault.hcl"
+   ],
+   "fix": [
+    "retry_join with leader_ca_cert_file",
+    "Correct addresses and SANs",
+    "Unseal joined node"
+   ],
+   "prevention": "3 or 5 voters; raft snapshots; autopilot.",
+   "sources": [
+    {
+     "title": "hashicorp/vault #25360: raft storage: nodes join, but cant unseal",
+     "url": "https://github.com/hashicorp/vault/issues/25360",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "hashicorp/vault #9618: vault is not initialized but is initialized",
+     "url": "https://github.com/hashicorp/vault/issues/9618",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Vault stops serving when the audit log cannot be written",
+   "tool": "HashiCorp Vault / OpenBao",
+   "area": "Vault and OpenBao",
+   "level": "L3",
+   "error_text": "core: failed to audit request ... no space left on device",
+   "context": "Vault denies requests when no enabled audit device can record them.",
+   "frequency_signal": "Well-known operational trap (search links).",
+   "root_causes": [
+    "Single file audit device on a full disk",
+    "logrotate without HUP (deleted file still open)"
+   ],
+   "diagnosis": [
+    "vault audit list -detailed",
+    "df -h",
+    "lsof +L1"
+   ],
+   "fix": [
+    "Free space, logrotate with reload",
+    "Second audit device (syslog)"
+   ],
+   "prevention": "Dedicated volume, disk alerts, ship audit log to Wazuh.",
+   "sources": [
+    {
+     "title": "Vault docs root",
+     "url": "https://developer.hashicorp.com/vault/docs",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: vault audit log disk full requests fail",
+     "url": "https://stackoverflow.com/search?q=vault+audit+log+disk+full+requests+fail",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Keycloak behind Traefik: HTTPS required and wrong redirects",
+   "tool": "Keycloak",
+   "area": "Keycloak",
+   "level": "L2",
+   "error_text": "We are sorry... HTTPS required / Invalid parameter: redirect_uri / admin console stuck on Loading the Admin UI",
+   "context": "Keycloak must be told to trust X-Forwarded-* and its public hostname.",
+   "frequency_signal": "keycloak discussion #13459, issue #14452, forum thread on Traefik reverse proxy.",
+   "root_causes": [
+    "Missing KC_PROXY_HEADERS",
+    "Missing/wrong KC_HOSTNAME",
+    "HTTP listener disabled with edge TLS",
+    "Redirect URIs not exact"
+   ],
+   "diagnosis": [
+    "OIDC discovery issuer",
+    "container env KC_*",
+    "logs"
+   ],
+   "fix": [
+    "KC_HOSTNAME=https://..., KC_PROXY_HEADERS=xforwarded, KC_HTTP_ENABLED=true"
+   ],
+   "prevention": "Check discovery after every proxy change; never set sslRequired NONE.",
+   "sources": [
+    {
+     "title": "keycloak discussion #13459: Cannot access admin console behind traefik proxy",
+     "url": "https://github.com/keycloak/keycloak/discussions/13459",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "keycloak #14452: hostname-admin broken with docker and reverse proxy",
+     "url": "https://github.com/keycloak/keycloak/issues/14452",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Keycloak forum: Struggling to reverse proxy Keycloak with Traefik",
+     "url": "https://forum.keycloak.org/t/struggling-to-reverse-proxy-keycloak-with-traefik/30197",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Keycloak guide: Traefik with TLS passthrough",
+     "url": "https://www.keycloak.org/server/traefik-passthrough",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Keycloak start stuck on the database changelog lock",
+   "tool": "Keycloak",
+   "area": "Keycloak",
+   "level": "L3",
+   "error_text": "Waiting for changelog lock.... / Could not acquire change log lock",
+   "context": "A killed migration leaves DATABASECHANGELOGLOCK locked.",
+   "frequency_signal": "Classic upgrade problem (search links); discussion #24655 on seamless upgrades.",
+   "root_causes": [
+    "Container killed during migration",
+    "Two replicas migrating at once"
+   ],
+   "diagnosis": [
+    "logs for liquibase",
+    "SELECT from databasechangeloglock"
+   ],
+   "fix": [
+    "Stop all instances, back up, release the lock, start one instance"
+   ],
+   "prevention": "Backup before upgrade, single replica during migration, generous start period.",
+   "sources": [
+    {
+     "title": "keycloak discussion #24655: Future of seamless upgrades?",
+     "url": "https://github.com/keycloak/keycloak/discussions/24655",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "keycloak discussion #25750: Postgresql database privileges",
+     "url": "https://github.com/keycloak/keycloak/discussions/25750",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: keycloak could not acquire change log lock",
+     "url": "https://stackoverflow.com/search?q=keycloak+could+not+acquire+change+log+lock",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Keycloak health checks fail after upgrading",
+   "tool": "Keycloak",
+   "area": "Keycloak",
+   "level": "L2",
+   "error_text": "GET /health/ready on 8080 returns 404 / exec: \"curl\": executable file not found",
+   "context": "Health and metrics live on the management port 9000 in recent versions; the image has no curl.",
+   "frequency_signal": "Common after the management-interface change (search links).",
+   "root_causes": [
+    "Health on 9000 not 8080",
+    "KC_HEALTH_ENABLED not set",
+    "Healthcheck uses curl"
+   ],
+   "diagnosis": [
+    "docker inspect health",
+    "kc.sh show-config",
+    "bash /dev/tcp probe on 9000"
+   ],
+   "fix": [
+    "Healthcheck via bash /dev/tcp on 9000 with start_period"
+   ],
+   "prevention": "Read upgrade notes; staging test of healthchecks.",
+   "sources": [
+    {
+     "title": "Keycloak documentation root",
+     "url": "https://www.keycloak.org/documentation",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: keycloak health ready 9000 404",
+     "url": "https://stackoverflow.com/search?q=keycloak+health+ready+9000+404",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Authentik forward auth returns 404 on the outpost path",
+   "tool": "Authentik / Traefik",
+   "area": "Authentik",
+   "level": "L2",
+   "error_text": "404 page not found at /outpost.goauthentik.io/...",
+   "context": "Forward auth needs the middleware check and a route for the browser callback on the app's host.",
+   "frequency_signal": "authentik #8956 (54 comments), #9122, #2180, #4510.",
+   "root_causes": [
+    "Provider not added to the embedded outpost",
+    "No router for /outpost.goauthentik.io/ on the app host",
+    "Wrong middleware address"
+   ],
+   "diagnosis": [
+    "wget the outpost ping from the Traefik container",
+    "curl -sI the app and the start URL"
+   ],
+   "fix": [
+    "Add provider to outpost",
+    "High-priority router for the outpost path (Traefik v3 HostRegexp syntax)",
+    "Correct forwardAuth address"
+   ],
+   "prevention": "Smoke-test with curl after every new protected app.",
+   "sources": [
+    {
+     "title": "goauthentik/authentik #8956: path /outpost.goauthentik.io not found",
+     "url": "https://github.com/goauthentik/authentik/issues/8956",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #9122: Embedded Outpost returning 404",
+     "url": "https://github.com/goauthentik/authentik/issues/9122",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #2180: Forward Auth in Traefik / Docker environment not working",
+     "url": "https://github.com/goauthentik/authentik/issues/2180",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #4510: Proxy Provider not working",
+     "url": "https://github.com/goauthentik/authentik/issues/4510",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Authentik login loops or lands on authentik instead of the app",
+   "tool": "Authentik",
+   "area": "Authentik",
+   "level": "L2",
+   "error_text": "Redirect loop / ends at the authentik user interface / CSRF Failed: Origin checking failed",
+   "context": "External host, cookie domain, trusted proxies and time sync must agree.",
+   "frequency_signal": "authentik #1997 (43 comments), #8127, #2023.",
+   "root_causes": [
+    "External host mismatch",
+    "Cookie domain wrong in domain mode",
+    "Proxy headers not trusted",
+    "Clock skew",
+    "Policy denies the user"
+   ],
+   "diagnosis": [
+    "curl -sI location header",
+    "server logs for csrf/origin",
+    "timedatectl"
+   ],
+   "fix": [
+    "Exact https external host",
+    "Cookie domain",
+    "AUTHENTIK_LISTEN__TRUSTED_PROXY_CIDRS",
+    "Fix NTP"
+   ],
+   "prevention": "Document each protected app's provider settings.",
+   "sources": [
+    {
+     "title": "goauthentik/authentik #1997: Forward auth redirecting to authentik instead of app",
+     "url": "https://github.com/goauthentik/authentik/issues/1997",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #8127: Request has been Denied. Flow does not apply to current user",
+     "url": "https://github.com/goauthentik/authentik/issues/8127",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #2023: Logging out should invalidate sessions of proxied apps",
+     "url": "https://github.com/goauthentik/authentik/issues/2023",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Authentik shows No workers connected after an upgrade",
+   "tool": "Authentik",
+   "area": "Authentik",
+   "level": "L3",
+   "error_text": "No workers connected / Not Found on /if/flow/initial-setup/",
+   "context": "Server and worker must run the same release; recent releases reworked background tasks.",
+   "frequency_signal": "authentik #16780, #18292 (50 comments), #17740, #20667, #11046.",
+   "root_causes": [
+    "Worker image tag differs from server",
+    "Worker crash (permissions, DB)",
+    "Stale compose file from an older release",
+    "Migration failed midway"
+   ],
+   "diagnosis": [
+    "docker compose ps / images",
+    "worker logs"
+   ],
+   "fix": [
+    "Backup DB (pg_dump with exec -T)",
+    "Same AUTHENTIK_TAG for both",
+    "Compose file of the target release",
+    "Let migrations finish"
+   ],
+   "prevention": "Pin tags in .env; upgrade one release at a time; read release notes.",
+   "sources": [
+    {
+     "title": "goauthentik/authentik #16780: Upgrade 2025.8.2 No workers connected",
+     "url": "https://github.com/goauthentik/authentik/issues/16780",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #18292: No workers connected 2025.10.2",
+     "url": "https://github.com/goauthentik/authentik/issues/18292",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #17740: Outposts not working with 2025.10.0",
+     "url": "https://github.com/goauthentik/authentik/issues/17740",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #20667: Migration 0056_user_roles fails/hangs",
+     "url": "https://github.com/goauthentik/authentik/issues/20667",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "goauthentik/authentik #11046: New install: Not Found on initial-setup",
+     "url": "https://github.com/goauthentik/authentik/issues/11046",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "Wazuh",
+   "what": "Open-source (GPLv2) security platform: agents collect logs, FIM, inventory, SCA; the server decodes and matches rules; the indexer (OpenSearch fork) stores alerts; the dashboard visualises them.",
+   "architecture": "wazuh-agent -> 1515/tcp enrollment (wazuh-authd) and 1514/tcp events (wazuh-remoted) -> wazuh-analysisd (decoders, rules) -> alerts.json -> Filebeat -> wazuh-indexer 9200/tcp -> wazuh-dashboard 443/tcp; API wazuh-apid 55000/tcp; cluster 1516/tcp; indexer transport 9300-9400/tcp; vulnerability detection writes wazuh-states-vulnerabilities-* through the indexer connector (4.8+).",
+   "current_version_notes": "Docs show 4.14 as current (Oct 2026); install with packages.wazuh.com/4.14/wazuh-install.sh -a; 5.0 readiness testing visible in GitHub. Quickstart sizing: 1-25 agents 4 vCPU/8 GiB/50 GB; 26-50 8 vCPU/8 GiB/100 GB; 51-100 8 vCPU/8 GiB/200 GB for 90 days.",
+   "gotchas": [
+    "All central components must be the same version; upgrade order indexer -> server -> dashboard -> agents",
+    "Agents must not be newer than the manager; disable the repo or apt-mark hold after install",
+    "Passwords live in five places (indexer users, Filebeat keystore, dashboard keystore, wazuh-keystore, wazuh.yml)",
+    "Certificates embed node IPs/names; IP changes break TLS",
+    "Local alerts/archives logs are never deleted automatically; indexer needs ISM retention",
+    "Docker compose publishes 9200/55000 on all interfaces and Docker bypasses UFW"
+   ],
+   "official_docs": "https://documentation.wazuh.com/current/"
+  },
+  {
+   "tool": "CrowdSec",
+   "what": "Collaborative detection engine: parses logs, runs leaky-bucket scenarios, emits decisions that bouncers enforce.",
+   "architecture": "acquisition -> parsers -> scenarios -> LAPI (127.0.0.1:8080 default) <- bouncers (firewall bouncer, Traefik plugin); CAPI for the community blocklist; metrics on 6060; AppSec component optional.",
+   "current_version_notes": "Traefik integration via the maxlerebourg crowdsec-bouncer-traefik-plugin (stream/live/none modes, captcha, AppSec).",
+   "gotchas": [
+    "Private IPs are whitelisted by default - LAN tests never ban",
+    "LAPI port 8080 clashes with other services",
+    "Bouncer key is shown once",
+    "Swarm ingress hides client IPs"
+   ],
+   "official_docs": "https://docs.crowdsec.net/"
+  },
+  {
+   "tool": "Fail2ban",
+   "what": "Log-driven banning daemon that adds firewall rules for IPs that match failregex N times within findtime.",
+   "architecture": "jail (filter + action + logpath/backend) -> fail2ban-server -> iptables/nftables actions.",
+   "current_version_notes": "Ubuntu 24.04 ships 1.0.x; use backend = systemd on journald-only hosts.",
+   "gotchas": [
+    "Docker published ports need chain = DOCKER-USER",
+    "Edit jail.local, never jail.conf",
+    "Test with fail2ban-regex"
+   ],
+   "official_docs": "https://github.com/fail2ban/fail2ban/wiki"
+  },
+  {
+   "tool": "Trivy",
+   "what": "Scanner for vulnerabilities, misconfigurations, secrets and SBOMs in images, filesystems, repos and Kubernetes.",
+   "architecture": "CLI downloads vulnerability DB (OCI artifact) and Java DB; scans locally; Harbor ships a Trivy adapter.",
+   "current_version_notes": "Since 0.57.1 the DB is pulled primarily from mirror.gcr.io to avoid ghcr.io rate limits; multiple DB repositories can be listed for fallback.",
+   "gotchas": [
+    "Cache the DB in CI",
+    "Uses Go TLS trust (SSL_CERT_FILE/SSL_CERT_DIR), not /etc/docker/certs.d",
+    "Gate on fixable findings"
+   ],
+   "official_docs": "https://trivy.dev/"
+  },
+  {
+   "tool": "HashiCorp Vault / OpenBao",
+   "what": "Secrets manager: KV, dynamic secrets, PKI, transit; OpenBao is the MPL-licensed Linux Foundation fork with a compatible CLI (bao).",
+   "architecture": "API 8200, cluster 8201, integrated raft storage, seal (Shamir or auto-unseal), auth methods (AppRole, JWT/OIDC for GitLab), audit devices.",
+   "current_version_notes": "Vault moved to the Business Source License in 2023; OpenBao is the open-source alternative.",
+   "gotchas": [
+    "Sealed after every restart with Shamir",
+    "KV v2 policies need data/ and metadata/ paths",
+    "Audit device failure blocks requests",
+    "disable_mlock = true is recommended with integrated storage"
+   ],
+   "official_docs": "https://developer.hashicorp.com/vault/docs"
+  },
+  {
+   "tool": "Keycloak",
+   "what": "Full IAM server (OIDC, SAML, user federation, MFA) on Quarkus.",
+   "architecture": "kc.sh start with PostgreSQL; HTTP 8080 behind a TLS-terminating proxy; management interface 9000 for health/metrics.",
+   "current_version_notes": "26.x line; hostname v2 options (KC_HOSTNAME accepts a full URL), KC_PROXY_HEADERS=xforwarded.",
+   "gotchas": [
+    "Tell it about the proxy",
+    "Health on 9000",
+    "Image has no curl",
+    "Liquibase lock after killed migrations"
+   ],
+   "official_docs": "https://www.keycloak.org/documentation"
+  },
+  {
+   "tool": "Authentik / Authelia",
+   "what": "Authentik: self-hosted IdP with flows, outposts and Traefik forward auth; Authelia: lighter forward-auth portal.",
+   "architecture": "authentik server (9000/9443) + worker + PostgreSQL; embedded outpost serves /outpost.goauthentik.io; Traefik forwardAuth middleware.",
+   "current_version_notes": "Calendar versions (2025.x, 2026.x); recent releases reworked background tasks - server and worker must match.",
+   "gotchas": [
+    "Add providers to an outpost",
+    "Route /outpost.goauthentik.io/ on protected hosts",
+    "Use exec -T for pg_dump"
+   ],
+   "official_docs": "https://docs.goauthentik.io/"
+  }
+ ],
+ "learning_signals": [
+  "Practitioners learn Wazuh by running the all-in-one in a VM, enrolling one agent and generating their own SSH failures, then reading the alert JSON.",
+  "The Wazuh Google Group and GitHub issues are where version-specific breakage shows up first; reading open issues before upgrades is a recurring advice.",
+  "wazuh-logtest is the single most useful learning tool for decoders and rules.",
+  "OpenSearch/Elasticsearch fundamentals (shards, replicas, watermarks, ISM) explain most indexer incidents.",
+  "CrowdSec users learn by reading cscli metrics and cscli explain output; most 'not working' threads end at acquisition or bouncer registration.",
+  "Fail2ban and CrowdSec with Docker always come back to iptables chain order (INPUT vs FORWARD/DOCKER-USER).",
+  "Vault operators wish they had planned unsealing and audit storage before production.",
+  "SSO behind a proxy (Keycloak, Authentik) is mostly about forwarded headers, external hostnames and cookies."
+ ],
+ "coverage_notes": "Research budget: 20 fetches/searches (GitHub wazuh/wazuh and wazuh-docker issue lists sorted by comments, Wazuh quickstart, CrowdSec forum top topics, Keycloak discussions, authentik and Traefik bouncer plugin issue lists, searches for Wazuh docs, Google Group threads, Vault sealed threads, Keycloak proxy threads, Trivy rate limits, Fail2ban Docker). Reddit/Stack Overflow/Server Fault are represented only by constructed search links. discuss.hashicorp.com top page returned 404; Vault topics come from search results. Version-specific statements (Wazuh 4.14, authentik 2025.x/2026.x) reflect pages seen on 2026-10-03."
+}

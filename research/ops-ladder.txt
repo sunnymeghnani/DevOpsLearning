@@ -1,0 +1,638 @@
+Zero-to-Hero Ops Ladder
+Ops Ladder [#top]
+This week [#start]
+Blind spots [#blind]
+Ladder [#ladder]
+Cases [#cases]
+Rhythm [#rhythm]
+More [#more]
+0
+/
+26
+Built from your Apache → Dokploy → DNS notes · 28 Sep 2026
+Zero-to-Hero
+Ops Ladder
+Your notes already follow the right method: collect evidence, then test one layer at a time. Two things are missing.
+Tools that let you look at a layer directly
+(packets, syscalls, resolver logs) instead of reasoning from symptoms, and
+practice on systems that are actually broken.
+Reading more guides won't supply the second one, so most of this plan is hands-on.
+5 levels
+30 failure cases
+26 drills and exit tests
+0
+of
+26
+done
+Progress is saved in this browser.
+Tick drills and exit tests as you finish them.
+This week
+Three things, in any order. Each one closes a gap your notes show.
+Three SadServers scenarios, 30 minutes each
+No hints until the timer runs out, then read the solution. Filter by the dns, nginx and docker tags.
+sadservers.com/scenarios [https://sadservers.com/scenarios]
+Read the tcpdump and strace zines
+Free, about 20 pages each, one sitting. They make both tools usable in an afternoon.
+Let's learn tcpdump! [https://wizardzines.com/zines/tcpdump/]Spying on your programs with strace [https://wizardzines.com/zines/strace/]
+Replay your curl DNS case with new tools
+On a test VM, break resolution again and use the four tools your notes don't: tcpdump,
+getent ahosts
+, resolver debug logs and
+curl --resolve
+.
+See the commands below [#blind]
+Blind spots in your notes
+Seven things your write-up doesn't cover. Each one would have shortened the Apache and DNS investigation or will bite the Dokploy migration.
+Uppercase words in commands (HOST, CONTAINER, POD, PORT) are placeholders.
+No view of the packets
+Your DNS flow infers where a query dies. A capture shows it directly: whether the query leaves the host, which server it goes to, and whether an answer comes back. Run it in one terminal while you repeat the failing curl in another.
+sudo tcpdump -ni any port 53
+Read: Let's learn tcpdump! [https://wizardzines.com/zines/tcpdump/] (free zine)
+dig and curl don't take the same path
+curl resolves names through glibc's getaddrinfo, which follows
+/etc/nsswitch.conf
+, so
+/etc/hosts
+and other sources count. dig skips all of that and asks the nameserver in
+/etc/resolv.conf
+directly. When the two disagree,
+getent ahosts
+is the one that matches what curl sees.
+getent ahosts example.com
+dig +short example.com
+Read: Some things about getaddrinfo that surprised me [https://jvns.ca/blog/2022/02/23/getaddrinfo-is-kind-of-weird/] (Julia Evans)
+Resolver logs are switched off
+systemd-resolved can log every query, which upstream server it picked and why a lookup failed. Turn debug logging on, reproduce the failure, then turn it back off.
+sudo resolvectl log-level debug
+journalctl -fu systemd-resolved
+sudo resolvectl log-level info
+Read: Arch Wiki: systemd-resolved [https://wiki.archlinux.org/title/Systemd-resolved]
+You can test past DNS without fixing it
+--resolve
+pins a name to an IP for one request and still sends the right SNI and Host header, so you can check Traefik and the app while DNS is broken. For plain HTTP, a Host header does the same job.
+curl -v --resolve app.example.com:443:192.0.2.10 https://app.example.com/
+curl -v -H 'Host: app.example.com' http://127.0.0.1/
+Read: everything curl: Name resolve tricks [https://everything.curl.dev/usingcurl/connections/name.html]
+Containers have their own resolver
+On a user-defined network, which Compose and Dokploy create, a container asks Docker's embedded DNS at 127.0.0.11, and that forwards to the host's upstream servers. If Docker finds no usable upstream (a loopback-only resolv.conf, or a Docker-in-Docker CI runner), it falls back to 8.8.8.8 and 8.8.4.4, which on-prem firewalls usually block. Check from inside the container, and use netshoot when the image has no tools.
+docker exec CONTAINER cat /etc/resolv.conf
+docker run --rm -it --net container:CONTAINER nicolaka/netshoot
+Fix: list your internal resolvers as
+"dns": ["192.0.2.53"]
+in
+/etc/docker/daemon.json
+and restart Docker.
+Read: netshoot [https://github.com/nicolaka/netshoot] · Dokploy: Networking & DNS [https://docs.dokploy.com/docs/core/troubleshooting/networking]
+Published ports skip UFW
+A published port binds 0.0.0.0, and Docker's NAT rule rewrites the packet before UFW's rules ever see it, so
+ufw deny
+doesn't protect it. Your plan to avoid host ports is right. For temporary test ports, bind to loopback. Filtering that must apply to containers belongs in the
+DOCKER-USER
+chain.
+ports:
+- "127.0.0.1:18000:8000"
+Read: Docker docs: Packet filtering and firewalls [https://docs.docker.com/engine/network/packet-filtering-firewalls/]
+expose:
+doesn't restrict anything
+Containers on the same network can reach every port a process listens on, exposed or not.
+expose:
+works as a hint: Traefik uses an exposed port when you don't name one, and a wrong guess shows up as a 502. Isolation comes from which networks a container joins. In Compose, pin the port with a label.
+traefik.http.services.app.loadbalancer.server.port=8000
+Read: Traefik docs: Docker routing [https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/docker/]
+The ladder
+Each level ends with an exit test. Pass it inside the time limit and move up. Skim L0 and L1, do their exit tests, and put your real hours into L2.
+L0
+Foundations
+0/3
+Shell, files and permissions, users, packages, processes, Git, basic bash.
+Exit test · 30 min
+On a fresh VM with no notes: create a sudo user with key-only SSH, find the five largest files under /var, explain every field of
+ls -l
+, and revert a bad Git commit.
+Sites
+Linux Journey [https://labex.io/linuxjourney]
+Free
+Short lessons with quizzes. The Grasshopper and Journeyman sections cover the command line, permissions, processes, the filesystem and boot.
+Linux Upskill Challenge [https://linuxupskillchallenge.org/]
+Free
+A month of daily lessons run against a real server. It restarts on the first Monday of each month.
+Pro Git, chapters 1–3 [https://git-scm.com/book/en/v2]
+Free
+Everything daily Git needs, including how to undo mistakes safely.
+Bash Guide [https://mywiki.wooledge.org/BashGuide] · ShellCheck [https://www.shellcheck.net/]
+Free
+Learn quoting and exit codes properly, then lint every script you write.
+Drills
+Work through Linux Upskill Challenge days 1–10 on a homelab VM.
+Write a bash script that reports disk use, memory and failed systemd units, with zero ShellCheck warnings.
+L1
+Operator
+0/4
+systemd units, journald, sockets and ports,
+/proc
+, timers, SSH, disks and inodes.
+Your notes set this level's goal themselves: given a port, find the responsible application within minutes.
+Exit test · 5 min
+Given only a port number, name the process, the unit that starts it, its config file and the command that shows its logs.
+Sites
+Arch Wiki: systemd [https://wiki.archlinux.org/title/Systemd] · Journal [https://wiki.archlinux.org/title/Systemd/Journal]
+Free
+The clearest reference for units, dependencies, drop-in overrides and journal filters. It applies to Ubuntu as written.
+SadServers, easy scenarios [https://sadservers.com/scenarios]
+Free tier
+Real broken servers in the browser, with a timer and an automatic check when you think you've fixed it.
+How Linux Works, 3rd ed. [https://nostarch.com/howlinuxworks3]
+Book
+Processes, systemd, networking and devices in one book. The best single read for L1 and L2.
+Killercoda Linux scenarios [https://killercoda.com/linux]
+Free
+Guided scenarios in a browser terminal for days you don't want to start a VM.
+Drills
+Write a systemd unit for a small Python HTTP server with
+Restart=on-failure
+. Kill it with
+kill -9
+and find the restart in the journal.
+Fill
+/var
+on a test VM until a service fails. Find which one and why using only journalctl, df and du.
+Solve five SadServers easy scenarios inside their time limits.
+L2
+Troubleshooter
+Start here
+0/5
+Routing, DNS, TLS, HTTP, reverse proxies, packet capture and syscall tracing.
+Your notes show L1 is mostly in place. The day-to-day gaps you described live here.
+Exit test · 15 min
+Someone says "the site is down." Walk DNS, route, firewall, TLS, proxy and app, and name the broken layer with evidence: a capture, a log line or
+curl -v
+output.
+Sites
+Practical Networking: Packet Traveling [https://www.practicalnetworking.net/series/packet-traveling/packet-traveling/]
+Free
+How a packet crosses switches and routers: ARP, MAC tables, routing, NAT. The model behind "can I reach the gateway?"
+Julia Evans's zines [https://wizardzines.com/zines/debugging/]
+Free
+DNS zine paid
+Twenty-page comics that make one tool usable in a sitting. Free: tcpdump [https://wizardzines.com/zines/tcpdump/], strace [https://wizardzines.com/zines/strace/], Linux debugging tools [https://wizardzines.com/zines/debugging/]. Paid: How DNS Works [https://wizardzines.com/zines/dns/].
+Mess With DNS [https://messwithdns.net/]
+Free
+A real subdomain and a live view of every query that hits it. Do the "weird" experiments, especially negative caching.
+everything curl: Name resolve tricks [https://everything.curl.dev/usingcurl/connections/name.html]
+Free
+--resolve
+,
+--connect-to
+and Host headers for testing one layer without touching DNS.
+badssl.com [https://badssl.com/]
+Free
+Hosts with deliberately broken TLS: expired, wrong host, self-signed, untrusted root, incomplete chain.
+What is a reverse proxy? [https://www.cloudflare.com/learning/cdn/glossary/reverse-proxy/] · Deploying Gunicorn [https://docs.gunicorn.org/en/stable/deploy.html]
+Free
+The first explains the role. The second explains why an app server wants a buffering proxy in front of it, which is Traefik's job after your migration.
+Drills
+Break DNS on a test VM three ways: a bad upstream in netplan, systemd-resolved stopped, a wrong
+/etc/hosts
+line. Diagnose each with tcpdump, getent and resolvectl.
+Run
+curl -v
+against the expired, wrong.host and untrusted-root hosts on badssl.com. Write down the exact error each one produces.
+Run
+strace -f -e trace=openat,connect curl -so /dev/null https://example.com
+and name every file it reads and every address it connects to.
+Solve five SadServers scenarios tagged dns, nginx or ssl.
+L3
+Platform
+0/6
+Container internals, images, Docker networking, Traefik and Dokploy, Kubernetes, CI/CD, configuration management.
+Kubernetes itself runs on your CKA track (Killercoda, killer.sh, homelab break-and-fix). Troubleshooting is the heaviest CKA domain, so the Kubernetes cases below double as exam practice.
+Exit test · one weekend
+Move one of your three Apache workloads into a container behind Dokploy, built by a GitLab CI pipeline that pushes to your Harbor registry, with a written rollback you have actually tested.
+Sites
+iximiuz Labs: Docker roadmap [https://labs.iximiuz.com/roadmaps/docker]
+Free to start
+Hands-on challenges on real VMs. Start with the tutorial that builds a bridge network from scratch [https://labs.iximiuz.com/tutorials/container-networking-from-scratch], then the container networking challenges.
+Docker docs: Networking [https://docs.docker.com/engine/network/]
+Free
+Bridge networks, published ports and embedded DNS as they actually behave. Read the packet filtering page next to it.
+Dokploy troubleshooting [https://docs.dokploy.com/docs/core/troubleshooting]
+Free
+Domains that don't route, 404s, Bad Gateway, DNS failures inside builds. Pair it with the Traefik Docker routing page above.
+learnkube: Troubleshooting deployments [https://learnkube.com/troubleshooting-deployments]
+Free
+The bottom-up flowchart: pods first, then services, then ingress.
+GitLab CI quick start [https://docs.gitlab.com/ci/quick_start/] · Ansible 101 [https://www.youtube.com/playlist?list=PL2_OBreMn7FqZkvMYt6ATmgC0KAGGJNAN]
+Free
+One pipeline end to end, then Jeff Geerling's 15 episodes on making server setup repeatable.
+Drills
+Build a bridge network by hand with
+ip netns
+and veth pairs, then finish the Docker roadmap's networking challenges.
+Attach netshoot to a running container's network namespace and capture its DNS queries with tcpdump.
+Make Traefik return 502 on purpose with a wrong port, then find and fix it from Traefik's logs alone.
+Write a GitLab CI pipeline that builds an image, tags it with the commit SHA and pushes it to Harbor.
+Write an Ansible playbook that installs Docker with your
+daemon.json
+(DNS servers and log rotation) on a fresh VM.
+L4
+SRE
+0/5
+Metrics, logs and alerts, performance analysis, incident response, postmortems, change management.
+Exit test · game day
+A script breaks one thing in the homelab at random. You learn about it from an alert, fix it, and publish a one-page postmortem with timeline, root cause and follow-ups.
+Sites
+Google SRE book: Effective Troubleshooting [https://sre.google/sre-book/effective-troubleshooting/]
+Free
+Chapter 12 formalizes what your notes do by instinct. Then read chapters 14 and 15, Managing Incidents and Postmortem Culture, from the table of contents [https://sre.google/sre-book/table-of-contents/].
+Linux Performance Analysis in 60,000 ms [https://netflixtechblog.com/linux-performance-analysis-in-60-000-milliseconds-accc10403c55]
+Free
+Ten commands for the first minute on a slow machine, and the USE method behind them. More on Brendan Gregg's Linux performance page [https://www.brendangregg.com/linuxperf.html].
+Grafana learning hub [https://grafana.com/docs/learning-hub/]
+Free
+Short guided paths. The Grafana fundamentals [https://grafana.com/tutorials/grafana-fundamentals/] tutorial also runs in a ready-made sandbox.
+GitLab change management [https://handbook.gitlab.com/handbook/engineering/infrastructure-platforms/change-management/]
+Free
+How GitLab.com rates change risk, plus real change requests with rollback plans and dry runs in their public production tracker [https://gitlab.com/gitlab-com/gl-infra/production/-/issues]. Read their 2017 database outage postmortem [https://about.gitlab.com/2017/02/10/postmortem-of-database-outage-of-january-31/] too.
+Debugging: The 9 Indispensable Rules [https://debuggingrules.com/]
+Book
+David Agans names the habits your method depends on, such as "Quit thinking and look" and "Change one thing at a time". The site has a free poster.
+Drills
+Add node_exporter, Prometheus and Grafana to the homelab. Alert on disk above 85% and on failed systemd units (turn on node_exporter's systemd collector).
+Load a VM with
+stress-ng
+and run the 60-second checklist. Name the saturated resource before you look at the flags you used.
+Write the change request for disabling system Apache in GitLab's format (criticality, steps, verification, rollback) before you do it at work.
+Read GitLab's 2017 postmortem and list three controls that would have stopped it in your environment.
+Case library
+Thirty failures you'll meet on-prem, each with the first commands to run and the usual causes. Search by the exact error text you're looking at.
+Search cases
+All
+30
+DNS
+5
+Network
+4
+TLS
+4
+Proxy
+3
+Linux
+3
+Disk
+2
+Memory & CPU
+2
+Docker
+2
+Kubernetes
+4
+Change
+1
+Showing
+30
+cases
+DNS
+curl: (6) Could not resolve host: HOST
+First moves
+getent ahosts HOST
+resolvectl query HOST
+sudo tcpdump -ni any port 53
+Usual causes
+No reachable upstream DNS, a wrong or missing search domain,
+/etc/resolv.conf
+replaced or pointing at a dead resolver, or a firewall dropping port 53. Check TCP as well as UDP.
+Read
+Some ways DNS can break [https://jvns.ca/blog/2022/01/15/some-ways-dns-can-break/]
+DNS
+Resolves on the host, fails inside a container
+First moves
+docker exec CONTAINER cat /etc/resolv.conf
+docker run --rm -it --net container:CONTAINER nicolaka/netshoot dig HOST
+Usual causes
+Docker fell back to 8.8.8.8 because it found no usable upstream, and your firewall blocks it. Or the service being looked up isn't on the same user-defined network. Fix with a
+dns
+list in
+/etc/docker/daemon.json
+.
+Read
+Dokploy: Networking & DNS [https://docs.dokploy.com/docs/core/troubleshooting/networking]
+DNS · Kubernetes
+CoreDNS in CrashLoopBackOff, log says
+Loop ... detected
+First moves
+kubectl -n kube-system logs -l k8s-app=kube-dns --tail=50
+cat /etc/resolv.conf    # on the node
+Usual causes
+The node's resolv.conf lists a loopback resolver (127.0.0.53 or a local dnsmasq). kubelet hands it to CoreDNS, which then forwards to itself. Point kubelet's
+resolvConf
+at a file with real upstreams, such as
+/run/systemd/resolve/resolv.conf
+.
+Read
+CoreDNS: loop plugin [https://coredns.io/plugins/loop]
+DNS · Kubernetes
+A pod can't resolve a Service name
+First moves
+kubectl run tmp --rm -it --restart=Never --image=nicolaka/netshoot -- nslookup kubernetes.default
+kubectl -n kube-system get pods -l k8s-app=kube-dns
+Usual causes
+Short names only resolve inside the same namespace (use
+svc.namespace
+), a NetworkPolicy blocks port 53 to kube-dns, or CoreDNS itself is down.
+Read
+Kubernetes docs: Debugging DNS Resolution [https://kubernetes.io/docs/tasks/administer-cluster/dns-debugging-resolution/]
+DNS
+Changed a record, still getting the old IP
+First moves
+dig +noall +answer HOST
+dig +short NS DOMAIN
+dig @NAMESERVER HOST
+sudo resolvectl flush-caches
+Usual causes
+The old answer stays cached until its TTL runs out. If you looked the name up before the record existed, the "doesn't exist" answer is cached too. Different resolvers hold different caches.
+Practice
+Mess With DNS [https://messwithdns.net/]
+Network
+The gateway answers, nothing beyond it does
+First moves
+ip route
+ip route get 1.1.1.1
+tracepath -n 1.1.1.1
+Usual causes
+A missing or wrong default route, two default routes on different interfaces, or NAT and firewalling upstream.
+ip route get
+shows exactly which route and source address the kernel will use.
+Read
+Practical Networking: Packet Traveling [https://www.practicalnetworking.net/series/packet-traveling/packet-traveling/]
+Network
+Connection refused
+versus
+Connection timed out
+First moves
+sudo ss -ltnp 'sport = :PORT'
+nc -vz HOST PORT
+sudo tcpdump -ni any port PORT
+Usual causes
+Refused means a host answered with a reset: nothing listens on that address and port (often it's bound to 127.0.0.1 only), or a firewall rule rejects it. Timed out means packets vanish: a firewall drop, a wrong route, or a host that's down.
+Read
+Let's learn tcpdump! [https://wizardzines.com/zines/tcpdump/]
+Network
+Works on localhost, not from other machines
+First moves
+sudo ss -ltnp
+sudo ufw status verbose
+sudo nft list ruleset
+Usual causes
+The app listens on 127.0.0.1 instead of 0.0.0.0, a host firewall blocks the port, or a Docker port was published on 127.0.0.1 only (correct for anything that sits behind Traefik).
+Network
+mtr shows packet loss at a middle hop
+First moves
+mtr -rwn -c 100 HOST
+Usual causes
+Routers rate-limit ICMP replies addressed to themselves. Loss that doesn't carry through to the final hop isn't real. Only loss that persists to the last hop affects your traffic.
+TLS
+curl: (60) SSL certificate problem: unable to get local issuer certificate
+First moves
+openssl s_client -connect HOST:443 -servername HOST -showcerts </dev/null
+Usual causes
+The server sends its certificate without the intermediate, or the issuing CA is private and missing from this machine's trust store (add it and run
+update-ca-certificates
+).
+Practice
+badssl.com [https://badssl.com/]: incomplete-chain, untrusted-root
+TLS · Registry
+x509: certificate signed by unknown authority
+pulling from Harbor
+First moves
+openssl s_client -connect HARBOR:443 -showcerts </dev/null
+ls /etc/docker/certs.d/HARBOR/
+ls /etc/containerd/certs.d/HARBOR/
+Usual causes
+Harbor uses a private or self-signed CA that this machine doesn't trust. Docker reads
+ca.crt
+from
+/etc/docker/certs.d/HARBOR/
+; containerd on your Kubernetes nodes reads
+hosts.toml
+from
+/etc/containerd/certs.d/HARBOR/
+. Every node that pulls needs it.
+Practice
+badssl.com [https://badssl.com/]: self-signed
+TLS
+SSL: no alternative certificate subject name matches target host name
+First moves
+openssl s_client -connect HOST:443 -servername HOST </dev/null 2>/dev/null | openssl x509 -noout -subject -ext subjectAltName
+Usual causes
+The certificate doesn't list this name, or the proxy served its default certificate because no router matched the requested name. Traefik's default is self-signed and called TRAEFIK DEFAULT CERT.
+Practice
+badssl.com [https://badssl.com/]: wrong.host
+TLS · Time
+certificate has expired or is not yet valid
+on a cert you know is fine
+First moves
+timedatectl
+timedatectl timesync-status
+chronyc tracking
+Usual causes
+The clock is wrong. On-prem networks often block outbound NTP (UDP 123) without offering an internal time server, and paused or restored VMs drift.
+Proxy
+Traefik or Dokploy returns
+502 Bad Gateway
+First moves
+docker logs --tail 100 $(docker ps -qf name=traefik)
+docker run --rm --net container:CONTAINER nicolaka/netshoot ss -ltn
+Usual causes
+The domain's port doesn't match the port the app listens on, the app listens on 127.0.0.1 inside its container, or the container isn't on the network Traefik uses (dokploy-network for Compose apps).
+Read
+Dokploy: Domains & Traefik [https://docs.dokploy.com/docs/core/troubleshooting/domains]
+Proxy
+Traefik answers
+404 page not found
+First moves
+curl -v -H 'Host: APP.DOMAIN' http://TRAEFIK_IP/
+docker inspect --format '{{json .Config.Labels}}' CONTAINER
+Usual causes
+No router matched: a typo in the Host rule, a Compose app not redeployed after a domain change (its labels are only read at deploy), or a request on the http entrypoint for a router that only listens on https.
+Read
+Traefik docs: Docker routing [https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/docker/]
+Proxy · App server
+Requests die after about 30 or 60 seconds
+First moves
+curl -s -o /dev/null -w '%{http_code} %{time_total}s\n' http://127.0.0.1:8000/SLOW_PATH
+docker logs CONTAINER 2>&1 | grep -i 'worker timeout'
+Usual causes
+Gunicorn kills a worker after 30 seconds by default (WORKER TIMEOUT in its log) and the proxy reports 502. Nginx gives up after 60 seconds without a response and returns 504. Fix the slow endpoint, or raise both timeouts on purpose.
+Read
+Deploying Gunicorn [https://docs.gunicorn.org/en/stable/deploy.html]
+Linux
+A service won't start or keeps restarting
+First moves
+systemctl status UNIT -l --no-pager
+journalctl -u UNIT -b -n 100 --no-pager
+systemd-analyze verify /etc/systemd/system/UNIT.service
+Usual causes
+A wrong ExecStart path or permission, a missing environment file, the port already taken, or systemd giving up after too many restarts ("start request repeated too quickly").
+Linux
+bind: Address already in use
+First moves
+sudo ss -ltnp 'sport = :PORT'
+sudo lsof -nP -iTCP:PORT -sTCP:LISTEN
+systemctl list-sockets
+Usual causes
+An old instance still running, another service on the same port (your Apache case), or a systemd socket unit holding the port for socket activation.
+Linux · SSH
+Permission denied (publickey)
+First moves
+ssh -vvv USER@HOST
+sudo journalctl -u ssh -n 50 --no-pager
+ls -ld ~ ~/.ssh ~/.ssh/authorized_keys
+Usual causes
+The wrong key is offered (-vvv lists each key tried), or server permissions are too open:
+~/.ssh
+must be 700,
+authorized_keys
+600, and the home directory not group-writable. On RHEL-family hosts the unit is
+sshd
+.
+Disk
+No space left on device
+, but df shows free space
+First moves
+df -h
+df -i
+sudo lsof -nP +L1
+Usual causes
+Inodes exhausted by millions of small files, or a deleted log still held open by a process, so the space only returns when that process restarts. Also remember the 5% of blocks ext4 reserves for root.
+Disk · Docker
+Docker filled the disk
+First moves
+docker system df
+sudo du -xh --max-depth=1 /var/lib/docker | sort -h
+Usual causes
+Build cache and old images, or container logs growing without limit, since the default json-file driver doesn't rotate. Set
+log-opts
+max-size
+and
+max-file
+in daemon.json (new containers pick it up), then prune.
+Memory
+A process was killed and its own log says nothing
+First moves
+journalctl -k -b | grep -iE 'out of memory|killed process'
+docker inspect -f '{{.State.OOMKilled}}' CONTAINER
+kubectl describe pod POD | grep -A3 'Last State'
+Usual causes
+The kernel OOM killer or a cgroup memory limit. Exit code 137 means SIGKILL. Check for a leak before you raise the limit.
+CPU · Load
+High load average while the CPU is mostly idle
+First moves
+vmstat 1
+iostat -xz 1
+ps -eo state,pid,cmd | grep '^D'
+Usual causes
+Linux counts tasks in uninterruptible sleep (state D) in the load average. They are usually waiting on a slow disk or an NFS mount that stopped answering.
+Read
+Brendan Gregg: Linux Performance [https://www.brendangregg.com/linuxperf.html]
+Docker
+A container exits immediately or restart-loops
+First moves
+docker ps -a --format 'table {{.Names}}\t{{.Status}}'
+docker logs --tail 50 CONTAINER
+docker run --rm -it --entrypoint sh IMAGE
+Usual causes
+The main process exited or forked into the background, a wrong CMD or ENTRYPOINT, or missing config. Exit 126 means not executable, 127 command not found, 137 killed (often out of memory).
+Docker · Storage
+Permission denied on a bind mount or NFS share
+First moves
+ls -ln /HOST/PATH
+docker exec CONTAINER id
+Usual causes
+The container runs as a UID that doesn't own the files on the host, NFS root squash maps root to nobody, or on RHEL-family hosts an SELinux label is missing (
+:z
+on the mount).
+Kubernetes
+A pod is stuck in
+Pending
+First moves
+kubectl describe pod POD
+kubectl describe node NODE | grep -A8 'Allocated resources'
+kubectl get pvc
+Usual causes
+Requests bigger than any node's free capacity, a taint without a matching toleration, a PVC that never bound, or a nodeSelector or affinity nothing satisfies. The Events at the bottom of describe usually name it.
+Read
+learnkube: Troubleshooting deployments [https://learnkube.com/troubleshooting-deployments]
+Kubernetes
+ImagePullBackOff
+First moves
+kubectl describe pod POD
+sudo crictl pull IMAGE    # on the node
+Usual causes
+A wrong name or tag, a private registry without an imagePullSecret, or a node that can't resolve or trust the registry. Pulling with crictl on the node shows the raw error.
+Kubernetes
+CrashLoopBackOff
+First moves
+kubectl logs POD --previous
+kubectl describe pod POD
+kubectl get events --sort-by=.lastTimestamp
+Usual causes
+The app fails at startup, a liveness probe kills it before it's ready, it's OOMKilled (exit 137), or a ConfigMap or Secret it needs is missing.
+Read
+learnkube: Troubleshooting deployments [https://learnkube.com/troubleshooting-deployments]
+Kubernetes
+A node is
+NotReady
+First moves
+kubectl describe node NODE
+systemctl status kubelet containerd
+journalctl -u kubelet -b -n 100 --no-pager
+Usual causes
+kubelet stopped or misconfigured, the container runtime down, disk or memory pressure, the CNI not ready, or expired kubelet certificates.
+Practice
+iximiuz Labs: Kubernetes challenges [https://labs.iximiuz.com/challenges?category=kubernetes]
+Change
+Everything broke right after a change
+First moves
+journalctl --since '30 min ago' -p warning --no-pager
+git log -3 --stat
+diff CONFIG CONFIG.bak
+Usual causes
+The change, until proven otherwise. Roll back first and diagnose second; the SRE book's troubleshooting chapter makes the same point about stabilizing before investigating.
+Read
+GitLab: Change management [https://handbook.gitlab.com/handbook/engineering/infrastructure-platforms/change-management/]
+No case matches that. Try a tool name such as tcpdump, or an error code such as 502.
+Weekly rhythm
+Tie each habit to something that already happens, so the reps don't depend on finding free time.
+When
+Morning coffee on a workday
+One scenario from SadServers or iximiuz Labs, 30 minutes at most. When time runs out, read the solution and write one line on what you missed.
+When
+Any incident at work, even a small one
+A five-line note: the symptom, your first wrong guess, the evidence that settled it, the fix, and what you'll check first next time.
+When
+Your weekend homelab block
+One drill from your current level, then your CKA break-and-fix session. The Kubernetes cases above count as both.
+When
+Sunday evening
+Read one real postmortem from k8s.af [https://k8s.af/] or Dan Luu's list [https://github.com/danluu/post-mortems] and name the layer that failed before you reach the root cause section.
+Until your CKA exam, CKA sessions come first and this plan runs on the 30-minute morning rep alone.
+Beyond the drills
+Turn it into proof
+Remote teams hire on written evidence, and your Apache → Dokploy write-up is already that kind of document.
+Keep a public repo of sanitized runbooks and postmortems, one for each level you clear.
+Borrow GitLab's change request format (criticality, steps, verification, rollback) and the SRE book's postmortem structure.
+Swap real hostnames and addresses for the documentation ranges, as your notes already do.
+Skip for now
+Long video bootcamps.
+They re-explain tools you already use and never hand you a broken server.
+Using roadmap.sh [https://roadmap.sh/devops] as a study plan.
+It's a good checklist of topics and a poor source of troubleshooting practice.
+More certificates before CKA is done.
+One certificate plus a public trail of fixed problems says more.
+Keep reading
+Kubernetes Failure Stories [https://k8s.af/]: public postmortems, tagged by what broke.
+Dan Luu's post-mortems [https://github.com/danluu/post-mortems]: short summaries across the whole industry.
+Julia Evans's blog [https://jvns.ca/]: DNS, networking and debugging written from first principles.
+Brendan Gregg: Linux Performance [https://www.brendangregg.com/linuxperf.html]: the reference for everything past L4.
+Links checked 28 Sep 2026. Free and paid labels reflect what each site showed then.
+Progress is saved in this browser.

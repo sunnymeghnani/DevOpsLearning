@@ -1,0 +1,1380 @@
+{
+  "domain": "cloudiac",
+  "coverage_notes": "Rounds: (1) candidate lists from discuss.hashicorp.com Terraform top-all (by views); GitHub issues sorted by reactions/comments for hashicorp/terraform, opentofu/opentofu, ansible/ansible, hashicorp/packer, hashicorp/terraform-provider-aws, Telmate/terraform-provider-proxmox; forum.proxmox.com most-viewed threads. (2) Prioritised by views/comments and by fit for an on-prem Ubuntu + Proxmox + GitLab/Harbor + Docker reader who also uses AWS. (3) Error texts and fixes confirmed in AWS docs (IAM, S3 403, EC2 connect, ALB, NAT gateway, EBS, Route 53, IMDS), HashiCorp docs (S3 backend, refactoring, import, sensitive data), OpenTofu state encryption docs, Ansible docs (become, apt, interpreter discovery, support matrix, 2.19 porting guide), Proxmox wiki (cluster manager, repositories, 8 to 9 upgrade, ZFS, cloud-init, LXC), Packer docs and issues, GitLab Terraform state docs, and the AWS 2017 S3 postmortem. Reddit, Stack Overflow and Server Fault were not fetched because their owners opted out of AI access. Their classic problems are described from general knowledge, and every problem has constructed search links (type 'search', verified=false) for the reader to open. repost.aws returned 403 to the fetcher, so AWS docs pages were used instead. Versions as of Oct 2026: Terraform 1.15 (Apr 2026), OpenTofu 1.12.x, ansible-core 2.21 (May 2026), Proxmox VE 9.x on Debian 13, and Packer 1.10+ with external plugins. A few exact strings (ALB health reason codes, the Ansible SyntaxError on Python 3.6 targets, the AWS provider v4 'unconfigurable attribute' error) come from experience, not from a page fetched here. Commands are for the reader to run in a lab; none were run on this machine. About 50 searches and fetches were used, more than the 20–40 budget, to confirm exact error text.",
+  "problems": [
+    {
+      "title": "AWS AccessDenied: 'is not authorized to perform ... because no identity-based policy allows'",
+      "area": "AWS IAM",
+      "tool": "AWS",
+      "level": "L1",
+      "error_text": "User: arn:aws:iam::123456789012:role/ci is not authorized to perform: s3:PutObject on resource: \"arn:aws:s3:::BUCKET/key\" because no identity-based policy allows the s3:PutObject action | ... with an explicit deny in a service control policy: arn:aws:organizations::...",
+      "context": "The AWS CLI, Terraform or a CI job calls an API and is refused. The end of the message names the policy type that denied it: identity-based, resource-based, SCP, RCP, permissions boundary, session or VPC endpoint policy.",
+      "frequency_signal": "The most common AWS error for newcomers. AWS has a dedicated troubleshooting page, and the message now says whether the deny was implicit or explicit and which policy type caused it.",
+      "root_causes": [
+        "Implicit deny: no Allow for that action on that exact ARN. s3:ListBucket needs the bucket ARN, object actions need bucket/*",
+        "An explicit Deny in an SCP, RCP, permissions boundary or session policy. A Deny always beats an Allow",
+        "Calling as a different principal than you think: wrong AWS_PROFILE, old keys in env vars, or the wrong CI role",
+        "A condition is not met (MFA, aws:SourceIp, tags, region, aws:SecureTransport). Cross-account calls need both the identity policy and the resource policy to allow"
+      ],
+      "diagnosis": [
+        "aws sts get-caller-identity",
+        "Read the clause after 'because'. 'no X policy allows' means you need to add an Allow. 'with an explicit deny in a X policy' means you need to find and change that Deny",
+        "aws iam simulate-principal-policy --policy-source-arn ROLE_ARN --action-names s3:PutObject --resource-arns arn:aws:s3:::BUCKET/key",
+        "aws sts decode-authorization-message --encoded-message MSG --query DecodedMessage --output text   # EC2 'Encoded authorization failure message'",
+        "CloudTrail > Event history, filter Error code = AccessDenied"
+      ],
+      "fix": [
+        "Add a least-privilege Allow with the correct resource ARNs to the role's policy",
+        "If an SCP, RCP or boundary denies it, ask the org admin to change that policy or use a role it doesn't apply to",
+        "Fix the credentials in use: export AWS_PROFILE=NAME, unset stale AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"
+      ],
+      "prevention": "Use roles, not IAM users. Generate policies from CloudTrail activity with IAM Access Analyzer, and test them with the policy simulator in CI. Give each pipeline and environment its own role.",
+      "sources": [
+        {"title": "AWS IAM: Troubleshoot access denied error messages", "url": "https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot_access-denied.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=%22is+not+authorized+to+perform%22+%22because+no+identity-based+policy+allows%22", "type": "search", "verified": false},
+        {"title": "r/aws search", "url": "https://www.reddit.com/r/aws/search/?q=AccessDenied+%22not+authorized+to+perform%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "S3 returns 403 AccessDenied although the IAM policy looks right",
+      "area": "AWS S3",
+      "tool": "AWS",
+      "level": "L2",
+      "error_text": "An error occurred (AccessDenied) when calling the GetObject operation: Access Denied | AccessControlListNotSupported: The bucket does not allow ACLs",
+      "context": "Same-account and same-org requests now get a detailed message. Cross-account requests still get a bare 'Access Denied'. Common with Terraform-managed buckets, CI artifact buckets and SSE-KMS.",
+      "frequency_signal": "S3 has its own long 403 troubleshooting page covering more than ten separate causes. It is a classic on SO and r/aws.",
+      "root_causes": [
+        "A bucket policy Deny, for example aws:SecureTransport, aws:SourceVpce or a principal condition",
+        "Object Ownership 'Bucket owner enforced', the default for new buckets since April 2023, disables ACLs, so --acl and aws_s3_bucket_acl fail. Block Public Access stops public policies",
+        "SSE-KMS objects also need kms:Decrypt or kms:GenerateDataKey in the KMS key policy",
+        "A VPC endpoint policy or SCP/RCP denies it. GetObject on a missing key returns 403, not 404, when the caller lacks s3:ListBucket"
+      ],
+      "diagnosis": [
+        "aws s3api get-bucket-policy --bucket BUCKET",
+        "aws s3api get-public-access-block --bucket BUCKET; aws s3api get-bucket-ownership-controls --bucket BUCKET",
+        "aws s3api head-object --bucket BUCKET --key KEY   # shows SSEKMSKeyId",
+        "aws kms get-key-policy --key-id KEY_ID --policy-name default"
+      ],
+      "fix": [
+        "Fix the bucket policy statement and the ARNs (bucket vs bucket/*)",
+        "Stop using ACLs and grant access with the bucket policy. Remove acl arguments from Terraform",
+        "Grant the KMS key permissions to the role, and fix the VPC endpoint policy"
+      ],
+      "prevention": "Manage the bucket, its policy, ownership controls and encryption together in Terraform. Avoid ACLs, and run IAM Access Analyzer for S3.",
+      "sources": [
+        {"title": "Amazon S3: Troubleshoot access denied (403 Forbidden) errors", "url": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/troubleshoot-403-errors.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=s3+403+AccessDenied+bucket+policy+kms", "type": "search", "verified": false},
+        {"title": "r/aws search", "url": "https://www.reddit.com/r/aws/search/?q=s3+403+access+denied&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Can't SSH to a new EC2 instance: 'Permission denied (publickey)' or 'Connection timed out'",
+      "area": "AWS EC2",
+      "tool": "AWS",
+      "level": "L0",
+      "error_text": "Permission denied (publickey). | ssh: connect to host X port 22: Connection timed out | WARNING: UNPROTECTED PRIVATE KEY FILE!",
+      "context": "The first day on AWS. Refused or denied means the network path works and authentication fails. A timeout means the security group, NACL, route or public IP is wrong.",
+      "frequency_signal": "AWS docs cover more than ten separate SSH errors on one page. One of the most-asked EC2 questions everywhere.",
+      "root_causes": [
+        "The wrong default user: ubuntu on Ubuntu, ec2-user on Amazon Linux, admin on Debian",
+        "The wrong key, or key file permissions too open (0644)",
+        "The security group doesn't allow 22 from your current IP, the subnet has no 0.0.0.0/0 route to an IGW, or the instance has no public IP",
+        "The NACL blocks return traffic on ephemeral ports 1024-65535, or the host key changed after an EIP move"
+      ],
+      "diagnosis": [
+        "ssh -vvv -i KEY.pem ubuntu@IP",
+        "aws ec2 describe-instances --instance-ids ID --query 'Reservations[].Instances[].[PublicIpAddress,KeyName,SubnetId,SecurityGroups]'",
+        "nc -vz IP 22",
+        "aws ec2 get-console-output --instance-id ID --latest"
+      ],
+      "fix": [
+        "Use the right user, and chmod 400 KEY.pem",
+        "Add an SG rule for port 22 from YOUR_IP/32. Give the subnet a route to the IGW and the instance a public IP or EIP",
+        "Better: drop port 22 and use SSM Session Manager (instance profile with AmazonSSMManagedInstanceCore) or EC2 Instance Connect"
+      ],
+      "prevention": "Use Session Manager by default, and keep SGs and routes in Terraform. Never open 22 to 0.0.0.0/0.",
+      "sources": [
+        {"title": "AWS: Troubleshoot connecting to your Linux instance", "url": "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/TroubleshootingInstancesConnecting.html", "type": "docs", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=ec2+ssh+%22Permission+denied+%28publickey%29%22", "type": "search", "verified": false},
+        {"title": "r/aws search", "url": "https://www.reddit.com/r/aws/search/?q=ec2+ssh+connection+timed+out&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Instances in a private subnet can't reach the internet (apt update hangs, image pulls time out)",
+      "area": "AWS VPC (NAT, routes, SG/NACL)",
+      "tool": "AWS",
+      "level": "L1",
+      "error_text": "Could not connect to archive.ubuntu.com:80 ... connect (110: Connection timed out) | dial tcp ...:443: i/o timeout",
+      "context": "Private app or CI runner instances behind a NAT gateway. It is the same layered walk as on-prem: route, then firewall, then NAT.",
+      "frequency_signal": "AWS has a NAT gateway troubleshooting page with 'Instances cannot access the internet' as a top item. A classic VPC beginner trap.",
+      "root_causes": [
+        "The NAT gateway is in a private subnet. It must sit in a public subnet whose route table points to the IGW",
+        "The private route table's 0.0.0.0/0 doesn't point to nat-..., or a more specific route sends traffic elsewhere",
+        "NACLs are stateless: return traffic on 1024-65535 is blocked, or SG egress was removed",
+        "The NAT gateway drops connections idle for 350 s with an RST"
+      ],
+      "diagnosis": [
+        "aws ec2 describe-route-tables --filters Name=association.subnet-id,Values=SUBNET_ID",
+        "aws ec2 describe-nat-gateways --filter Name=vpc-id,Values=VPC_ID",
+        "aws ec2 describe-network-acls --filters Name=association.subnet-id,Values=SUBNET_ID",
+        "Enable VPC Flow Logs and look for REJECT, or run VPC Reachability Analyzer"
+      ],
+      "fix": [
+        "Put the NAT GW in a public subnet and point the private route table at it: 0.0.0.0/0 -> nat-ID",
+        "Allow ephemeral ports in both directions in custom NACLs (or keep the default NACL)",
+        "Add S3 and DynamoDB gateway endpoints (free) so that traffic skips NAT. Set TCP keepalive below 350 s"
+      ],
+      "prevention": "Build VPCs from a tested module (terraform-aws-modules/vpc). Keep NACLs coarse and do filtering in SGs that reference other SGs.",
+      "sources": [
+        {"title": "AWS: Troubleshoot NAT gateways", "url": "https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-troubleshooting.html", "type": "docs", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=aws+private+subnet+nat+gateway+no+internet", "type": "search", "verified": false},
+        {"title": "r/aws search", "url": "https://www.reddit.com/r/aws/search/?q=private+subnet+nat+gateway+no+internet&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "ALB returns 502/503/504 or targets stay unhealthy",
+      "area": "AWS ELB",
+      "tool": "AWS",
+      "level": "L2",
+      "error_text": "502 Bad Gateway | 503 Service Temporarily Unavailable | 504 Gateway Time-out | target health: Target.ResponseCodeMismatch / Target.Timeout",
+      "context": "The cloud version of a Traefik 502/404. The ALB is the reverse proxy and the target group is the backend service.",
+      "frequency_signal": "The ALB troubleshooting page lists separate causes for each 5xx. A staple of AWS troubleshooting questions.",
+      "root_causes": [
+        "The health check path returns 301/302/404, for example an HTTP-to-HTTPS redirect or a vhost app rejecting Host: PRIVATE_IP",
+        "The target SG doesn't allow the ALB SG on the traffic or health-check port. 503 means no registered or healthy targets",
+        "502: the app's keep-alive is shorter than the ALB idle timeout (60 s by default), so it closes the connection with a RST, or the app listens on 127.0.0.1",
+        "504: the target is slower than the idle timeout, or the NACL blocks ephemeral ports"
+      ],
+      "diagnosis": [
+        "aws elbv2 describe-target-health --target-group-arn TG_ARN",
+        "From inside the VPC: curl -v -H 'Host: PRIVATE_IP' http://PRIVATE_IP:PORT/health",
+        "ALB access logs: compare elb_status_code with target_status_code",
+        "CloudWatch: HTTPCode_ELB_5XX_Count vs HTTPCode_Target_5XX_Count"
+      ],
+      "fix": [
+        "Add a /health endpoint that returns 200, or set the matcher to 200-399",
+        "Use an SG rule with source = the ALB's security group",
+        "Make the app's keep-alive longer than the ALB idle timeout, for example gunicorn --keep-alive 75 or nginx keepalive_timeout 75s. Raise the idle timeout for slow endpoints"
+      ],
+      "prevention": "Alarm on UnHealthyHostCount and target 5xx. Keep the health endpoint cheap but meaningful.",
+      "sources": [
+        {"title": "AWS: Troubleshoot your Application Load Balancers", "url": "https://docs.aws.amazon.com/elasticloadbalancing/latest/application/load-balancer-troubleshooting.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=aws+alb+502+bad+gateway+target+unhealthy", "type": "search", "verified": false},
+        {"title": "r/aws search", "url": "https://www.reddit.com/r/aws/search/?q=alb+502+unhealthy+targets&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Grew the EBS volume but df still shows the old size (or the EC2 root disk is full)",
+      "area": "AWS EC2/EBS",
+      "tool": "AWS",
+      "level": "L1",
+      "error_text": "No space left on device | NOCHANGE: partition 1 is size N. it cannot be grown | resize2fs: Bad magic number in super-block",
+      "context": "Docker images, logs or build caches fill an 8 GB root volume. Changing the volume size doesn't grow the partition or the filesystem.",
+      "frequency_signal": "The AWS docs page has its own troubleshooting tips for each command. A very common SF/AskUbuntu question.",
+      "root_causes": [
+        "modify-volume only grows the block device. The partition and filesystem must be extended by hand",
+        "The wrong tool for the filesystem: xfs_growfs for XFS (Amazon Linux), resize2fs for ext4 (Ubuntu)",
+        "NVMe device names (nvme0n1p1) differ from the console names (/dev/sda1, /dev/xvda)",
+        "growpart needs a little free space for its temp dir. You must wait about 6 h between volume modifications"
+      ],
+      "diagnosis": [
+        "lsblk; df -hT",
+        "aws ec2 describe-volumes-modifications --volume-ids VOL_ID",
+        "sudo du -xh --max-depth=1 / | sort -h | tail"
+      ],
+      "fix": [
+        "Take a snapshot, then aws ec2 modify-volume --volume-id VOL_ID --size NEW_GB",
+        "sudo growpart /dev/nvme0n1 1   # note the space before the partition number",
+        "ext4: sudo resize2fs /dev/nvme0n1p1 ; XFS: sudo xfs_growfs -d /",
+        "If growpart has no room: sudo journalctl --vacuum-size=200M; sudo apt clean; docker system prune"
+      ],
+      "prevention": "Alarm on disk at 80-85% with the CloudWatch agent or node_exporter. Rotate Docker logs (max-size/max-file) and keep data on separate volumes mounted by UUID with nofail.",
+      "sources": [
+        {"title": "AWS: Extend the file system after resizing an EBS volume", "url": "https://docs.aws.amazon.com/ebs/latest/userguide/recognize-expanded-volume-linux.html", "type": "docs", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=ebs+resize+growpart+resize2fs+df+old+size", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Route 53 hosted zone has the records but the domain doesn't resolve",
+      "area": "AWS Route 53 / DNS",
+      "tool": "AWS",
+      "level": "L1",
+      "error_text": "dig returns NXDOMAIN/SERVFAIL or an old IP | curl: (6) Could not resolve host",
+      "context": "New domains, migrations from another DNS provider, or a hosted zone that was deleted and recreated. The same DNS-layer reasoning as the on-prem handbook.",
+      "frequency_signal": "AWS keeps a 'My domain is unavailable on the internet' page that lists six common causes.",
+      "root_causes": [
+        "The NS records at the registrar don't match the hosted zone's four name servers, often after recreating the zone or when two zones share the same name",
+        "The hosted zone was deleted. NS TTLs at the TLD can keep old answers cached for up to 48 h",
+        "A private hosted zone isn't associated with the VPC, or it hides the public zone for clients inside the VPC",
+        "The domain is suspended because the registrant email was never confirmed"
+      ],
+      "diagnosis": [
+        "dig +short NS example.com; whois example.com | grep -i 'name server'",
+        "aws route53 list-hosted-zones-by-name --dns-name example.com",
+        "aws route53 get-hosted-zone --id ZONE_ID --query DelegationSet.NameServers",
+        "dig @ns-XXX.awsdns-XX.com app.example.com   # ask the authoritative server directly"
+      ],
+      "fix": [
+        "Set the registrar's NS records to the zone's four name servers and delete duplicate zones",
+        "Associate the private zone with the VPC (aws route53 associate-vpc-with-hosted-zone)",
+        "Wait for the TTL to run out, and lower TTLs before planned changes"
+      ],
+      "prevention": "Never delete a live zone. Manage the zone records and the registrar NS in Terraform.",
+      "sources": [
+        {"title": "Route 53: My domain is unavailable on the internet", "url": "https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/troubleshooting-domain-unavailable.html", "type": "docs", "verified": true},
+        {"title": "Server Fault search", "url": "https://serverfault.com/search?q=route53+domain+not+resolving+name+servers", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Surprise AWS bill: NAT gateway data, public IPv4 charges, forgotten volumes and snapshots",
+      "area": "AWS cost",
+      "tool": "AWS",
+      "level": "L2",
+      "error_text": "Billing alert; Cost Explorer shows EC2-Other, NatGateway-Bytes, PublicIPv4:InUseAddress / IdleAddress",
+      "context": "Lab and dev accounts left running, and production with heavy image pulls through NAT. This is a 'denial of wallet' problem rather than an outage.",
+      "frequency_signal": "A recurring top theme on r/aws and HN. AWS started charging for every public IPv4 address on 1 Feb 2024.",
+      "root_causes": [
+        "Every public IPv4 address costs $0.005 per hour, whether in use or idle",
+        "NAT gateway hourly and per-GB processing, often from S3 or ECR traffic that could use VPC endpoints",
+        "Unattached EBS volumes, old snapshots and AMIs, resources in a forgotten region, cross-AZ transfer"
+      ],
+      "diagnosis": [
+        "Cost Explorer: group by Usage Type and Region",
+        "aws ec2 describe-addresses; aws ec2 describe-volumes --filters Name=status,Values=available",
+        "aws ec2 describe-snapshots --owner-ids self --query 'Snapshots[].[SnapshotId,StartTime,VolumeSize]'",
+        "VPC IPAM Public IP Insights"
+      ],
+      "fix": [
+        "Release idle EIPs, and delete orphaned volumes and old snapshots",
+        "Add gateway endpoints for S3 and DynamoDB, and interface endpoints for ECR where the traffic justifies them",
+        "Stop dev environments on a schedule and terraform destroy short-lived ones"
+      ],
+      "prevention": "Set up AWS Budgets alerts on day one. Tag everything (Terraform default_tags plus cost allocation tags) and show cost diffs in merge requests with infracost.",
+      "sources": [
+        {"title": "AWS blog: New AWS public IPv4 address charge + Public IP Insights", "url": "https://aws.amazon.com/blogs/aws/new-aws-public-ipv4-address-charge-public-ip-insights/", "type": "blog", "verified": true},
+        {"title": "r/aws search", "url": "https://www.reddit.com/r/aws/search/?q=surprise+bill+nat+gateway&restrict_sr=1", "type": "search", "verified": false},
+        {"title": "r/devops search", "url": "https://www.reddit.com/r/devops/search/?q=aws+bill+nat+gateway&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "'Unable to locate credentials' or 'no EC2 IMDS role found', on EC2 or inside Docker containers",
+      "area": "AWS credentials / IMDSv2",
+      "tool": "AWS",
+      "level": "L2",
+      "error_text": "Unable to locate credentials. You can configure credentials by running \"aws configure\". | no valid credential sources for Terraform AWS Provider found | failed to refresh cached credentials, no EC2 IMDS role found | SignatureDoesNotMatch",
+      "context": "Works on the host but fails in a container, or works on a laptop but fails in CI. Directly relevant to Docker/Dokploy or GitLab runners on EC2.",
+      "frequency_signal": "terraform-provider-aws #14873 'error validating provider credentials' is open with 70 comments. AWS docs recommend hop limit 2 for containers.",
+      "root_causes": [
+        "No instance profile is attached",
+        "IMDSv2 is required and HttpPutResponseHopLimit=1, so containers on the Docker bridge never get the token",
+        "Wrong AWS_PROFILE, an expired SSO session, or stale static keys in env vars overriding the role",
+        "Clock skew (SignatureDoesNotMatch/RequestExpired) or a region mismatch"
+      ],
+      "diagnosis": [
+        "aws sts get-caller-identity; aws configure list; env | grep ^AWS_",
+        "TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60')",
+        "curl -sH \"X-aws-ec2-metadata-token: $TOKEN\" http://169.254.169.254/latest/meta-data/iam/security-credentials/   # run on the host and in the container",
+        "timedatectl"
+      ],
+      "fix": [
+        "Attach an instance profile with the needed policy",
+        "aws ec2 modify-instance-metadata-options --instance-id ID --http-tokens required --http-put-response-hop-limit 2",
+        "aws sso login --profile NAME, unset stale keys, and fix NTP"
+      ],
+      "prevention": "No static keys: use instance roles, and in GitLab CI use OIDC id_tokens with AssumeRoleWithWebIdentity. Set hop limit 2 in the launch templates of container hosts.",
+      "sources": [
+        {"title": "AWS: Configure instance metadata options for new instances", "url": "https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/configuring-IMDS-new-instances.html", "type": "docs", "verified": true},
+        {"title": "terraform-provider-aws #14873 (credential validation errors)", "url": "https://github.com/hashicorp/terraform-provider-aws/issues/14873", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=docker+container+ec2+imdsv2+hop+limit+credentials", "type": "search", "verified": false}
+      ]
+    }
+    ,
+    {
+      "title": "Error acquiring the state lock (a stale lock after a killed CI job, or 'Saved plan is stale')",
+      "area": "Terraform/OpenTofu state",
+      "tool": "Terraform/OpenTofu",
+      "level": "L2",
+      "error_text": "Error: Error acquiring the state lock ... ConditionalCheckFailedException: The conditional request failed (DynamoDB) | StatusCode: 412 PreconditionFailed (S3 use_lockfile) | Lock Info: ID ... Who ... Operation: OperationTypeApply | Error: Saved plan is stale",
+      "context": "Two pipelines or two people run plan or apply on the same state, or a cancelled GitLab job leaves its lock behind. Plan locks too.",
+      "frequency_signal": "discuss.hashicorp.com: 'Terraform Lock: how to check terraform lock state?' (22k views) and 'Why does a plan lock the state file?' (14k views).",
+      "root_causes": [
+        "Concurrent runs on the same state",
+        "A crashed or cancelled run never released the lock",
+        "Missing lock permissions: S3 native locking needs s3:PutObject, GetObject and DeleteObject on KEY.tflock",
+        "A plan file applied after another apply changed the state ('Saved plan is stale')"
+      ],
+      "diagnosis": [
+        "Read Lock Info (Who, Created, Operation) and check CI for a still-running job",
+        "aws s3 ls s3://BUCKET/PATH/KEY.tflock   # S3 native lock object",
+        "GitLab: Operate > Terraform states shows the locked state"
+      ],
+      "fix": [
+        "If someone is still running, wait. Otherwise: terraform force-unlock LOCK_ID (tofu force-unlock LOCK_ID)",
+        "Never apply with -lock=false",
+        "For a stale plan, re-run plan and apply the new plan from the same pipeline",
+        "GitLab-managed state can be unlocked from the UI or the API"
+      ],
+      "prevention": "Serialize jobs per environment (GitLab resource_group: production) and use -lock-timeout=5m. Move from DynamoDB (deprecated) to use_lockfile = true, and keep one state per environment.",
+      "sources": [
+        {"title": "Terraform docs: S3 backend (use_lockfile, DynamoDB deprecated)", "url": "https://developer.hashicorp.com/terraform/language/backend/s3", "type": "docs", "verified": true},
+        {"title": "GitLab-managed Terraform/OpenTofu state", "url": "https://docs.gitlab.com/user/infrastructure/iac/terraform_state/", "type": "docs", "verified": true},
+        {"title": "HashiCorp Discuss: Terraform top topics (all time)", "url": "https://discuss.hashicorp.com/c/terraform-core/27/l/top?period=all", "type": "forum", "verified": true},
+        {"title": "r/Terraform search", "url": "https://www.reddit.com/r/Terraform/search/?q=%22Error+acquiring+the+state+lock%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "'Backend configuration changed' / 'Variables may not be used here' in the backend block",
+      "area": "Terraform/OpenTofu backends",
+      "tool": "Terraform/OpenTofu",
+      "level": "L1",
+      "error_text": "Error: Backend configuration changed ... use \"terraform init -migrate-state\" ... use \"terraform init -reconfigure\" | Error: Variables not allowed ... Variables may not be used here.",
+      "context": "One codebase for dev, staging and prod with different buckets or keys, a CI cache of .terraform, or an attempt to template the backend with var.env.",
+      "frequency_signal": "hashicorp/terraform #13022 'Using variables in terraform backend config block' has 315 reactions and is still open. The Discuss thread 'Backend configuration changed' has 21.7k views.",
+      "root_causes": [
+        "The backend block is evaluated before variables, so Terraform requires literal values",
+        ".terraform/terraform.tfstate caches the previous backend",
+        "Choosing the wrong flag: -migrate-state copies state, -reconfigure only re-points"
+      ],
+      "diagnosis": [
+        "cat .terraform/terraform.tfstate   # backend section shows what init used",
+        "terraform workspace show",
+        "diff backend-dev.hcl backend-prod.hcl"
+      ],
+      "fix": [
+        "Use partial configuration: terraform init -backend-config=backend-prod.hcl (or -backend-config=\"key=prod/app.tfstate\")",
+        "Moving state to a new location: terraform init -migrate-state. Pointing at another environment's existing state: terraform init -reconfigure",
+        "OpenTofu 1.8+ allows variables and locals in the backend and module source (early evaluation). Terraform 1.15 added const variables for module source/version"
+      ],
+      "prevention": "One backend file per environment passed by a wrapper (Makefile, CI job). Don't cache .terraform between environments. A wrong -reconfigure can point you at an empty state, and then the plan wants to create everything, so read it.",
+      "sources": [
+        {"title": "hashicorp/terraform issues by reactions (#13022)", "url": "https://github.com/hashicorp/terraform/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc", "type": "github-issue", "verified": true},
+        {"title": "InfoQ: Terraform 1.15 dynamic module sources", "url": "https://www.infoq.com/news/2026/06/terraform-1-15/", "type": "blog", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=terraform+backend+%22Variables+may+not+be+used+here%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "terraform init tries to download 'hashicorp/proxmox': a non-HashiCorp provider used in a module",
+      "area": "Terraform/OpenTofu providers",
+      "tool": "Terraform/OpenTofu",
+      "level": "L1",
+      "error_text": "Error: Failed to query available provider packages ... provider registry registry.terraform.io does not have a provider named registry.terraform.io/hashicorp/proxmox",
+      "context": "Typical with Proxmox (bpg/proxmox, telmate/proxmox) and other community providers once the code is split into modules.",
+      "frequency_signal": "Discuss 'Using a non hashicorp provider in a module' has 22k views. 'Terraform trying to install incorrect provider' has 15.5k.",
+      "root_causes": [
+        "A child module without required_providers. Terraform then assumes the hashicorp/ namespace for an unqualified provider name",
+        "A leftover entry in .terraform.lock.hcl"
+      ],
+      "diagnosis": [
+        "terraform providers   # shows which module requires hashicorp/proxmox",
+        "grep -rn required_providers modules/"
+      ],
+      "fix": [
+        "In every module that uses it: terraform { required_providers { proxmox = { source = \"bpg/proxmox\" } } }, and pin a version",
+        "terraform init -upgrade"
+      ],
+      "prevention": "Every module ships a versions.tf. Run tflint with the terraform_required_providers rule in CI.",
+      "sources": [
+        {"title": "HashiCorp Discuss: Using a non hashicorp provider in a module", "url": "https://discuss.hashicorp.com/t/using-a-non-hashicorp-provider-in-a-module/21841", "type": "forum", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=terraform+%22does+not+have+a+provider+named%22+hashicorp", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Provider upgrades break things: lock-file checksum mismatch in CI, AWS provider major-version changes",
+      "area": "Terraform/OpenTofu providers",
+      "tool": "Terraform/OpenTofu",
+      "level": "L2",
+      "error_text": "the local package for registry.terraform.io/hashicorp/aws X.Y.Z doesn't match any of the checksums previously recorded in the dependency lock file | Error: Value for unconfigurable attribute ... Can't configure a value for \"acl\" (AWS provider v4)",
+      "context": "The lock file was created on a Mac and CI runs on linux_amd64, or a loose constraint (>= 3.0) let init -upgrade pull in a new major version.",
+      "frequency_signal": "terraform-provider-aws: #23106 (aws_s3_bucket v4 changes, 93 comments), #43235 'Terraform AWS Version Issues' (103 comments), #44366 (v6.14.0 regression, 68 comments).",
+      "root_causes": [
+        ".terraform.lock.hcl only holds hashes for one platform",
+        "Unpinned major versions. Breaking changes are listed in the provider upgrade guides, for example v4 split aws_s3_bucket into aws_s3_bucket_versioning, _acl and other separate resources",
+        "Occasional regressions in new minor releases"
+      ],
+      "diagnosis": [
+        "terraform version; cat .terraform.lock.hcl",
+        "grep -rn 'version *=' versions.tf",
+        "Read the provider CHANGELOG and upgrade guide before planning"
+      ],
+      "fix": [
+        "terraform providers lock -platform=linux_amd64 -platform=darwin_arm64, then commit the lock file",
+        "Pin with ~> (for example ~> 6.0). Upgrade in a branch and review the plan",
+        "Adopt split-out resources with import blocks. Pin back one minor version if a release regresses"
+      ],
+      "prevention": "Commit the lock file and use the same Terraform version locally and in CI (mise/tfenv or a pinned image). Let Renovate open provider bumps.",
+      "sources": [
+        {"title": "hashicorp/terraform #32124 lock file problem", "url": "https://github.com/hashicorp/terraform/issues/32124", "type": "github-issue", "verified": true},
+        {"title": "terraform-provider-aws issues by comments", "url": "https://github.com/hashicorp/terraform-provider-aws/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "r/Terraform search", "url": "https://www.reddit.com/r/Terraform/search/?q=lock+file+checksums+platform&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Plan shows changes nobody made: drift from console edits or perpetual diffs",
+      "area": "Terraform/OpenTofu drift",
+      "tool": "Terraform/OpenTofu",
+      "level": "L2",
+      "error_text": "Note: Objects have changed outside of Terraform | plan wants to revert a hand-added SG rule | tags_all / default_tags update on every plan",
+      "context": "A hotfix was made in the AWS console during an incident, or another tool (ASG, AWS Backup, a k8s controller) changes attributes Terraform also manages.",
+      "frequency_signal": "terraform-provider-aws #18311 'default_tags always shows an update' (80 comments). Drift is a top r/Terraform theme.",
+      "root_causes": [
+        "Manual or out-of-band changes",
+        "Two owners for the same attribute",
+        "Provider normalisation diffs (JSON policy ordering, tags_all)"
+      ],
+      "diagnosis": [
+        "terraform plan -refresh-only",
+        "CloudTrail: find who changed it",
+        "terraform plan -detailed-exitcode   # exit code 2 = changes"
+      ],
+      "fix": [
+        "Keep reality: update the code, then terraform apply -refresh-only. Revert: terraform apply",
+        "lifecycle { ignore_changes = [tags[\"Backup\"]] } for attributes another system owns",
+        "Use aws_iam_policy_document to normalise JSON"
+      ],
+      "prevention": "Make prod read-only in the console. Run a scheduled drift-detection pipeline and make every change through a merge request.",
+      "sources": [
+        {"title": "terraform-provider-aws issues by comments (#18311)", "url": "https://github.com/hashicorp/terraform-provider-aws/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "r/Terraform search", "url": "https://www.reddit.com/r/Terraform/search/?q=drift+detection&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Adopting existing infrastructure: 'already exists' errors and how to import",
+      "area": "Terraform/OpenTofu import",
+      "tool": "Terraform/OpenTofu",
+      "level": "L2",
+      "error_text": "Error: creating EC2 Security Group (web): InvalidGroup.Duplicate | BucketAlreadyOwnedByYou | Error: Resource already managed by Terraform",
+      "context": "ClickOps resources, a lost state, or moving resources between states. The usual first Terraform task in an existing company.",
+      "frequency_signal": "Discuss 'Terraform import examples' (9.7k views). A perennial SO topic.",
+      "root_causes": [
+        "The resource exists but isn't in state",
+        "Two states manage the same object",
+        "Generated config copied without cleanup"
+      ],
+      "diagnosis": [
+        "terraform state list | grep NAME",
+        "Find the real ID with the aws CLI (for example aws ec2 describe-security-groups)"
+      ],
+      "fix": [
+        "import { to = aws_security_group.web  id = \"sg-0123\" } (Terraform 1.5+, OpenTofu 1.6+). for_each in import blocks needs Terraform 1.7+",
+        "terraform plan -generate-config-out=generated.tf, then review and tidy it before you apply",
+        "Older versions: terraform import ADDRESS ID"
+      ],
+      "prevention": "One owner per resource, tag ManagedBy=terraform, and back up state (S3 versioning).",
+      "sources": [
+        {"title": "Terraform docs: Import existing resources", "url": "https://developer.hashicorp.com/terraform/language/import", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=terraform+import+block+generate-config-out", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Renaming a resource or switching count to for_each makes Terraform destroy and recreate",
+      "area": "Terraform/OpenTofu refactoring",
+      "tool": "Terraform/OpenTofu",
+      "level": "L2",
+      "error_text": "Plan: 5 to add, 0 to change, 5 to destroy. | # aws_instance.web[1] must be replaced",
+      "context": "Code clean-up, moving resources into a module, or deleting one item from the middle of a count list.",
+      "frequency_signal": "A classic mistake from the 'my rename deleted prod' stories. moved blocks were added in Terraform 1.1 to solve it.",
+      "root_causes": [
+        "A new address is a new object to Terraform",
+        "count indexes shift when you remove an element from the middle of a list"
+      ],
+      "diagnosis": [
+        "terraform plan and look for 'destroy' on objects you only renamed",
+        "terraform state list"
+      ],
+      "fix": [
+        "moved { from = aws_instance.a  to = module.web.aws_instance.a }",
+        "moved { from = aws_instance.c[0]  to = aws_instance.c[\"small\"] }   # count to for_each",
+        "Old versions: terraform state mv. To forget an object without destroying it, use a removed block (Terraform 1.7+)"
+      ],
+      "prevention": "Prefer for_each with stable keys. Fail CI when a plan has unexpected deletes (OPA/conftest on terraform show -json), and keep moved blocks in shared modules.",
+      "sources": [
+        {"title": "Terraform docs: Refactor modules (moved blocks)", "url": "https://developer.hashicorp.com/terraform/language/modules/develop/refactoring", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=terraform+rename+resource+without+destroy+moved", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "'Invalid for_each argument' / count depends on values known only after apply",
+      "area": "Terraform/OpenTofu language",
+      "tool": "Terraform/OpenTofu",
+      "level": "L3",
+      "error_text": "Error: Invalid for_each argument ... The \"for_each\" map includes keys derived from resource attributes that cannot be determined until apply | The \"count\" value depends on resource attributes that cannot be determined until apply",
+      "context": "Making resources conditional, or looping over IDs of resources created in the same run.",
+      "frequency_signal": "Discuss 'Conditionally create resources when a for_each loop is involved' (119k views) and 'count value depends on resource attributes' (8.7k).",
+      "root_causes": [
+        "Keys derived from computed attributes (IDs, random values, module outputs)",
+        "count = length(list_of_unknowns)"
+      ],
+      "diagnosis": [
+        "terraform console to inspect the expression",
+        "Find which input is '(known after apply)' in the plan"
+      ],
+      "fix": [
+        "Use static keys from variables or names, and put the unknown IDs in the map values",
+        "Bootstrap once with -target, then run a normal apply",
+        "OpenTofu 1.11+: lifecycle { enabled = var.create } for 0/1 resources instead of the count trick"
+      ],
+      "prevention": "Design maps from input variables, and keep conditional logic on known values.",
+      "sources": [
+        {"title": "HashiCorp Discuss: Terraform top topics (all time)", "url": "https://discuss.hashicorp.com/c/terraform-core/27/l/top?period=all", "type": "forum", "verified": true},
+        {"title": "OpenTofu enabled meta-argument (1.11)", "url": "https://opentofu.org/docs/v1.11/intro/whats-new/", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=terraform+%22Invalid+for_each+argument%22+%22known+only+after+apply%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Secrets in plaintext in terraform.tfstate ('sensitive = true' doesn't stop it)",
+      "area": "Terraform/OpenTofu security",
+      "tool": "Terraform/OpenTofu",
+      "level": "L3",
+      "error_text": "Output shows (sensitive value) | Error: Output refers to sensitive values | state JSON contains the DB password",
+      "context": "RDS and DB passwords, generated keys, and provider tokens. State or plan files end up in Git, an open bucket, or CI artifacts.",
+      "frequency_signal": "Discuss 'How to show sensitive values' (130k views, the most viewed Terraform topic). hashicorp/terraform #516 'Storing sensitive values in state files' (254 reactions, closed 2025).",
+      "root_causes": [
+        "sensitive only redacts CLI output. State and plan files still hold the value",
+        "An unencrypted or over-shared backend, or plan artifacts readable by everyone"
+      ],
+      "diagnosis": [
+        "terraform state pull | grep -i -E 'password|secret|token'",
+        "terraform output -json",
+        "Check who can read the bucket or CI artifacts"
+      ],
+      "fix": [
+        "Use an encrypted remote backend (S3 SSE-KMS plus a strict bucket policy and versioning)",
+        "Terraform 1.10+ ephemeral variables/resources and 1.11+ write-only arguments keep secrets out of state",
+        "OpenTofu 1.7+: state and plan encryption (encryption { method \"aes_gcm\" ... key_provider \"aws_kms\"/\"pbkdf2\" }); 1.11+ ephemeral resources",
+        "Read secrets at runtime from Vault/OpenBao, SSM or Secrets Manager, and rotate anything that leaked"
+      ],
+      "prevention": "Never commit state. Restrict plan artifacts (GitLab artifacts access: developer) and run gitleaks in CI.",
+      "sources": [
+        {"title": "Terraform docs: Manage sensitive data", "url": "https://developer.hashicorp.com/terraform/language/manage-sensitive-data", "type": "docs", "verified": true},
+        {"title": "OpenTofu docs: State and plan encryption", "url": "https://opentofu.org/docs/language/state/encryption/", "type": "docs", "verified": true},
+        {"title": "r/Terraform search", "url": "https://www.reddit.com/r/Terraform/search/?q=secrets+in+state+file&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Plan says 'must be replaced' on production, or someone destroyed the wrong thing",
+      "area": "Terraform/OpenTofu change safety",
+      "tool": "Terraform/OpenTofu",
+      "level": "L3",
+      "error_text": "# aws_instance.app must be replaced ... ami = \"ami-0aaa\" -> \"ami-0bbb\" # forces replacement | Error: Instance cannot be destroyed ... has lifecycle.prevent_destroy set",
+      "context": "data aws_ami with most_recent = true, a user_data edit, a renamed resource, -target misuse, or destroy run in the wrong workspace.",
+      "frequency_signal": "terraform-provider-aws #23 'Stop, don't destroy instance on user-data update' (72 comments). hashicorp/terraform #3874 prevent_destroy (165 reactions).",
+      "root_causes": [
+        "Attributes that force replacement change silently (AMI lookups, user_data, name)",
+        "No guardrails on stateful resources"
+      ],
+      "diagnosis": [
+        "terraform plan -out=tfplan && terraform show tfplan | grep -E 'forces replacement|must be replaced'",
+        "terraform workspace show"
+      ],
+      "fix": [
+        "Pin the AMI through a variable, or lifecycle { ignore_changes = [ami, user_data] }. Use create_before_destroy for zero downtime",
+        "Set prevent_destroy plus provider-side protection: RDS deletion_protection, EC2 disable_api_termination, S3 versioning",
+        "Restore from snapshots or AWS Backup"
+      ],
+      "prevention": "Use a plan review gate that flags deletes. Put stateful resources in a separate state, and give the CI role no Delete on critical resources.",
+      "sources": [
+        {"title": "hashicorp/terraform issues by reactions (#3874)", "url": "https://github.com/hashicorp/terraform/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=terraform+%22forces+replacement%22+ami+user_data", "type": "search", "verified": false}
+      ]
+    }
+    ,
+    {
+      "title": "UNREACHABLE! 'Failed to connect to the host via ssh: Permission denied' although plain ssh works",
+      "area": "Ansible connection",
+      "tool": "Ansible",
+      "level": "L1",
+      "error_text": "fatal: [web1]: UNREACHABLE! => {\"changed\": false, \"msg\": \"Failed to connect to the host via ssh: user@10.0.0.5: Permission denied (publickey,password).\", \"unreachable\": true}",
+      "context": "Running against new VMs (Proxmox clones, EC2), or from GitLab CI where there is no ssh-agent.",
+      "frequency_signal": "ansible/ansible #15321 'SSH works, but ansible throws unreachable error' (93 comments) and #19584 (70 comments).",
+      "root_causes": [
+        "Ansible uses a different user or key than your shell (ansible_user, or your local username by default)",
+        "Host key verification failed because the VM is new or its IP was reused",
+        "A stale ControlPersist socket or 'unix domain socket too long' (ControlPath)",
+        "In CI: the key isn't loaded, or the file permissions are wrong"
+      ],
+      "diagnosis": [
+        "ansible web1 -m ping -vvvv   # prints the exact ssh command",
+        "ansible-inventory -i INVENTORY --host web1",
+        "ssh-keygen -R HOST; ssh-keyscan HOST"
+      ],
+      "fix": [
+        "Set ansible_user and ansible_ssh_private_key_file in group_vars",
+        "Pre-populate known_hosts. Use host_key_checking=False only in throwaway labs",
+        "ansible.cfg [ssh_connection] control_path_dir=/tmp/.ansible-cp, and delete stale sockets"
+      ],
+      "prevention": "Use a dedicated automation user with key-only auth created at bootstrap (cloud-init), and manage known_hosts.",
+      "sources": [
+        {"title": "ansible/ansible issues by comments", "url": "https://github.com/ansible/ansible/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+UNREACHABLE+%22Permission+denied+%28publickey%22+ssh+works", "type": "search", "verified": false},
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=unreachable+permission+denied&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "become fails: 'Missing sudo password', 'Timeout (12s) waiting for privilege escalation prompt', or temp-file permissions with become_user",
+      "area": "Ansible privilege escalation",
+      "tool": "Ansible",
+      "level": "L1",
+      "error_text": "Missing sudo password | Timeout (12s) waiting for privilege escalation prompt: | Failed to set permissions on the temporary files Ansible needs to create when becoming an unprivileged user",
+      "context": "become: true on new hosts, or become_user: postgres or www-data on minimal Ubuntu images.",
+      "frequency_signal": "#13278 (123 comments) and #14426 (73 comments) for the timeout. The unprivileged-user case has its own section in the become docs.",
+      "root_causes": [
+        "No password supplied for a user that needs one",
+        "sudo is slow because the hostname doesn't resolve ('sudo: unable to resolve host'), or there is a custom prompt or requiretty",
+        "With a non-root to non-root become, Ansible needs setfacl to share its module files, and the acl package is missing. /tmp may also be noexec"
+      ],
+      "diagnosis": [
+        "ansible-playbook site.yml -vvvv",
+        "On the target: time sudo -v; hostname; grep \"$(hostname)\" /etc/hosts; which setfacl; mount | grep /tmp"
+      ],
+      "fix": [
+        "ansible-playbook -K, or ansible_become_password from Vault, or a scoped NOPASSWD sudoers drop-in",
+        "Add the hostname to /etc/hosts, and raise timeout in ansible.cfg if hosts are slow",
+        "apt install acl on targets, or set pipelining = True in [ssh_connection]"
+      ],
+      "prevention": "Put acl, a sudoers drop-in and a hosts entry in the base template (Packer or cloud-init). Enable pipelining by default.",
+      "sources": [
+        {"title": "Ansible docs: Understanding privilege escalation (become)", "url": "https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_privilege_escalation.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+%22Timeout+%2812s%29+waiting+for+privilege+escalation+prompt%22", "type": "search", "verified": false},
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=%22becoming+an+unprivileged+user%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "apt task fails on fresh Ubuntu VMs: 'Could not get lock /var/lib/dpkg/lock-frontend'",
+      "area": "Ansible + Ubuntu packages",
+      "tool": "Ansible",
+      "level": "L1",
+      "error_text": "Could not get lock /var/lib/dpkg/lock-frontend - open (11: Resource temporarily unavailable) | Failed to lock apt for exclusive operation",
+      "context": "The first run right after boot of cloud-init, Proxmox clone or Packer-built VMs, while cloud-init or unattended-upgrades is still running.",
+      "frequency_signal": "ansible/ansible #51663 is still open with 71 comments.",
+      "root_causes": [
+        "cloud-init is still installing packages",
+        "apt-daily or unattended-upgrades runs at boot",
+        "A parallel playbook run"
+      ],
+      "diagnosis": [
+        "ps aux | grep -E 'apt|dpkg|unattended'",
+        "sudo lsof /var/lib/dpkg/lock-frontend",
+        "cloud-init status --long; systemctl list-jobs"
+      ],
+      "fix": [
+        "First task: command cloud-init status --wait (changed_when: false), or wait_for path=/var/lib/cloud/instance/boot-finished",
+        "apt module lock_timeout: 600 (the parameter exists since ansible-core 2.12; the default is 60)",
+        "Add retries/until on the apt task. Never delete the lock files"
+      ],
+      "prevention": "Bake updates into the Packer template and disable or shift the apt-daily timers on build VMs.",
+      "sources": [
+        {"title": "ansible/ansible #51663", "url": "https://github.com/ansible/ansible/issues/51663", "type": "github-issue", "verified": true},
+        {"title": "Ansible docs: apt module (lock_timeout)", "url": "https://docs.ansible.com/ansible/latest/collections/ansible/builtin/apt_module.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+%22Could+not+get+lock+%2Fvar%2Flib%2Fdpkg%2Flock-frontend%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Old targets break after an ansible-core upgrade (Python support), plus interpreter discovery warnings",
+      "area": "Ansible versions",
+      "tool": "Ansible",
+      "level": "L2",
+      "error_text": "[WARNING]: Platform linux on host web1 is using the discovered Python interpreter at /usr/bin/python3.12, but future installation of another Python interpreter could change the meaning of that path. | SyntaxError: future feature annotations is not defined (Python 3.6 targets)",
+      "context": "A mixed fleet (Ubuntu 18.04/20.04, CentOS 7) next to Ubuntu 24.04, and controllers installed with pip on Ubuntu 22.04.",
+      "frequency_signal": "The official support matrix changes every 6 months. 2.17 dropped Python 2.7/3.6 targets, and 2.20/2.21 need Python 3.9+ on targets and 3.12+ on the controller.",
+      "root_causes": [
+        "The target Python is older than the ansible-core minimum (3.8 on Ubuntu 20.04 fails with 2.20+)",
+        "The controller Python is too old for the newest core: Ubuntu 22.04 has Python 3.10",
+        "A minimal image with no Python at all"
+      ],
+      "diagnosis": [
+        "ansible --version   # shows the core version and the controller Python",
+        "ansible HOST -m raw -a 'python3 --version'",
+        "ansible HOST -m setup -a 'filter=ansible_python*'"
+      ],
+      "fix": [
+        "Pin ansible-core per fleet: pipx install 'ansible-core<2.17' in a separate venv for legacy hosts",
+        "Upgrade or replace EOL OSes",
+        "Set ansible_python_interpreter=/usr/bin/python3 or interpreter_python=auto_silent. Bootstrap Python with raw: apt-get install -y python3"
+      ],
+      "prevention": "Pin ansible-core in requirements.txt or an execution environment, test target OSes with molecule, and read the porting guide before upgrading.",
+      "sources": [
+        {"title": "Ansible docs: Releases and maintenance (support matrix)", "url": "https://docs.ansible.com/ansible/latest/reference_appendices/release_and_maintenance.html", "type": "docs", "verified": true},
+        {"title": "Ansible docs: Interpreter discovery", "url": "https://docs.ansible.com/ansible/latest/reference_appendices/interpreter_discovery.html", "type": "docs", "verified": true},
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=%22future+feature+annotations%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Playbooks break after upgrading to ansible-core 2.19 / Ansible 12: 'Conditional result ... was derived from value of type str'",
+      "area": "Ansible templating",
+      "tool": "Ansible",
+      "level": "L2",
+      "error_text": "Conditional result (True) was derived from value of type 'str' | Conditional result was 'localhost' of type 'str', which evaluates to True. Conditionals must have a boolean result.",
+      "context": "The 2025-2026 upgrade wave. Many community roles (geerlingguy, kubespray, vendor collections) needed fixes.",
+      "frequency_signal": "Many GitHub issues across popular roles and collections. The 2.19 porting guide has a 'Broken conditionals' section.",
+      "root_causes": [
+        "The 2.19 templating overhaul makes when: results that aren't booleans an error",
+        "Patterns like when: my_string, when: \"{{ var }}\", or -e flag=true passed as a string"
+      ],
+      "diagnosis": [
+        "ansible-playbook site.yml -vvv   # shows the conditional and the file:line",
+        "Test on Ansible 12 in a branch before you upgrade"
+      ],
+      "fix": [
+        "Use explicit booleans: when: my_flag | bool, when: my_list | length > 0, when: my_var is defined and my_var != ''",
+        "Temporary only: ANSIBLE_ALLOW_BROKEN_CONDITIONALS=true turns the error into a warning",
+        "Update roles and collections to versions that support 2.19"
+      ],
+      "prevention": "Pin ansible-core, run ansible-lint, and use molecule tests as an upgrade gate.",
+      "sources": [
+        {"title": "Ansible-core 2.19 Porting Guide", "url": "https://docs.ansible.com/projects/ansible/latest/porting_guides/porting_guide_core_2.19.html", "type": "docs", "verified": true},
+        {"title": "kubespray #13524 (Ansible 12 boolean extra-vars)", "url": "https://github.com/kubernetes-sigs/kubespray/issues/13524", "type": "github-issue", "verified": true},
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=2.19+conditional+result+derived&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Every run reports 'changed' (non-idempotent shell/command tasks)",
+      "area": "Ansible idempotency",
+      "tool": "Ansible",
+      "level": "L1",
+      "error_text": "PLAY RECAP ... changed=7 on every run with nothing really changing; services restart every time",
+      "context": "Beginner playbooks written as shell scripts. You can't trust --check or detect drift until this is fixed.",
+      "frequency_signal": "A classic beginner topic. molecule's idempotence step exists for exactly this.",
+      "root_causes": [
+        "command/shell tasks always report changed",
+        "lineinfile regexp mismatches append duplicate lines",
+        "Templates with timestamps, and handlers notified by tasks that always change"
+      ],
+      "diagnosis": [
+        "ansible-playbook site.yml --check --diff",
+        "Run it twice and compare the changed tasks"
+      ],
+      "fix": [
+        "Use real modules (apt, template, systemd, user, file)",
+        "For commands: creates:/removes:, or register plus changed_when: and failed_when:",
+        "Fix the lineinfile regexp, and enable ansible-lint's no-changed-when rule"
+      ],
+      "prevention": "Make a second run with changed=0 a CI gate (molecule idempotence).",
+      "sources": [
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+shell+task+always+changed+changed_when+idempotent", "type": "search", "verified": false},
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=idempotent+changed_when&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "A variable has the 'wrong' value: precedence, group_vars, and one host in several groups",
+      "area": "Ansible variables/inventory",
+      "tool": "Ansible",
+      "level": "L2",
+      "error_text": "The task includes an option with an undefined variable. The error was: 'app_port' is undefined | staging host receives prod settings",
+      "context": "One inventory holds all environments, the same host sits in several groups, and role defaults conflict with role vars.",
+      "frequency_signal": "ansible/ansible #9065 'separate group_vars being overwritten when deploying to same host' (71 comments).",
+      "root_causes": [
+        "More than 20 precedence levels, and extra-vars always win",
+        "Sibling groups merge alphabetically unless ansible_group_priority is set",
+        "group_vars is resolved relative to the inventory or playbook directory. A typo leaves a variable undefined"
+      ],
+      "diagnosis": [
+        "ansible-inventory -i INVENTORY --host web1   # merged vars",
+        "ansible-inventory -i INVENTORY --graph --vars",
+        "ansible web1 -m debug -a var=app_port"
+      ],
+      "fix": [
+        "One inventory per environment (inventories/prod, inventories/staging)",
+        "Put defaults in roles/X/defaults/main.yml and prefix variables with the role name",
+        "Use | default() for optional values, or ansible_group_priority when needed"
+      ],
+      "prevention": "Document where each variable lives, and print merged variables in MR pipelines for review.",
+      "sources": [
+        {"title": "ansible/ansible issues by comments (#9065)", "url": "https://github.com/ansible/ansible/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+variable+precedence+group_vars+same+host+multiple+groups", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Ansible Vault in CI: 'Attempting to decrypt but no vault secrets found'",
+      "area": "Ansible secrets",
+      "tool": "Ansible",
+      "level": "L1",
+      "error_text": "ERROR! Attempting to decrypt but no vault secrets found | Decryption failed (no vault secrets were found that could decrypt)",
+      "context": "It works on the laptop with --ask-vault-pass and fails in GitLab CI or AWX.",
+      "frequency_signal": "A classic SO and r/ansible question whenever a team moves Ansible into CI.",
+      "root_causes": [
+        "No vault password given",
+        "Wrong vault-id label, or a different password per environment",
+        "The CI variable wasn't written to a file, or has a trailing newline or encoding issue"
+      ],
+      "diagnosis": [
+        "head -1 FILE.yml   # $ANSIBLE_VAULT;1.2;AES256;prod shows the label",
+        "ansible-vault view FILE.yml --vault-id prod@prompt",
+        "ansible-config dump --only-changed | grep -i vault"
+      ],
+      "fix": [
+        "ansible-playbook site.yml --vault-id prod@/path/to/passfile",
+        "GitLab: a masked, protected File variable, then --vault-password-file \"$VAULT_PASS_FILE\"",
+        "Unify passwords with ansible-vault rekey, or use encrypt_string for single values"
+      ],
+      "prevention": "Use vault-id labels per environment, never commit password files, and consider an external secret store (Vault/OpenBao lookup).",
+      "sources": [
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+%22Attempting+to+decrypt+but+no+vault+secrets+found%22", "type": "search", "verified": false},
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=vault+password+gitlab+ci&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Playbook hangs forever with no output",
+      "area": "Ansible execution",
+      "tool": "Ansible",
+      "level": "L2",
+      "error_text": "Output stops at 'TASK [Gathering Facts]' or at a command task and never returns",
+      "context": "Large inventories, hosts with NFS/CIFS mounts, and interactive commands.",
+      "frequency_signal": "ansible/ansible #30411 'Ansible hangs forever...' is the most-commented Ansible issue (159 comments).",
+      "root_causes": [
+        "become waiting at a password prompt (the docs call this out)",
+        "A command waiting for input (a dpkg conffile prompt, a git host key prompt)",
+        "Fact gathering stuck on a hung NFS mount, or a stale ControlPersist socket"
+      ],
+      "diagnosis": [
+        "ansible-playbook site.yml -vvvv   # last host and task",
+        "On the target: ps -ef --forest | grep -A3 ansible; sudo strace -p PID",
+        "ls ~/.ansible/cp/   # on the controller"
+      ],
+      "fix": [
+        "Press Ctrl+C and rerun with -K",
+        "Make commands non-interactive: DEBIAN_FRONTEND=noninteractive, apt dpkg_options: force-confdef,force-confold",
+        "Use gather_subset or gather_timeout, add timeout: on tasks (ansible-core 2.10+), and async/poll for long jobs"
+      ],
+      "prevention": "Never run interactive commands, put timeouts on risky tasks, and alert on hung mounts.",
+      "sources": [
+        {"title": "ansible/ansible #30411", "url": "https://github.com/ansible/ansible/issues/30411", "type": "github-issue", "verified": true},
+        {"title": "Ansible docs: become (hang at prompt note)", "url": "https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_privilege_escalation.html", "type": "docs", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+playbook+hangs+gathering+facts", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Playbooks are slow on 50+ hosts (forks, facts, SSH overhead)",
+      "area": "Ansible performance",
+      "tool": "Ansible",
+      "level": "L3",
+      "error_text": "Run time grows linearly with host count, and Gathering Facts dominates",
+      "context": "Patch runs and fleet config with the default settings.",
+      "frequency_signal": "A recurring r/ansible topic. profile_tasks is the standard first step.",
+      "root_causes": [
+        "The default forks=5",
+        "Facts gathered in every play, no pipelining or ControlPersist",
+        "Package loops (one apt call per item) instead of passing a list"
+      ],
+      "diagnosis": [
+        "ANSIBLE_CALLBACKS_ENABLED=ansible.posix.profile_tasks,ansible.posix.timer ansible-playbook site.yml",
+        "ansible-config dump --only-changed"
+      ],
+      "fix": [
+        "ansible.cfg: forks = 25, [ssh_connection] pipelining = True, ssh_args = -o ControlMaster=auto -o ControlPersist=60s",
+        "gather_facts: false or gather_subset, plus fact caching (jsonfile/redis)",
+        "Pass lists to apt name:, use strategy: free where order doesn't matter, and async for long tasks"
+      ],
+      "prevention": "Profile in CI and keep plays small and targeted.",
+      "sources": [
+        {"title": "r/ansible search", "url": "https://www.reddit.com/r/ansible/search/?q=speed+up+playbook+forks+pipelining&restrict_sr=1", "type": "search", "verified": false},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=ansible+slow+playbook+pipelining+forks+fact+caching", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "A playbook (or ops command) hit every host at once and took production down",
+      "area": "Ansible change safety",
+      "tool": "Ansible",
+      "level": "L4",
+      "error_text": "PLAY RECAP shows every host changed, and the service restarted everywhere at the same moment",
+      "context": "A forgotten --limit, hosts: all, or a handler restarting the whole cluster. AWS's 2017 S3 outage came from a capacity-removal command with a wrong input that removed far more servers than intended.",
+      "frequency_signal": "A classic postmortem pattern: AWS S3 2017, and many 'I ran it against prod' stories on r/sysadmin.",
+      "root_causes": [
+        "No batching or minimum-capacity guard",
+        "No dry run or host list check before running"
+      ],
+      "diagnosis": [
+        "ansible-playbook site.yml --list-hosts --list-tasks",
+        "ansible-playbook site.yml --check --diff --limit canary"
+      ],
+      "fix": [
+        "serial: [1, '25%'] with max_fail_percentage: 0 and any_errors_fatal: true for rolling changes",
+        "Health-check every batch (uri/wait_for) before the next one",
+        "A wrapper or AWX survey that requires --limit, and a written rollback"
+      ],
+      "prevention": "Build guardrails into the tooling as AWS did: remove capacity slowly, refuse to go below minimum capacity, keep the blast radius small, and stage rollouts.",
+      "sources": [
+        {"title": "AWS: Summary of the Amazon S3 Service Disruption (2017)", "url": "https://aws.amazon.com/message/41926/", "type": "postmortem", "verified": true},
+        {"title": "r/sysadmin search", "url": "https://www.reddit.com/r/sysadmin/search/?q=ansible+ran+against+all+hosts&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    }
+    ,
+    {
+      "title": "Proxmox apt update fails: 401 Unauthorized from enterprise.proxmox.com (no subscription)",
+      "area": "Proxmox VE packages",
+      "tool": "Proxmox VE",
+      "level": "L0",
+      "error_text": "Failed to fetch https://enterprise.proxmox.com/debian/pve/dists/trixie/InRelease 401 Unauthorized | TASK ERROR: command 'apt-get update' failed: exit code 100",
+      "context": "The first thing every homelab or new on-prem install hits. PVE 9 uses deb822 .sources files, so old sed one-liners for sources.list no longer work.",
+      "frequency_signal": "forum.proxmox.com: \"command 'apt-get update' failed: exit code 100\" (301K views) and 'Update Unauthorized, after latest update' (236K views).",
+      "root_causes": [
+        "The enterprise repo is enabled by default and there is no subscription key",
+        "The Ceph enterprise repo is enabled too",
+        "Using apt upgrade instead of apt full-upgrade"
+      ],
+      "diagnosis": [
+        "apt update",
+        "ls /etc/apt/sources.list.d/; cat /etc/apt/sources.list.d/*.sources",
+        "pvesubscription get"
+      ],
+      "fix": [
+        "Add 'Enabled: no' to /etc/apt/sources.list.d/pve-enterprise.sources and to the enterprise entry in ceph.sources",
+        "Create /etc/apt/sources.list.d/proxmox.sources: Types: deb / URIs: http://download.proxmox.com/debian/pve / Suites: trixie / Components: pve-no-subscription / Signed-By: /usr/share/keyrings/proxmox-archive-keyring.gpg",
+        "apt update && apt full-upgrade (or use GUI: Node > Updates > Repositories)"
+      ],
+      "prevention": "Buy a subscription for production, manage repo files with Ansible, and convert old files with apt modernize-sources.",
+      "sources": [
+        {"title": "Proxmox wiki: Package Repositories", "url": "https://pve.proxmox.com/wiki/Package_Repositories", "type": "docs", "verified": true},
+        {"title": "forum.proxmox.com Installation & Configuration (most viewed)", "url": "https://forum.proxmox.com/forums/proxmox-ve-installation-and-configuration.16/?order=view_count&direction=desc", "type": "forum", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=401+unauthorized+enterprise+repository&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Cluster lost quorum ('cluster not ready - no quorum?') and removing a dead node safely",
+      "area": "Proxmox VE cluster",
+      "tool": "Proxmox VE",
+      "level": "L2",
+      "error_text": "cluster not ready - no quorum? (500) | pvecm status: Quorate: No | /etc/pve is read-only",
+      "context": "Two-node homelab clusters, corosync sharing a busy NIC with storage or VM traffic, or a node that died or was reinstalled.",
+      "frequency_signal": "'[SOLVED] Remove node from cluster' has 386K views on forum.proxmox.com. Quorum questions are constant on r/Proxmox and r/homelab.",
+      "root_causes": [
+        "A 2-node cluster with one node down has 1 of 2 votes, which is not a majority",
+        "Corosync latency above about 5-10 ms, or link loss on a shared network",
+        "A dead node never removed with pvecm delnode, or brought back as-is after removal"
+      ],
+      "diagnosis": [
+        "pvecm status; pvecm nodes",
+        "corosync-cfgtool -s",
+        "journalctl -u corosync -u pve-cluster -b"
+      ],
+      "fix": [
+        "Bring the node back. Only if it is certainly down for good: pvecm expected 1 on the survivor (risk of split-brain)",
+        "Two nodes: add a QDevice: apt install corosync-qnetd on a third box, corosync-qdevice on the nodes, then pvecm qdevice setup QNETD_IP",
+        "Remove a node: power it off for good, then pvecm delnode NAME and rm -r /etc/pve/nodes/NAME after copying any configs. Reinstall it before it ever rejoins"
+      ],
+      "prevention": "Keep an odd number of votes, a dedicated corosync NIC plus a redundant link, and never reuse a removed node without reinstalling it.",
+      "sources": [
+        {"title": "Proxmox wiki: Cluster Manager", "url": "https://pve.proxmox.com/wiki/Cluster_Manager", "type": "docs", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=no+quorum+two+node+qdevice&restrict_sr=1", "type": "search", "verified": false},
+        {"title": "r/homelab search", "url": "https://www.reddit.com/r/homelab/search/?q=proxmox+quorum+2+node&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Changed the Proxmox host's IP or hostname: web UI on :8006 is dead and pve-cluster won't start",
+      "area": "Proxmox VE host networking",
+      "tool": "Proxmox VE",
+      "level": "L1",
+      "error_text": "[main] crit: Unable to resolve node name 'pve' to a non-loopback IP address - missing entry in '/etc/hosts' or DNS? | browser: can't reach https://IP:8006",
+      "context": "Moving a box to a new network, or a DHCP-assigned management IP. The same 'what's listening, and why not' habit as the Apache/Dokploy port case.",
+      "frequency_signal": "forum.proxmox.com: 'Cannot Access Web Interface' (278K views), 'Hostname (FQDN)' (338K), 'Help with changing IP address' (263K).",
+      "root_causes": [
+        "/etc/hosts still has the old IP, or maps the hostname to 127.0.1.1",
+        "The hostname was changed while VM configs live in /etc/pve/nodes/OLDNAME",
+        "Certificates are for the old name, or http was used instead of https on 8006. In a cluster, IP and hostname changes are not supported casually"
+      ],
+      "diagnosis": [
+        "hostname -i   # must print the LAN IP, not 127.x",
+        "cat /etc/hosts; ip -br a; cat /etc/network/interfaces",
+        "systemctl status pve-cluster pveproxy; journalctl -u pve-cluster -b; ss -ltnp | grep 8006"
+      ],
+      "fix": [
+        "Fix /etc/hosts, for example '192.0.2.10 pve.example.lan pve', then ifreload -a",
+        "systemctl restart pve-cluster pveproxy; pvecm updatecerts --force",
+        "Standalone rename: move /etc/pve/nodes/OLD/qemu-server/*.conf to the new node directory"
+      ],
+      "prevention": "Use a static management IP and fix the FQDN before you create a cluster. Keep IPMI or console access.",
+      "sources": [
+        {"title": "forum.proxmox.com: Unable to resolve node name to a non-loopback IP", "url": "https://forum.proxmox.com/threads/main-crit-unable-to-resolve-node-name-prox-to-a-non-loopback-ip-address-missing-entry-in-etc-hosts-or-dns.141719/", "type": "forum", "verified": true},
+        {"title": "Proxmox wiki: Cluster Manager (hostname/IP notes)", "url": "https://pve.proxmox.com/wiki/Cluster_Manager", "type": "docs", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=changed+ip+web+interface+8006&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "\"can't lock file '/var/lock/qemu-server/lock-100.conf' - got timeout\" or 'VM is locked (backup)'",
+      "area": "Proxmox VE VM operations",
+      "tool": "Proxmox VE",
+      "level": "L1",
+      "error_text": "trying to acquire lock... TASK ERROR: can't lock file '/var/lock/qemu-server/lock-100.conf' - got timeout | VM 100 is locked (backup)",
+      "context": "After a stuck backup, migration or snapshot, during shutdown with an unresponsive guest agent, or when Terraform or Packer runs many API calls in parallel.",
+      "frequency_signal": "The forum thread has 277K views. The Telmate provider has issue #173 'Error: 500 can't lock file'.",
+      "root_causes": [
+        "A running or hung task still holds the lock",
+        "The guest agent is enabled but doesn't respond",
+        "Parallel API operations, or hung storage (NFS)"
+      ],
+      "diagnosis": [
+        "qm config 100 | grep lock",
+        "ps aux | grep -E 'vzdump|qm '; lsof /var/lock/qemu-server/lock-100.conf",
+        "Datacenter > Tasks; pvesm status"
+      ],
+      "fix": [
+        "Let the task finish or stop it. qm unlock 100 clears the config lock once the task is gone",
+        "qm stop 100 --skiplock; systemctl restart pvedaemon if a worker is stuck",
+        "Terraform: apply with -parallelism=1"
+      ],
+      "prevention": "Install qemu-guest-agent properly, watch backup job results, and limit API parallelism.",
+      "sources": [
+        {"title": "forum.proxmox.com: trying to aquire lock...TASK ERROR: can't lock file", "url": "https://forum.proxmox.com/threads/trying-to-aquire-lock-task-error-cant-lock-file-var-lock-qemu-server.16235/", "type": "forum", "verified": true},
+        {"title": "Telmate/terraform-provider-proxmox issues by comments", "url": "https://github.com/Telmate/terraform-provider-proxmox/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=%22can%27t+lock+file%22+got+timeout&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Backups hang or freeze the VM: \"qmp command 'guest-fsfreeze-freeze' failed - got timeout\"",
+      "area": "Proxmox VE backup / PBS",
+      "tool": "Proxmox VE",
+      "level": "L2",
+      "error_text": "VM 100 qmp command 'guest-fsfreeze-freeze' failed - got timeout | ERROR: Backup of VM 100 failed",
+      "context": "Nightly vzdump or Proxmox Backup Server jobs in snapshot mode with the QEMU guest agent enabled. Busy databases and Windows VSS are common triggers.",
+      "frequency_signal": "Many forum.proxmox.com threads over the years ('Backup crashes VM', 'Snapshot backup not working').",
+      "root_causes": [
+        "The agent is enabled in VM options but isn't running in the guest, or is outdated",
+        "The fs-freeze hooks hang under heavy I/O, and the filesystem stays frozen",
+        "A slow or full backup target (PBS datastore, NFS)"
+      ],
+      "diagnosis": [
+        "qm agent 100 ping; qm guest cmd 100 fsfreeze-status",
+        "Read the backup task log",
+        "On PBS: proxmox-backup-manager datastore list; df -h; check prune and GC schedules"
+      ],
+      "fix": [
+        "If the guest is frozen: qm guest cmd 100 fsfreeze-thaw",
+        "Install or enable qemu-guest-agent in the guest. As a last resort disable the agent option, or (in newer releases) only fs-freeze on backup",
+        "Free space on PBS, schedule backups off-peak, and use backup fleecing on newer releases"
+      ],
+      "prevention": "Test restores regularly, alert on failed backup jobs, and keep the datastore under 80%.",
+      "sources": [
+        {"title": "forum.proxmox.com: Backup crashes VM - guest-fsfreeze-freeze failed - got timeout", "url": "https://forum.proxmox.com/threads/backup-crashes-vm-guest-fsfreeze-freeze-failed-got-timeout.104694/", "type": "forum", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=guest-fsfreeze-freeze+timeout+backup&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "The host 'uses all RAM' or VMs get OOM-killed: ZFS ARC sizing and disk choices",
+      "area": "Proxmox VE storage (ZFS)",
+      "tool": "Proxmox VE",
+      "level": "L2",
+      "error_text": "free -h shows little available memory | Out of memory: Killed process NNNN (kvm) in journalctl -k",
+      "context": "ZFS installs on 32-64 GB hosts, especially older installs or hosts upgraded from pre-8.1, plus consumer SSDs.",
+      "frequency_signal": "A constant forum and r/Proxmox topic. Proxmox changed the installer default ARC size in PVE 8.1 because of it.",
+      "root_causes": [
+        "Before PVE 8.1 the ARC defaulted to 50% of RAM (new installs now use 10%, capped at 16 GiB)",
+        "VM memory overcommitted, or swap on a ZFS zvol",
+        "Consumer SSDs without power-loss protection, or hardware RAID under ZFS"
+      ],
+      "diagnosis": [
+        "arc_summary | head -40",
+        "grep -E '^(size|c_max)' /proc/spl/kstat/zfs/arcstats",
+        "journalctl -k | grep -i 'out of memory'; zpool status -v; zpool iostat -v 5"
+      ],
+      "fix": [
+        "echo 'options zfs zfs_arc_max=8589934592' > /etc/modprobe.d/zfs.conf; update-initramfs -u -k all; reboot",
+        "Stop overcommitting, and move swap off zvols",
+        "Use an HBA in IT mode and enterprise SSDs"
+      ],
+      "prevention": "Size RAM for the ARC plus all VMs, alert on memory pressure (node_exporter/pve-exporter), and scrub monthly.",
+      "sources": [
+        {"title": "Proxmox wiki: ZFS on Linux", "url": "https://pve.proxmox.com/wiki/ZFS_on_Linux", "type": "docs", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=zfs+arc+ram+usage+zfs_arc_max&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Host offline after a kernel or PVE 8-to-9 upgrade: network interface names changed",
+      "area": "Proxmox VE networking/upgrades",
+      "tool": "Proxmox VE",
+      "level": "L2",
+      "error_text": "No network after reboot; ip -br link shows a new name (for example enp4s0) while vmbr0 still has bridge-ports enp3s0",
+      "context": "Kernel or firmware updates, adding a PCIe card, or the PVE 9 (Debian 13) upgrade. The Linux-bridge equivalent of 'the netplan interface name doesn't match'.",
+      "frequency_signal": "Called out in the official 8-to-9 upgrade guide, which now ships a NIC-pinning tool.",
+      "root_causes": [
+        "Predictable interface names change when the kernel or hardware changes",
+        "/etc/network/interfaces still references the old name"
+      ],
+      "diagnosis": [
+        "From the console or IPMI: ip -br link",
+        "grep -n bridge-ports /etc/network/interfaces",
+        "journalctl -b -u networking; pve8to9 --full (before upgrading)"
+      ],
+      "fix": [
+        "Edit bridge-ports to the new name, then ifreload -a",
+        "Pin the names: pve-network-interface-pinning (PVE 9), or a systemd .link file matching the MAC ([Match] MACAddress=..., [Link] Name=nic0) followed by update-initramfs -u"
+      ],
+      "prevention": "Pin NIC names before upgrades, keep out-of-band access, and always run the pve8to9 checklist.",
+      "sources": [
+        {"title": "Proxmox wiki: Upgrade from 8 to 9", "url": "https://pve.proxmox.com/wiki/Upgrade_from_8_to_9", "type": "docs", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=network+interface+name+changed+after+upgrade&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Cloned cloud-init VMs: no IP, the same IP on every clone, or the SSH key not applied",
+      "area": "Proxmox VE templates / cloud-init",
+      "tool": "Proxmox VE",
+      "level": "L2",
+      "error_text": "Clones get the same DHCP lease or hostname | cloud-init status: not run/disabled | Terraform: cloud-init drive missing after clone",
+      "context": "Building a 'golden' Ubuntu template for Terraform or Ansible. The usual on-prem replacement for AMIs.",
+      "frequency_signal": "Telmate provider issues: 'Cloud-init drive delete when cloning' (#901, 48 comments), 'No Cloud-init drive after creation' (#1104), 'cloud-init no longer working' (#944).",
+      "root_causes": [
+        "The template wasn't generalised: a duplicate /etc/machine-id gives the same DHCP client ID",
+        "The cloud-init drive (ide2 cloudinit) is missing or dropped on clone, or ipconfig0 is unset",
+        "The cloud image expects a serial console, or cloud-init already ran in the template"
+      ],
+      "diagnosis": [
+        "qm config VMID | grep -E 'ide2|ipconfig|ciuser|sshkeys|serial'",
+        "qm cloudinit dump VMID user",
+        "In the guest: cloud-init status --long; cat /etc/machine-id; journalctl -u cloud-init"
+      ],
+      "fix": [
+        "Before qm template: cloud-init clean --logs --machine-id (or truncate -s 0 /etc/machine-id)",
+        "qm set 9000 --ide2 local-lvm:cloudinit --serial0 socket --vga serial0 --boot order=scsi0",
+        "qm set VMID --ipconfig0 ip=dhcp --sshkeys KEY.pub, then regenerate the cloud-init image (GUI: Cloud-Init > Regenerate Image)"
+      ],
+      "prevention": "Build templates with Packer (proxmox-iso/proxmox-clone) including the cleanup steps, and pin provider versions.",
+      "sources": [
+        {"title": "Proxmox wiki: Cloud-Init Support", "url": "https://pve.proxmox.com/wiki/Cloud-Init_Support", "type": "docs", "verified": true},
+        {"title": "Telmate/terraform-provider-proxmox issues by comments", "url": "https://github.com/Telmate/terraform-provider-proxmox/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=cloud-init+template+same+ip+machine-id&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Docker inside a Proxmox LXC: overlay and permission errors, breakage after upgrades. Run it in a VM",
+      "area": "Proxmox VE containers",
+      "tool": "Proxmox VE",
+      "level": "L2",
+      "error_text": "Typical: dockerd or container start fails inside the CT with overlay mount or AppArmor 'permission denied' errors, or bind-mounted files show nobody:nogroup",
+      "context": "Homelabbers putting Docker, Dokploy or k3s in LXC to save RAM. It is relevant whenever the reader puts Docker workloads on Proxmox.",
+      "frequency_signal": "'Unprivileged LXCs - Mount CIFS shares' tutorial (441K views). Docker-in-LXC is a perennial r/Proxmox debate.",
+      "root_causes": [
+        "Unprivileged CTs need nesting and keyctl, and AppArmor blocks some operations",
+        "Overlayfs on ZFS-backed rootfs historically didn't work",
+        "UID mapping (container root = host 100000) breaks bind-mount permissions. The CT shares the host kernel, so host upgrades can break it"
+      ],
+      "diagnosis": [
+        "pct config CTID | grep -E 'features|unprivileged|mp'",
+        "pct exec CTID -- docker info | grep -i 'storage driver'",
+        "dmesg | grep -i apparmor"
+      ],
+      "fix": [
+        "Preferred: run Docker, Dokploy or Kubernetes in a QEMU VM (the Proxmox docs recommend VMs for app containers and live migration)",
+        "If you stay on LXC: pct set CTID --features nesting=1,keyctl=1, and put the CT on storage that supports overlay",
+        "Fix bind mounts by chowning on the host to 100000+UID or with lxc.idmap"
+      ],
+      "prevention": "Use a VM for every container host. Keep LXC for simple single services.",
+      "sources": [
+        {"title": "Proxmox wiki: Linux Container", "url": "https://pve.proxmox.com/wiki/Linux_Container", "type": "docs", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=docker+in+lxc+vs+vm&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Terraform + Proxmox: provider crashes, '400 Parameter verification failed', duplicate disks, permission errors",
+      "area": "Proxmox VE + Terraform",
+      "tool": "Proxmox VE / Terraform",
+      "level": "L3",
+      "error_text": "Error: The terraform-provider-proxmox_v2.9.14 plugin crashed! | Error: 400 Parameter verification failed. | Error: 500 can't lock file | Permission check failed (... SDN.Use)",
+      "context": "IaC for an on-prem Proxmox cluster with the community providers telmate/proxmox or bpg/proxmox.",
+      "frequency_signal": "Telmate issues: #863 plugin crash (86 comments), #887 duplicate disks (53), #784 'Too many permissions needed' (29), #1201 (31).",
+      "root_causes": [
+        "Provider releases lag behind PVE API changes",
+        "The disk schema changed between Telmate 2.9 and 3.0",
+        "The API token lacks privileges (PVE 8+ needs SDN.Use on the bridge), or parallel clones collide on locks"
+      ],
+      "diagnosis": [
+        "TF_LOG=DEBUG terraform apply 2> tf.log",
+        "Compare the provider version with pveversion -v",
+        "pveum user token permissions USER@pve TOKENID"
+      ],
+      "fix": [
+        "Pin a provider version known to work with your PVE, or move to bpg/proxmox using import",
+        "Create a dedicated role (pveum role add) with the needed privileges, including SDN.Use",
+        "Use -parallelism=1, match the disk blocks to the new schema, and run a no-change plan before adding VMs"
+      ],
+      "prevention": "Test provider upgrades in a lab, commit the lock file, and clone from Packer-built templates.",
+      "sources": [
+        {"title": "Telmate/terraform-provider-proxmox issues by comments", "url": "https://github.com/Telmate/terraform-provider-proxmox/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=terraform+provider+bpg+telmate&restrict_sr=1", "type": "search", "verified": false},
+        {"title": "r/Terraform search", "url": "https://www.reddit.com/r/Terraform/search/?q=proxmox+provider&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    }
+    ,
+    {
+      "title": "Packer stuck at 'Waiting for SSH to become available...' on Ubuntu ISO builds (Proxmox/QEMU)",
+      "area": "Packer image builds",
+      "tool": "Packer",
+      "level": "L2",
+      "error_text": "==> proxmox-iso.ubuntu: Waiting for SSH to become available... then Timeout waiting for SSH.",
+      "context": "Building a golden Ubuntu 22.04/24.04 template on Proxmox with subiquity autoinstall served from Packer's built-in HTTP server.",
+      "frequency_signal": "hashicorp/packer #9115 'Packer fails to build ... Ubuntu 20.04' is the most-commented Packer issue (140 comments).",
+      "root_causes": [
+        "Ubuntu 20.04+ uses subiquity autoinstall, so old preseed boot_commands are ignored",
+        "boot_command is typed before GRUB is ready (boot_wait too short), or ';' isn't escaped for GRUB",
+        "The VM can't reach Packer's HTTP server: UFW on the build host blocks 8000-9000, the wrong bind interface, or an isolated VLAN",
+        "Invalid user-data (it must start with #cloud-config and needs a meta-data file), mismatched ssh_username/password, or qemu-guest-agent missing so Packer never learns the IP"
+      ],
+      "diagnosis": [
+        "Watch the VM console in the Proxmox GUI during the build",
+        "PACKER_LOG=1 packer build .",
+        "From the installer shell: curl http://HTTP_IP:PORT/user-data; on the build host: sudo ufw status"
+      ],
+      "fix": [
+        "boot_command with 'autoinstall ds=nocloud-net\\;s=http://{{ .HTTPIP }}:{{ .HTTPPort }}/', or a cidata ISO (cd_files + cd_label = \"cidata\")",
+        "Set http_interface or http_bind_address, fix the port range (http_port_min = http_port_max), and ufw allow it from the VM subnet",
+        "Install qemu-guest-agent in autoinstall packages. Raise boot_wait, and set ssh_timeout = \"30m\""
+      ],
+      "prevention": "Keep templates in Git, pin ISO checksums, and test new Ubuntu point releases in CI.",
+      "sources": [
+        {"title": "hashicorp/packer #9115", "url": "https://github.com/hashicorp/packer/issues/9115", "type": "github-issue", "verified": true},
+        {"title": "Packer Proxmox ISO builder docs", "url": "https://developer.hashicorp.com/packer/integrations/hashicorp/proxmox/latest/components/builder/iso", "type": "docs", "verified": true},
+        {"title": "r/Proxmox search", "url": "https://www.reddit.com/r/Proxmox/search/?q=packer+waiting+for+ssh+autoinstall&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Packer amazon-ebs: 'ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey]'",
+      "area": "Packer image builds (AWS)",
+      "tool": "Packer",
+      "level": "L2",
+      "error_text": "Error waiting for SSH: Packer experienced an authentication error when trying to connect via SSH ... ssh: handshake failed: ssh: unable to authenticate, attempted methods [none publickey]",
+      "context": "AMI pipelines in GitLab CI. Also seen with newer OpenSSH on targets that reject SHA-1 ssh-rsa signatures.",
+      "frequency_signal": "hashicorp/packer #788 (46 comments) and #10074 'deprecation/removal of ssh-rsa' (46 comments).",
+      "root_causes": [
+        "The wrong ssh_username for the source AMI (ubuntu, ec2-user or admin)",
+        "OpenSSH 8.8+ disables ssh-rsa SHA-1, which breaks older Packer temporary RSA keys",
+        "Build in a private subnet without a public IP (a timeout instead), or cloud-init not finished"
+      ],
+      "diagnosis": [
+        "PACKER_LOG=1 packer build -on-error=ask .",
+        "aws ec2 get-console-output --instance-id ID --latest",
+        "Check that source_ami_filter owners match the expected publisher"
+      ],
+      "fix": [
+        "Set the correct ssh_username",
+        "temporary_key_pair_type = \"ed25519\", or upgrade Packer and the amazon plugin",
+        "associate_public_ip_address = true, or ssh_interface = \"session_manager\" with an instance profile"
+      ],
+      "prevention": "Pin plugin versions, use owner filters for AMIs, and build in a dedicated build subnet.",
+      "sources": [
+        {"title": "hashicorp/packer #10074", "url": "https://github.com/hashicorp/packer/issues/10074", "type": "github-issue", "verified": true},
+        {"title": "hashicorp/packer issues by comments (#788)", "url": "https://github.com/hashicorp/packer/issues?q=is%3Aissue+sort%3Acomments-desc", "type": "github-issue", "verified": true},
+        {"title": "Stack Overflow search", "url": "https://stackoverflow.com/search?q=packer+amazon-ebs+%22unable+to+authenticate%22+%22attempted+methods+%5Bnone+publickey%5D%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Packer 'Missing plugins' or unknown builder after upgrading (plugins no longer bundled since 1.10)",
+      "area": "Packer plugins",
+      "tool": "Packer",
+      "level": "L1",
+      "error_text": "Error: Missing plugins | The builder amazon-ebs is unknown by Packer, and is likely part of a plugin that is not installed.",
+      "context": "Old JSON templates, fresh CI images, or air-gapped build hosts.",
+      "frequency_signal": "HashiCorp announced the removal of bundled plugins for Packer 1.10. There are Discuss threads on packer init in offline environments.",
+      "root_causes": [
+        "Packer 1.10+ ships without plugins",
+        "Templates have no required_plugins block, or are still in JSON",
+        "There is no internet access for packer init"
+      ],
+      "diagnosis": [
+        "packer version; packer plugins installed",
+        "Check the template for a packer { required_plugins { ... } } block"
+      ],
+      "fix": [
+        "packer { required_plugins { proxmox = { source = \"github.com/hashicorp/proxmox\", version = \"~> 1\" } } } then packer init .",
+        "Convert JSON templates: packer hcl2_upgrade template.json",
+        "Offline: packer plugins install --path BINARY github.com/hashicorp/proxmox, or copy the plugins into PACKER_PLUGIN_PATH"
+      ],
+      "prevention": "Pin plugin versions, and run packer init plus packer validate in CI.",
+      "sources": [
+        {"title": "HashiCorp: Announcing the removal of bundled plugins in Packer", "url": "https://www.hashicorp.com/en/blog/announcing-the-removal-of-bundled-plugins-in-hashicorp-packer", "type": "blog", "verified": true},
+        {"title": "HashiCorp Discuss: Packer Init and offline environments", "url": "https://discuss.hashicorp.com/t/packer-init-and-offline-environments/63847", "type": "forum", "verified": true}
+      ]
+    }
+  ],
+  "tool_notes": [
+    {
+      "tool": "AWS",
+      "what": "Public cloud. The core services for this reader are IAM, VPC (subnets, route tables, IGW/NAT, SG/NACL), EC2/EBS, S3, ELB, Route 53, plus Cost Explorer and Budgets.",
+      "architecture": "Regions > AZs > VPC. Security groups are stateful per ENI, NACLs are stateless per subnet. IAM evaluates SCP/RCP, boundary, session, identity and resource policies, and an explicit Deny always wins. Credentials come from a provider chain: env vars > profile/SSO > container > IMDS.",
+      "current_version_notes": "As of 2026: IMDSv2 is the default on new instance types, so set hop limit 2 for containers. Public IPv4 is charged since Feb 2024. New S3 buckets have ACLs disabled and Block Public Access on (since Apr 2023). S3 and IAM 403s now name the policy type that denied the request. repost.aws blocks some automated fetchers.",
+      "gotchas": [
+        "A NACL needs ephemeral ports 1024-65535 for return traffic",
+        "A NAT gateway must be in a public subnet",
+        "Session Manager removes the need for port 22",
+        "Data transfer and NAT processing are the hidden costs"
+      ],
+      "official_docs": "https://docs.aws.amazon.com/"
+    },
+    {
+      "tool": "Terraform",
+      "what": "HashiCorp's declarative IaC CLI. HCL configuration, providers that talk to APIs, and a state file mapping config to real objects.",
+      "architecture": "Core builds a dependency graph, then refresh/plan/apply through provider plugins over gRPC. State lives in a backend (S3 with use_lockfile, GitLab HTTP backend, HCP Terraform). .terraform.lock.hcl pins provider hashes.",
+      "current_version_notes": "Licensed BUSL since 1.6 (Aug 2023). 1.5 import blocks, 1.7 removed blocks and for_each import, 1.10 ephemeral values plus S3 native locking, 1.11 write-only arguments with DynamoDB locking deprecated, 1.14 actions and list/query, 1.15 (Apr 2026) const variables in module source/version and deprecated variables/outputs.",
+      "gotchas": [
+        "sensitive=true does not keep values out of state",
+        "plan also takes the lock",
+        "a rename is a destroy without a moved block",
+        "lock files need hashes for every platform",
+        "-target is for emergencies only"
+      ],
+      "official_docs": "https://developer.hashicorp.com/terraform/docs"
+    },
+    {
+      "tool": "OpenTofu",
+      "what": "A Linux Foundation open-source (MPL-2.0) fork of Terraform 1.5, command 'tofu', mostly drop-in compatible.",
+      "architecture": "Same core model as Terraform. It uses registry.opentofu.org and supports OCI registries for providers and modules.",
+      "current_version_notes": "1.7 state and plan encryption, 1.8 early evaluation (variables in backend and module source), 1.10 OCI registry support and S3 native locking, 1.11 (late 2025) ephemeral resources and the lifecycle 'enabled' meta-argument, 1.12.x current in mid-2026. GitLab's CI templates moved to the OpenTofu CI/CD component.",
+      "gotchas": [
+        "Encrypted state is unreadable by Terraform, and lost keys mean lost state",
+        "Features have diverged, so don't run both tools on one state",
+        "Regenerate the lock file after switching"
+      ],
+      "official_docs": "https://opentofu.org/docs/"
+    },
+    {
+      "tool": "Ansible (ansible-core)",
+      "what": "Agentless configuration management and orchestration over SSH. The controller pushes Python modules to targets.",
+      "architecture": "Inventory (static or dynamic) + playbooks/roles + modules. Connection plugins (ssh, local), become for privilege escalation, Jinja2 templating, about 22 levels of variable precedence. Collections from Galaxy.",
+      "current_version_notes": "ansible-core 2.21 (May 2026) and 2.20 need Python 3.12+ on the controller and 3.9+ on targets. 2.19 (Ansible 12) overhauled templating, so non-boolean conditionals now fail. 2.17 dropped Python 2.7/3.6 targets. The apt module has lock_timeout since 2.12.",
+      "gotchas": [
+        "become to a non-root user needs the acl package or pipelining",
+        "shell/command tasks are never idempotent by default",
+        "the default forks=5 is slow",
+        "pin ansible-core per fleet"
+      ],
+      "official_docs": "https://docs.ansible.com/"
+    },
+    {
+      "tool": "Proxmox VE",
+      "what": "An open-source Debian-based hypervisor platform: KVM/QEMU VMs plus LXC containers, a web UI on :8006, a REST API, clustering, ZFS/Ceph, and Proxmox Backup Server integration.",
+      "architecture": "pmxcfs (/etc/pve) is replicated through corosync and needs quorum. pveproxy/pvedaemon serve the API. Storage plugins: LVM-thin, ZFS, Ceph RBD, NFS, PBS. Linux bridges (vmbr0) with optional VLAN awareness. qm and pct CLIs.",
+      "current_version_notes": "PVE 9.x on Debian 13 Trixie. deb822 .sources repo files (pve-enterprise.sources, proxmox.sources). pve8to9 checklist and pve-network-interface-pinning tool. Opt-in 7.0 kernel. Ceph Squid/Tentacle. New installs size the ZFS ARC at 10% of RAM (max 16 GiB) since 8.1.",
+      "gotchas": [
+        "Two-node clusters need a QDevice",
+        "Don't change hostname or IP after clustering",
+        "/etc/hosts must resolve the node name to its LAN IP",
+        "Run Docker in VMs, not LXC",
+        "Always apt full-upgrade"
+      ],
+      "official_docs": "https://pve.proxmox.com/pve-docs/"
+    },
+    {
+      "tool": "Packer",
+      "what": "HashiCorp's image builder: it creates golden images (AMIs, Proxmox templates, QEMU images) from a template, with provisioners (shell, Ansible).",
+      "architecture": "HCL2 template with source blocks (builders such as amazon-ebs, proxmox-iso, proxmox-clone, qemu) + build blocks + provisioners + post-processors. Communicators: SSH/WinRM. A built-in HTTP server serves autoinstall files.",
+      "current_version_notes": "Licensed BUSL since 1.10, which also unbundled plugins (required_plugins + packer init). Proxmox builder: boot_iso block replaces iso_file, qemu_agent defaults to true, token usernames look like user@pve!tokenid.",
+      "gotchas": [
+        "Ubuntu needs subiquity autoinstall, not preseed",
+        "The build-host firewall must allow the HTTP port range",
+        "Install qemu-guest-agent in the image",
+        "Use ed25519 temporary keys",
+        "Clean machine-id before templating"
+      ],
+      "official_docs": "https://developer.hashicorp.com/packer/docs"
+    }
+  ],
+  "learning_signals": [
+    "Most-viewed Terraform Discuss topics are language and state basics (sensitive values, for_each conditionals, backend changes, locks), not advanced features. Practitioners learn state first, usually after an incident.",
+    "The most-reacted Terraform requests (variables in backend, providers in for_each, prevent_destroy with variables) show that people repeatedly hit the 'evaluated before variables' wall. OpenTofu's early evaluation and Terraform 1.15 const variables respond to it.",
+    "Ansible's most-commented issues are about SSH, become and hangs, not modules. Learners say -vvvv and reading the exact ssh command was the turning point.",
+    "Many Ansible users discovered version pinning only when ansible-core 2.17 (Python targets) and 2.19 (conditionals) broke existing roles. Pinning plus molecule in CI is the lesson.",
+    "Proxmox forum views are dominated by first-week issues (repos/401, web UI, hostname/IP, locked VMs, removing a node). Homelabbers say breaking and rebuilding a 3-node lab cluster taught them quorum.",
+    "Packer's top issue is Ubuntu's switch to autoinstall. People recommend watching the VM console during builds rather than guessing from 'Waiting for SSH'.",
+    "AWS learners repeatedly name VPC routing (IGW/NAT/route tables) and IAM evaluation as the two concepts that clicked last. Drawing the packet path and reading the 'because ...' clause of AccessDenied are the habits that fix most issues.",
+    "Cost surprises (NAT, idle IPv4, forgotten resources) are how many people learn to set Budgets and tags on day one. Destroying lab environments with terraform destroy is a learned habit.",
+    "Postmortems (AWS S3 2017) teach blast-radius thinking: --limit/serial in Ansible, plan review and prevent_destroy in Terraform. Seniors design those guardrails into tools rather than relying on care.",
+    "KodeKloud fit: Terraform Basics (state, remote state, import), Ansible Basics, AWS Networking Fundamentals and the free Terraform Challenges cover the base. Proxmox and Packer have no KodeKloud course, so use the Proxmox wiki/forum and the Packer docs plus a homelab."
+  ]
+}

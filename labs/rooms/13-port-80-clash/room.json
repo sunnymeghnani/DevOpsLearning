@@ -1,0 +1,75 @@
+{
+ "id": "l1-port-80-clash",
+ "title": "Two web servers, one port 80",
+ "level": "L1",
+ "map_node": "port-ownership",
+ "path": "junior",
+ "order": 13,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "Is there a conflict between Debian Bullseye and nginx? (nginx mailing list)",
+  "url": "https://mailman.nginx.org/pipermail/nginx/2022-December/BCJSCCQGRD6NPJQY43LG57WRFLBELEZ4.html",
+  "note": "adapted"
+ },
+ "brief": "**PAGE 07:40 · web-03 · shop.example.com down after the patch reboot**\n\n> \"Monitoring says the shop is down, but port 80 answers. With an old admin page?\"\n\nweb-03 runs two web servers. **nginx** is the public front for `shop.example.com` and sends `/legacy/` to the old admin app. **Apache** serves that admin app (`legacy.example.com`). The plan in ticket OPS-112 was: nginx owns port 80, and Apache moves behind it to `127.0.0.1:8080`. Only the nginx half of the change was made.\n\nAfter last night's reboot Apache started first and took port 80, and nginx failed. Find out who owns the port before you change anything, then finish OPS-112 so both servers run and both start at boot.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Who owns port 80?",
+   "text": "Ask the kernel, not the config: `sudo ss -ltnp` shows every listening TCP socket and the process holding it. Then read nginx's own error with `systemctl status nginx` or `journalctl -u nginx`.\n\nMove Apache to port 8080. Apache needs the new port in two places: the `Listen` line, and the `<VirtualHost>` of the legacy site. Test with `sudo apachectl configtest` before restarting. Done when Apache listens on 8080 only, serves the legacy page there and starts at boot.",
+   "points": 50,
+   "hints": [
+    "`sudo ss -ltnp | grep ':80 '` shows `users:((\"apache2\",...))`. `grep -Rn 'Listen\\|VirtualHost' /etc/apache2/ports.conf /etc/apache2/sites-enabled/` shows both places that say 80.",
+    "`sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf`, change `<VirtualHost *:80>` to `<VirtualHost *:8080>` in `/etc/apache2/sites-available/legacy.conf`, then `sudo apachectl configtest && sudo systemctl restart apache2`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which program held port 80 when nginx tried to start?",
+     "format": "program name as ss shows it",
+     "answer_sha256": "af70b78aff548460e6ffa65d3ae8403b35bc99e5c6218fa4cd50eadfc056890d"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which file holds Apache's Listen directives on Ubuntu?",
+     "format": "/path/to/file",
+     "answer_sha256": "bd3bd0de6935d646c64adc80aaba15e545be60c3ca4503ca98fab2bad9a0d0c6"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "configtest passes; Apache runs, starts at boot, listens on 8080 and not 80, and serves the legacy vhost",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Give port 80 back to nginx",
+   "text": "Port 80 is free now. Start nginx, make sure it starts at boot, and check who owns the port again with `ss`.\n\nThen test the whole path like a user would: the shop page on `/`, and `/legacy/`, which nginx proxies to Apache on 8080. Done when nginx alone owns port 80, the shop answers, and `/legacy/` shows the admin page through nginx.",
+   "points": 50,
+   "hints": [
+    "A failed unit starts again with a plain `sudo systemctl start nginx`. `sudo nginx -t` first, so you know the config itself is fine.",
+    "`sudo systemctl enable --now nginx`, then `sudo ss -ltnp 'sport = :80'` and `curl -s -H 'Host: shop.example.com' http://127.0.0.1/legacy/`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which error number did nginx's bind() fail with?",
+     "format": "number",
+     "answer_sha256": "29db0c6782dbd5000559ef4d9e953e300e2b479eed26d887ef3f92b921c06a67"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "nginx owns port 80, runs and starts at boot; the shop and /legacy/ (through Apache) answer",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\nTwo servers were configured for the same socket, `*:80`. Only one process can listen on an address and port. Whichever starts first wins, and the other fails: nginx with `bind() to 0.0.0.0:80 failed (98: Address already in use)`, Apache with `(98)Address already in use: AH00072: make_sock: could not bind to address [::]:80`. After a reboot the winner can change, so the outage looks random.\n\n### Task 1\n```bash\nsudo ss -ltnp | grep ':80 '                    # users:((\"apache2\",pid=...))\nsystemctl status nginx                          # failed\njournalctl -u nginx | grep bind                 # (98: Address already in use)\ngrep -Rn 'Listen\\|VirtualHost' /etc/apache2/ports.conf /etc/apache2/sites-enabled/\nsudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf\nsudo sed -i 's/<VirtualHost \\*:80>/<VirtualHost *:8080>/' /etc/apache2/sites-available/legacy.conf\nsudo apachectl configtest                       # Syntax OK (AH00558 about ServerName is only a warning)\nsudo systemctl restart apache2\ncurl -s -H 'Host: legacy.example.com' http://127.0.0.1:8080/\n```\n*Why both places:* `Listen` opens the socket; `<VirtualHost *:80>` only matches requests that arrived on port 80. With `Listen 8080` and the old vhost, Apache answers on 8080 with its default page, not the legacy site. Even safer: `Listen 127.0.0.1:8080`, so the backend can't be reached from outside, only through nginx.\n\n### Task 2\n```bash\nsudo nginx -t\nsudo systemctl enable --now nginx\nsudo ss -ltnp 'sport = :80'                     # only nginx\ncurl -s -H 'Host: shop.example.com' http://127.0.0.1/          # Shop front\ncurl -s -H 'Host: shop.example.com' http://127.0.0.1/legacy/   # Legacy admin, via nginx\n```\n*The habit:* port → PID → unit → config. `ss -ltnp` gives the PID, `systemctl status <PID>` the unit, and the unit's config shows why it wants that port. The same steps solve Apache versus Traefik or Dokploy on 80/443.\n\n**Source (adapted):** [Is there a conflict between Debian Bullseye and nginx?](https://mailman.nginx.org/pipermail/nginx/2022-December/BCJSCCQGRD6NPJQY43LG57WRFLBELEZ4.html): with Apache running, nginx failed with `98: Address already in use`, and the other way round. Francis Daly's reply on the list: both can't listen on port 80 on all addresses, so to run both, give each a different IP:port."
+}

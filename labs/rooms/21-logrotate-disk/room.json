@@ -1,0 +1,94 @@
+{
+ "id": "l2-logrotate-disk",
+ "title": "Logs keep eating the disk",
+ "level": "L2",
+ "map_node": "journald-logs",
+ "path": "mid",
+ "order": 21,
+ "minutes": 35,
+ "difficulty": "medium",
+ "source": {
+  "title": "Incorrect logrotate configuration leads to lack of free disk space on master node (Launchpad, Fuel #1378327)",
+  "url": "https://bugs.launchpad.net/fuel/5.0.x/+bug/1378327",
+  "note": "adapted"
+ },
+ "brief": "**#oncall 14:20 · api-03 · disk alert, /var at 91 %**\n\n> \"Third time this month. `/var/log/orders-api/app.log` is huge again and I just truncate it. We *have* a logrotate config for it (OPS-1187), so why does it never rotate? Also, the daily `logrotate.service` alerts were so noisy that somebody switched the timer off. And the journal: someone made it persistent while debugging and gave it 8G.\"\n\nTruncating by hand is not a fix. Find out why rotation never happens, prove a rotation works, put the schedule back, and give the journal a sane ceiling, all in a way that survives the next reboot. The app keeps writing while you work; don't stop it.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Why logrotate skips the app",
+   "text": "logrotate has been running (until the timer was switched off) and failing. Read its own words first: `systemctl status logrotate.service` and `journalctl -u logrotate`. Then ask logrotate what it *would* do, without touching any file, for the app's config and for the whole configuration.\n\nOne error in a file is enough for logrotate to skip that file's whole block, so the app's log has never been rotated. Fix the config, keeping its intent: daily, seven old logs, compressed, rotate early when it grows past 20 MB.\n\nDone when logrotate reads every config without an error and loads the orders-api block.",
+   "points": 35,
+   "hints": [
+    "`journalctl -u logrotate --no-pager | tail` shows `found error in file orders-api, skipping` just before systemd's own failure lines. `sudo logrotate -d /etc/logrotate.d/orders-api` names the line.",
+    "`bad size '20 '`: logrotate reads `20` and then a stray word. Sizes are written without a space (`maxsize 20M`). Edit `/etc/logrotate.d/orders-api`, then `sudo logrotate -d /etc/logrotate.conf 2>&1 | grep -E '^error|orders'`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which logrotate option prints what it would do without rotating anything?",
+     "format": "-x",
+     "answer_sha256": "50e09407a18bedd64baf0b99825a8178d7446731615b85452ea6b99573469dcc"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "`logrotate -d` reads every config without errors; the orders-api block is loaded with a size limit",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Rotate now, and every day",
+   "text": "A clean dry run is not proof. Force one rotation of the app's config only, then look at the directory: the old data should sit in a numbered file and the app should go on writing into a fresh `app.log` (watch it grow for a few seconds).\n\nThen put the schedule back. On Ubuntu with systemd, the daily cron script for logrotate exits at once and a timer runs the job instead. Enable the timer so it survives a reboot, see when it fires next, and run the scheduled job once so it is no longer in the failed state.\n\nDone when app.log has been rotated, the app writes on, the timer is enabled and active, and the job succeeds.",
+   "points": 35,
+   "hints": [
+    "`sudo logrotate -f /etc/logrotate.d/orders-api` (`-v` shows every step), then `ls -l /var/log/orders-api/`. `cat /etc/cron.daily/logrotate` shows why cron does nothing here.",
+    "`sudo systemctl enable --now logrotate.timer`, `systemctl list-timers logrotate.timer`, then `sudo systemctl start logrotate.service && systemctl status logrotate.service --no-pager`."
+   ],
+   "questions": [
+    {
+     "id": "q2",
+     "prompt": "Which command lists systemd timers with their next run?",
+     "format": "command and subcommand",
+     "answer_sha256": "0842efa1edbaaf4b71e75e87743c43f95688d5ae639dae419724c48e499d3d8e"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "app.log rotated into app.log.1[.gz]; the app writes on; logrotate.timer enabled and active; logrotate.service not failed",
+     "script": "checks/t2.sh"
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "title": "A ceiling for the journal",
+   "text": "The journal is the other log store on this box. `systemd-analyze cat-config systemd/journald.conf` prints the main file and every drop-in in the order journald reads them; for the same key, the last one wins. The debugging drop-in keeps the journal persistent (keep that) but lets it grow to 8G.\n\nAdd your own drop-in that caps the persistent journal at a few hundred MB, so it sorts after the debugging one, and make the running journald use it. Its startup message says which limit it applied.\n\nDone when the effective `SystemMaxUse=` is 500M or less and the running journald reports that limit.",
+   "points": 30,
+   "hints": [
+    "`ls /etc/systemd/journald.conf.d/`: files are read in name order, so `60-limits.conf` comes after `50-orders-debug.conf`. Check the result with `journalctl -u systemd-journald -n 3 --no-pager`.",
+    "`printf '[Journal]\\nSystemMaxUse=200M\\n' | sudo tee /etc/systemd/journald.conf.d/60-limits.conf`, `sudo systemctl restart systemd-journald`, then `journalctl --disk-usage`. Background: [41 §1.4](41-problems-linux-systems.md#14-the-journal-eats-var)."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which command shows how much disk space the journal uses?",
+     "format": "command with option",
+     "answer_sha256": "a41b2c22a6a1a2506fafe1e9df170328a28b9566512175cef42da51c0314b3a7"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "effective SystemMaxUse= is 500M or less, the journal stays persistent, and the running journald reports that limit",
+     "script": "checks/t3.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **A config error:** `maxsize 20 M` has a space, so logrotate read the size `20` and a stray `M`: `bad size '20 '`, then `found error in … skipping`. One bad line drops the whole block, and logrotate exits 1.\n2. **No schedule:** the failing run made `logrotate.service` fail every day, and someone disabled `logrotate.timer` to silence the alert. On systemd hosts `/etc/cron.daily/logrotate` exits at once (`if [ -d /run/systemd/system ]`), so nothing rotated at all.\n3. **The journal:** a debugging drop-in set `Storage=persistent` with `SystemMaxUse=8G`.\n\n### Task 1\n```bash\nsystemctl status logrotate.service --no-pager      # failed\njournalctl -u logrotate --no-pager | tail -5       # found error in file orders-api, skipping\nsudo logrotate -d /etc/logrotate.d/orders-api      # error: …:5 bad size '20 '\nsudo sed -i 's/maxsize 20 M/maxsize 20M/' /etc/logrotate.d/orders-api\nsudo logrotate -d /etc/logrotate.conf 2>&1 | grep -E '^error|orders-api'\n```\n\n### Task 2\n```bash\nsudo logrotate -vf /etc/logrotate.d/orders-api\nls -l /var/log/orders-api/            # app.log (new, small) + app.log.1 (30 MB, compressed on the next run: delaycompress)\nsudo systemctl enable --now logrotate.timer\nsystemctl list-timers logrotate.timer\nsudo systemctl start logrotate.service && systemctl is-failed logrotate.service   # active/inactive, not failed\n```\n*Why:* `-d` proves the syntax, `-f` proves the rotation. This app opens the file for every line, so a rename is enough. An app that keeps the file open would go on writing into `app.log.1`: then use `copytruncate`, or a `postrotate` that tells the app to reopen its logs.\n\n### Task 3\n```bash\nsystemd-analyze cat-config systemd/journald.conf | grep -vE '^#|^$'\nprintf '[Journal]\\nSystemMaxUse=200M\\n' | sudo tee /etc/systemd/journald.conf.d/60-limits.conf\nsudo systemctl restart systemd-journald\njournalctl -u systemd-journald -n 2 --no-pager   # System Journal … max 200.0M\njournalctl --disk-usage\n```\n*Why:* drop-ins sort by name and the last value wins, so a fix in a lower-numbered file would be silently overridden. `journalctl --vacuum-size=` trims now; `SystemMaxUse=` keeps it trimmed.\n\n**Source (adapted):** [Fuel #1378327: incorrect logrotate configuration leads to lack of free disk space](https://bugs.launchpad.net/fuel/5.0.x/+bug/1378327): the hourly logrotate job pointed at a config that did not exist, so logs filled `/var/log`; a manual `logrotate -f` also reported a config error (`duplicate log entry`). The fix scheduled the right config, and the workaround was a forced `logrotate -fv` run after checking free space."
+}

@@ -1,0 +1,73 @@
+{
+  "id": "terraform-2024-provider-catch-22",
+  "title": "The fix that made the errors go away",
+  "level": "L3",
+  "track": "automation",
+  "topics": ["terraform", "terraform-opentofu"],
+  "minutes": 7,
+  "role": "You own the Terraform for an AWS estate in several regions. The root module calls one child module per region and hands each one an aliased provider.",
+  "source": {
+    "label": "HashiCorp Discuss: Terraform catch-22, default provider vs per-region providers (January 2024)",
+    "url": "https://discuss.hashicorp.com/t/terraform-catch-22-lack-of-default-provider-causes-error-default-provider-breaks-per-region-providers/62078",
+    "org": "HashiCorp Discuss",
+    "date": "2024-01-25",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You are bringing existing resources under Terraform, region by region. The root module defines only aliased providers such as `aws.eu_west_1`, with no default one, and every module call passes `providers = { aws = aws.<region> }`. `terraform plan` fails before it starts.",
+  "steps": [
+    {
+      "situation": "The plan refuses to run.",
+      "evidence": "$ terraform plan\n│ Error: Invalid provider configuration\n│ Provider \"registry.terraform.io/hashicorp/aws\" requires explicit configuration.\n│ Add a provider block to the root module and configure the provider's\n│ required arguments as described in the provider documentation.\n│ Error: Invalid AWS Region: ",
+      "evidence_cmd": "terraform plan",
+      "choices": [
+        {"text": "Find what still uses the default provider: run `terraform providers` and read each resource and module call", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "If Terraform wants a default `aws`, something in the configuration is still linked to it: a resource without `provider`, or a module call without a `providers` mapping."},
+        {"text": "Add a default `provider \"aws\"` block with any region so the error stops", "verdict": "risky", "effect": {"service": -5, "time": 10, "evidence": -10, "trust": 0}, "why": "The error goes away, and so does your signal. Whatever was unlinked now quietly talks to that one region."},
+        {"text": "Delete `.terraform/` and run `terraform init` again", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "This isn't a plugin cache problem. Init succeeds and the plan fails the same way."}
+      ]
+    },
+    {
+      "situation": "A colleague already added a default provider in us-east-1. The plan now runs without errors.",
+      "evidence": "$ terraform plan -out=tf.plan | grep -E 'will be|Plan:'\n  # module.eu_west_1.aws_s3_bucket.logs will be created\n  # module.ap_south_1.aws_instance.app will be created\nPlan: 37 to add, 0 to change, 0 to destroy.",
+      "evidence_cmd": "terraform plan -out=tf.plan",
+      "choices": [
+        {"text": "Stop: resources you just imported shouldn't be created, so check which region each module really uses", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 15, "trust": 5}, "why": "Imported resources should be no-ops. Creates mean the regional modules are looking in the default region and can't see their own resources."},
+        {"text": "No errors, so apply", "verdict": "bad", "effect": {"service": -25, "time": -10, "evidence": -10, "trust": -10}, "why": "You'd build a duplicate copy of your estate in the default region."},
+        {"text": "Apply only one module with `-target` to see what happens", "verdict": "risky", "effect": {"service": -10, "time": -5, "evidence": 5, "trust": -5}, "why": "An experiment on production that still creates real resources in the wrong place."}
+      ]
+    },
+    {
+      "situation": "Someone suggests opening `terraform.tfstate` and writing the right region into each resource's provider string.",
+      "choices": [
+        {"text": "Leave state alone: put an explicit `provider = aws.<region>` on the resources in each regional module", "verdict": "best", "effect": {"service": 10, "time": 10, "evidence": 10, "trust": 0}, "why": "Configuration decides which provider manages a resource; state only remembers it for resources removed from the configuration. In the thread, explicit per-resource providers were what finally worked."},
+        {"text": "Hand-edit the provider strings in state", "verdict": "bad", "effect": {"service": -10, "time": -15, "evidence": -5, "trust": -5}, "why": "The author tried it. Terraform then complained that a removed provider configuration was still needed, and later \"Provider configuration not present\"."},
+        {"text": "`terraform state rm` everything and import it all again", "verdict": "risky", "effect": {"service": -5, "time": -20, "evidence": 0, "trust": 0}, "why": "Hours of work, and if the configuration is still wired to the default you import into the wrong region again."}
+      ]
+    },
+    {
+      "situation": "Providers are fixed. The new plan shows destroys you didn't expect.",
+      "choices": [
+        {"text": "Back up state, review each destroy, and keep fixing until the plan only does what you intend", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "A plan is a promise. Apply only a saved plan you've read, and keep `terraform state pull` output so you can undo a mistake."},
+        {"text": "Apply; the destroys are probably leftovers", "verdict": "bad", "effect": {"service": -25, "time": 5, "evidence": -10, "trust": -15}, "why": "\"Probably\" on a destroy plan is how production databases disappear."},
+        {"text": "Add `prevent_destroy` to the important resources first", "verdict": "good", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 5}, "why": "A sensible guard: apply fails instead of deleting. You still have to understand why Terraform wants to destroy them."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 25 January 2024 a user posted on HashiCorp Discuss (Terraform 1.7.1 and 1.6.0, AWS provider 5.31.0). The root module defined only per-region aliased AWS providers and called one child module per region with `providers = { aws = aws.<region> }`; the resources inside had no `provider` argument, and existing infrastructure was being imported with Terracognita. With no default provider, plan failed with \"Invalid provider configuration\" and \"Invalid AWS Region\". Adding a default made the errors vanish, but every regional module silently used the default's region. Editing `terraform.tfstate` produced an error that a removed provider configuration was still needed, and later attempts gave \"Provider configuration not present\". apparentlymart explained that configuration, not state, decides which provider a resource uses, so something in the configuration must still point at the default, and that `terraform providers` can show what. The author confirmed that an explicit per-region provider on every resource in every regional module fixed it, after which the plan showed destroys to sort out.",
+    "lessons": ["An error that disappears after a quick fix may have moved somewhere quieter.", "Configuration decides the provider; don't edit state by hand to change it.", "After an import, the plan should be a no-op; creates or destroys mean something is wired wrong.", "Apply only a saved plan you have read, with a state backup."],
+    "commands": ["terraform providers", "terraform plan -out=tf.plan", "terraform show tf.plan", "terraform state pull > state-backup.json", "terraform state list"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Providers and resources"},
+      {"file": "50-problems-cloud-iac-proxmox.md", "heading": "4.5 Must be replaced on production"},
+      {"file": "50-problems-cloud-iac-proxmox.md", "heading": "4.1 Plan shows changes nobody made"}
+    ],
+    "sites": [
+      {"label": "SadServers: Parma, debugging Terraform issues", "url": "https://sadservers.com/scenario/parma"},
+      {"label": "Killercoda Dev Bench: someone changed it outside Terraform", "url": "https://killercoda.com/barrymister/scenario/terraform-drift"},
+      {"label": "HashiCorp: use registry modules (interactive lab)", "url": "https://developer.hashicorp.com/terraform/tutorials/modules/module-use"}
+    ]
+  }
+}

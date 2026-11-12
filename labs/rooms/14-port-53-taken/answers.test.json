@@ -1,0 +1,6 @@
+{
+ "q1": "127.0.0.53:53",
+ "q2": "DNSStubListener",
+ "q3": "addn-hosts",
+ "q4": "dnsmasq --test"
+}

@@ -1,0 +1,14 @@
+{
+  "https://documentation.wazuh.com/current/user-manual/agent/agent-enrollment/troubleshooting.html": {
+    "checked_on": "2026-10-04",
+    "claim": "The current enrollment troubleshooting page distinguishes 1514/TCP agent communication, 1515/TCP enrollment via agent configuration, and 55000/TCP enrollment via the API. The required enrollment port depends on the method used."
+  },
+  "https://docs.docker.com/engine/network/packet-filtering-firewalls/": {
+    "checked_on": "2026-10-04",
+    "claim": "Docker documents that published container traffic is diverted before the INPUT and OUTPUT chains used by UFW, so UFW alone does not govern those published ports."
+  },
+  "https://doc.traefik.io/traefik/reference/routing-configuration/other-providers/swarm/": {
+    "checked_on": "2026-10-04",
+    "claim": "Traefik's Swarm provider reads labels on services. In a Compose definition for Swarm these routing labels belong under deploy.labels."
+  }
+}

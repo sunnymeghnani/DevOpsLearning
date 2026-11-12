@@ -1,0 +1,75 @@
+{
+ "id": "l2-pg-too-many-clients",
+ "title": "Postgres: too many clients, and nobody closes them",
+ "level": "L2",
+ "map_node": "db-incidents",
+ "path": "mid",
+ "order": 23,
+ "minutes": 35,
+ "difficulty": "medium",
+ "source": {
+  "title": "PostgreSQL not releasing old/inactive IDLE connections (pgsql-admin mailing list)",
+  "url": "https://www.postgresql.org/message-id/OS3PR01MB581659FF3F8020F174751B4BA76F9%40OS3PR01MB5816.jpnprd01.prod.outlook.com",
+  "note": "adapted"
+ },
+ "brief": "**PAGE 21:47 · db-02 · shop checkout failing**\n\n> \"The shop can't open database connections: `FATAL: remaining connection slots are reserved for roles with the SUPERUSER attribute` (PostgreSQL 15 and older say `remaining connection slots are reserved for non-replication superuser connections`; once even the reserved slots are gone, everyone gets `sorry, too many clients already`). Nothing was deployed today. Someone wants to raise `max_connections` to 500 and restart. The shop is live: please no restart unless there is no other way.\"\n\nThis PostgreSQL 16 is tiny on purpose: `max_connections = 20`. Find out who holds the connections before you change any limit, stop what leaks, clean up what is left behind, and make the server close idle sessions by itself next time. Use `sudo -u postgres psql`.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Who holds the connections?",
+   "text": "First notice that *you* can still connect as `postgres` while the shop can't: a few slots are kept for superusers, which is exactly what lets you investigate. Then ask the server who is connected: group `pg_stat_activity` by user, application and state.\n\nOne client holds almost everything and keeps asking for more. Find the program behind it (the application name and the OS user are good leads) and stop it so it stays stopped after a reboot. Its connections end with the process.\n\nDone when the leaking worker is stopped and disabled, holds no connections, and the shop role can connect again.",
+   "points": 50,
+   "hints": [
+    "`sudo -u postgres psql -c \"select usename, application_name, state, count(*) from pg_stat_activity where backend_type = 'client backend' group by 1,2,3 order by 4 desc\"`. `SHOW superuser_reserved_connections;` explains your own login.",
+    "`systemctl list-units --type=service | grep -i report`, `journalctl -u report-worker -n 5`, then `sudo systemctl disable --now report-worker.service`. Test with `sudo -u shop psql -d shop -c 'select 1'`. Background: [51 §2.2](51-problems-databases-storage-backup.md#22-too-many-clients-already)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which application_name held most of the connections?",
+     "format": "application name",
+     "answer_sha256": "650fdc194ada60a0a77c24dd1a9763b20f15b40d0d73789eeb344e5cb9ca9afb"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which setting keeps the last connection slots for superusers?",
+     "format": "parameter name",
+     "answer_sha256": "e5f36fc5cef36736c13eecea04e8a2f1786eb6c19f308e627c01baffeae51556"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "report-worker is stopped and disabled (or masked), holds no connections; the shop role can connect",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Clean up, then let the server do it",
+   "text": "Two sessions are left that no service owns: someone's ad-hoc `psql`, *idle in transaction* since the incident began. An open transaction holds a slot and its locks, and blocks vacuum. End them from the server side with a function, not by hunting processes.\n\nThen make PostgreSQL close such sessions by itself: one timeout for sessions idle inside a transaction, one for sessions idle outside one. Set them system-wide or for the `reports` role only (think about which is safer for pooled apps), and apply them with a reload.\n\nDone when no forgotten transaction is open and the reports role gets both timeouts (1 s to 1 h), without a restart.",
+   "points": 50,
+   "hints": [
+    "`select pid, usename, state, now() - state_change as idle_for from pg_stat_activity where state like 'idle in transaction%';` then `select pg_terminate_backend(pid) from pg_stat_activity where state like 'idle in transaction%' and pid <> pg_backend_pid();`",
+    "`alter system set idle_in_transaction_session_timeout = '5min';` and `alter role reports set idle_session_timeout = '15min';`, then `select pg_reload_conf();`. `select name, context from pg_settings where name in ('max_connections', 'idle_session_timeout');` shows which settings need a restart."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "In pg_settings, which `context` does max_connections have (why it needs a restart)?",
+     "format": "context name",
+     "answer_sha256": "63a8b6180e13691f924d77e0a617d4d54f3f5e59c5fb2ddf967b4a4540b28a1c"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the forgotten idle-in-transaction sessions are gone; reports gets both idle timeouts (1 s to 1 h); PostgreSQL was not restarted",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **A connection leak.** `report-worker` opened a new connection for every batch and never closed one. With `max_connections = 20` and `superuser_reserved_connections = 3`, it held 15 of the 17 ordinary slots (the two forgotten `psql` sessions held the rest) and retried every few seconds. PostgreSQL does not close idle sessions unless told to.\n2. **Forgotten transactions.** Two ad-hoc `psql` sessions sat *idle in transaction*: each holds a slot, its locks and the oldest snapshot (vacuum can't clean behind it).\n3. **No guard rails:** both idle timeouts were 0 (off).\n\n### Task 1\n```bash\nsudo -u postgres psql -c \"select usename, application_name, state, count(*) from pg_stat_activity where backend_type = 'client backend' group by 1,2,3 order by 4 desc\"\n# reports | report-worker | idle | 15\njournalctl -u report-worker -n 3     # batch N: FAILED FATAL: remaining connection slots are reserved ...\nsudo systemctl disable --now report-worker.service\nsudo -u shop psql -d shop -c 'select 1'\n```\n*Why:* the superuser got in through the reserved slots, which is what they are for. Raising `max_connections` would only have fed the leak, and it needs a restart (context `postmaster`: shared memory is sized at start).\n\n### Task 2\n```sql\nselect pid, usename, state, now() - state_change as idle_for\n  from pg_stat_activity where state like 'idle in transaction%';\nselect pg_terminate_backend(pid) from pg_stat_activity\n where state like 'idle in transaction%' and pid <> pg_backend_pid();\nalter system set idle_in_transaction_session_timeout = '5min';\nalter role reports set idle_session_timeout = '15min';\nselect pg_reload_conf();\n```\n*Why:* both timeouts have context `user`, so a reload (or a new session) applies them. A reload does not end sessions that are already idle in a transaction: the timer starts with their next statement, so terminate those by hand. A global `idle_session_timeout` can cut connections that a pool keeps open on purpose; per role (or per database) is the safer default. The lasting fix is in the client: close connections, or cap the pool, or put PgBouncer in front.\n\n**Source (adapted):** [PostgreSQL not releasing old/inactive IDLE connections](https://www.postgresql.org/message-id/OS3PR01MB581659FF3F8020F174751B4BA76F9%40OS3PR01MB5816.jpnprd01.prod.outlook.com) (pgsql-admin, 2021): an app kept idle connections for weeks until \"too many clients\". The replies: it is the client's job to close connections; terminate stale ones with `pg_terminate_backend` filtered on `state = 'idle'` and `state_change`; PostgreSQL 14 and later can do it with `idle_session_timeout`; or put PgBouncer in front. Handbook: 51 §2.2."
+}

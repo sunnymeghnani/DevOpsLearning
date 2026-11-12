@@ -1,0 +1,223 @@
+{
+  "domain": "daily",
+  "problems": [
+    {
+      "title": "Disk full on Docker/Dokploy hosts and CI runners",
+      "area": "Disk & resources",
+      "level": "L1",
+      "tool": "Docker / Dokploy / GitLab Runner / Linux",
+      "context": "The most common night page on container hosts. Builds, old images and unrotated container logs grow until the root filesystem fills, and then Docker, databases and runners all fail together.",
+      "error_text": "write /var/lib/docker/...: no space left on device | ERROR: Job failed (system failure): ... no space left on device",
+      "frequency_signal": "Long-running classic on Server Fault and Stack Overflow. Dan Luu's postmortem list has a filesystem filled by batch-job logs. GitLab documents weekly cache clearing for runners because of it.",
+      "root_causes": [
+        "The json-file log driver defaults to max-size -1 (unlimited), so container logs never rotate",
+        "Build cache, dangling images and old releases left behind by CI and Dokploy deploys",
+        "Runner caches and volumes never cleaned, and Harbor running without tag retention or garbage collection",
+        "journald or syslog growth, or backups written to the same disk",
+        "The only alert is a fixed 90% threshold with no trend, so it fires at 3 AM"
+      ],
+      "diagnosis": [
+        "df -hT && df -i",
+        "sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -15",
+        "docker system df -v",
+        "sudo du -xh --max-depth=1 /var/lib/docker | sort -h",
+        "sudo find /var/lib/docker/containers -name '*-json.log' -size +500M -exec ls -lh {} \\;",
+        "journalctl --disk-usage"
+      ],
+      "fix": [
+        "docker builder prune -af --filter until=168h",
+        "docker image prune -af --filter until=168h   # keep the images you need for rollback",
+        "Emergency only: sudo truncate -s 0 /var/lib/docker/containers/ID/ID-json.log",
+        "Set {\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"}} in /etc/docker/daemon.json, restart Docker, then recreate the containers. Existing containers keep their old log settings.",
+        "sudo journalctl --vacuum-size=500M, and set SystemMaxUse=500M in /etc/systemd/journald.conf",
+        "Runners: run /usr/share/gitlab-runner/clear-docker-cache weekly from cron. Harbor: add a tag retention policy and scheduled garbage collection."
+      ],
+      "prevention": "Alert on the trend, for example predict_linear(node_filesystem_avail_bytes{mountpoint=\"/\"}[6h], 24*3600) < 0, as well as on 80% and 90%. Put /var/lib/docker on its own volume and bake log rotation into the Ansible baseline.",
+      "sources": [
+        {"title": "Docker docs: JSON File logging driver (max-size defaults to unlimited)", "url": "https://docs.docker.com/engine/logging/drivers/json-file/", "type": "docs", "verified": true},
+        {"title": "GitLab Runner docs: Docker executor, clearing the Docker cache", "url": "https://docs.gitlab.com/runner/executors/docker/", "type": "docs", "verified": true},
+        {"title": "Server Fault search: no space left on device docker overlay2", "url": "https://serverfault.com/search?q=no+space+left+on+device+docker+overlay2", "type": "search", "verified": false},
+        {"title": "r/docker search: disk full overlay2", "url": "https://www.reddit.com/r/docker/search/?q=disk+full+overlay2&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Disk numbers don't add up: deleted-but-open files, inodes, reserved blocks",
+      "area": "Disk & resources",
+      "level": "L1",
+      "tool": "Linux",
+      "context": "Two classic puzzles. In the first, inodes run out because of millions of small files. In the second, a deleted file still holds its space because a process keeps it open.",
+      "error_text": "No space left on device while df -h shows free space | df shows 100% but du adds up to far less",
+      "frequency_signal": "Perennial Server Fault and Stack Overflow questions (\"df vs du\", \"no space left but df shows space\").",
+      "root_causes": [
+        "Inodes exhausted by session files, mail queues, cache directories or many small image layers",
+        "A log deleted with rm while the process keeps writing to the open file handle",
+        "logrotate configured without a reload or copytruncate",
+        "ext4 reserves 5% of blocks for root, and files can be hidden under a mount point"
+      ],
+      "diagnosis": [
+        "df -i",
+        "sudo du --inodes -xd2 / 2>/dev/null | sort -n | tail",
+        "sudo lsof -nP +L1",
+        "ls -l /proc/PID/fd | grep deleted",
+        "sudo tune2fs -l /dev/sdXN | grep -i 'reserved block count'"
+      ],
+      "fix": [
+        "Reload or restart the process that holds the deleted file: sudo systemctl reload UNIT, or restart it",
+        "If it can't be restarted: sudo truncate -s 0 /proc/PID/fd/FD",
+        "Archive or delete the pile of small files, and fix the application that creates them",
+        "Fix logrotate with a postrotate reload or copytruncate"
+      ],
+      "prevention": "Alert on node_filesystem_files_free as well as on bytes. Never rm a live log: truncate it or let logrotate handle it.",
+      "sources": [
+        {"title": "Server Fault search: df du difference deleted files lsof", "url": "https://serverfault.com/search?q=df+du+difference+deleted+files+lsof", "type": "search", "verified": false},
+        {"title": "Stack Overflow search: no space left on device inodes", "url": "https://stackoverflow.com/search?q=no+space+left+on+device+inodes", "type": "search", "verified": false},
+        {"title": "r/linuxadmin search: inodes full", "url": "https://www.reddit.com/r/linuxadmin/search/?q=inodes+full&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "\"The server is slow\" and no method to find out why",
+      "area": "Performance triage",
+      "level": "L1-L2",
+      "tool": "Linux",
+      "context": "This is the vaguest ticket and the most common one. Juniors restart things. Seniors check utilization, saturation and errors for every resource before they touch anything.",
+      "error_text": "load average: 24.10, 22.85, 20.02 with a mostly idle CPU | users say \"the site is slow\"",
+      "frequency_signal": "Brendan Gregg says the USE method solves about 80% of server issues with 5% of the effort. Slowness is a constant Server Fault topic.",
+      "root_causes": [
+        "Disk I/O saturation. Tasks in D state count toward the load average.",
+        "Memory pressure and swapping",
+        "One runaway process, or a noisy neighbour VM that shows up as CPU steal",
+        "Network saturation, or DNS timeouts that look like slowness",
+        "A slow dependency, such as the database, rather than the host"
+      ],
+      "diagnosis": [
+        "uptime; dmesg -T | tail",
+        "vmstat 1 5   # r, b, si/so, wa, st",
+        "mpstat -P ALL 1 3; pidstat 1 3",
+        "iostat -xz 1 3   # %util and await per device",
+        "free -m; sar -n DEV 1 3; sar -n TCP,ETCP 1 3",
+        "ps -eo state,pid,cmd | awk '$1 ~ /D/'"
+      ],
+      "fix": [
+        "Name the saturated resource first, then act: limit or reschedule the culprit with nice or ionice, and move backups off-peak",
+        "Set container CPU and memory limits so one app can't starve the host",
+        "Fix the slow query or endpoint. Add capacity only after you know the bottleneck."
+      ],
+      "prevention": "Build node_exporter dashboards per USE resource, and practise with stress-ng so you know what normal looks like.",
+      "sources": [
+        {"title": "Brendan Gregg: The USE Method", "url": "https://www.brendangregg.com/usemethod.html", "type": "blog", "verified": true},
+        {"title": "Server Fault search: high load average low cpu iowait", "url": "https://serverfault.com/search?q=high+load+average+low+cpu+iowait", "type": "search", "verified": false},
+        {"title": "r/linuxadmin search: server slow troubleshooting", "url": "https://www.reddit.com/r/linuxadmin/search/?q=server+slow+troubleshooting&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "A process was killed without a log line (OOM killer, exit code 137)",
+      "area": "Disk & resources",
+      "level": "L1",
+      "tool": "Linux / Docker / Kubernetes",
+      "context": "The app vanishes and its own log ends mid-line, because the kernel or a cgroup memory limit killed it.",
+      "error_text": "Out of memory: Killed process 1234 (java) | \"OOMKilled\": true | exit code 137",
+      "frequency_signal": "Classic on Stack Overflow and Server Fault. Node OOM and evictions are among the most common themes on k8s.af.",
+      "root_causes": [
+        "A memory leak or an unbounded cache",
+        "No limits are set, so the kernel kills the biggest process, which is often the database",
+        "The container limit is lower than the runtime's heap (JVM, Node)",
+        "Reading 'used' instead of 'available' in free, so real memory pressure goes unnoticed"
+      ],
+      "diagnosis": [
+        "journalctl -k -b | grep -iE 'out of memory|oom-kill|killed process'",
+        "docker inspect -f '{{.State.OOMKilled}} {{.State.ExitCode}}' CONTAINER",
+        "kubectl describe pod POD | grep -A5 'Last State'",
+        "free -h   # read the 'available' column",
+        "ps aux --sort=-rss | head"
+      ],
+      "fix": [
+        "Set limits and requests that match real usage, and size heaps to the limit (for example -XX:MaxRAMPercentage=75)",
+        "Fix the leak. Scheduled restarts are toil, not a fix.",
+        "For systemd services, set MemoryMax= in a drop-in"
+      ],
+      "prevention": "Alert when the working set passes 90% of the limit, and on restart counts (kube_pod_container_status_restarts_total).",
+      "sources": [
+        {"title": "Kubernetes Failure Stories (k8s.af)", "url": "https://k8s.af/", "type": "postmortem", "verified": true},
+        {"title": "Stack Overflow search: exit code 137 OOMKilled docker", "url": "https://stackoverflow.com/search?q=exit+code+137+OOMKilled+docker", "type": "search", "verified": false},
+        {"title": "Server Fault search: \"Out of memory: Killed process\"", "url": "https://serverfault.com/search?q=%22Out+of+memory%3A+Killed+process%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "It's always DNS: things stop resolving after a change",
+      "area": "Network & DNS",
+      "level": "L1-L2",
+      "tool": "Ubuntu systemd-resolved / Docker embedded DNS / CoreDNS",
+      "context": "Name resolution sits under everything, so a DNS change looks like an app, registry or CI outage. AWS's October 2025 us-east-1 outage started when automation left an empty DNS record for DynamoDB's regional endpoint.",
+      "error_text": "Temporary failure in name resolution | curl: (6) Could not resolve host | lookup harbor.example.com on 127.0.0.53:53: server misbehaving",
+      "frequency_signal": "DNS is one of the two biggest themes on k8s.af, with 8 of 57 stories. AWS's 2025 postmortem is a DNS race. \"It's always DNS\" is a running sysadmin joke.",
+      "root_causes": [
+        "netplan nameservers or search domains changed or lost",
+        "/etc/resolv.conf symlink replaced, or split DNS for an internal zone (Domains=~corp.example) not set in systemd-resolved",
+        "A firewall blocks port 53, including TCP, and containers fall back to 8.8.8.8",
+        "Negative answers and long TTLs stay cached after a record change",
+        "Automation wrote an empty or wrong record"
+      ],
+      "diagnosis": [
+        "resolvectl status; resolvectl query HOST",
+        "getent ahosts HOST   # what applications actually see",
+        "dig +short HOST @INTERNAL_DNS",
+        "ls -l /etc/resolv.conf",
+        "sudo tcpdump -ni any port 53",
+        "docker exec CONTAINER cat /etc/resolv.conf"
+      ],
+      "fix": [
+        "Fix the nameservers in netplan and apply with sudo netplan try",
+        "For containers, set \"dns\": [\"192.0.2.53\"] in /etc/docker/daemon.json and restart Docker",
+        "sudo resolvectl flush-caches after the record is fixed",
+        "Restore the record from zone history or DNS-as-code"
+      ],
+      "prevention": "Lower TTLs before planned moves, run two internal resolvers, and probe critical names with blackbox_exporter's DNS module.",
+      "sources": [
+        {"title": "AWS: Summary of the Amazon DynamoDB service disruption (us-east-1, October 2025)", "url": "https://aws.amazon.com/message/101925/", "type": "postmortem", "verified": true},
+        {"title": "Kubernetes Failure Stories (k8s.af)", "url": "https://k8s.af/", "type": "postmortem", "verified": true},
+        {"title": "Server Fault search: temporary failure in name resolution systemd-resolved", "url": "https://serverfault.com/search?q=temporary+failure+in+name+resolution+systemd-resolved", "type": "search", "verified": false},
+        {"title": "r/sysadmin search: \"always DNS\"", "url": "https://www.reddit.com/r/sysadmin/search/?q=%22always+DNS%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Clock drift breaks TLS, logins, apt and log timelines",
+      "area": "Certificates & time",
+      "level": "L1",
+      "tool": "Linux (systemd-timesyncd / chrony)",
+      "context": "On-prem networks often block outbound NTP without offering an internal time server, and restored or paused VMs drift. TLS, TOTP, Kerberos, apt and SIEM timelines then break in confusing ways.",
+      "error_text": "x509: certificate has expired or is not yet valid | Release file ... is not valid yet | Clock skew too great",
+      "frequency_signal": "Time has its own category in Dan Luu's postmortem collection, with leap-second panics and a leap-year certificate outage.",
+      "root_causes": [
+        "UDP 123 is blocked and there is no internal NTP server",
+        "The VM was restored from a snapshot or paused",
+        "Two time daemons are fighting (chrony and systemd-timesyncd)",
+        "The hardware clock is in local time on a dual-boot machine"
+      ],
+      "diagnosis": [
+        "timedatectl; timedatectl timesync-status",
+        "chronyc tracking; chronyc sources -v",
+        "journalctl -u systemd-timesyncd -n 50",
+        "for h in host1 host2; do ssh $h date -u; done"
+      ],
+      "fix": [
+        "Point timesyncd at internal servers: set NTP=ntp1.example.internal in /etc/systemd/timesyncd.conf, then sudo systemctl restart systemd-timesyncd",
+        "Or use chrony with server lines, and run sudo chronyc makestep once for a large offset",
+        "Allow UDP 123 to the internal NTP servers"
+      ],
+      "prevention": "Alert on node_timex_sync_status == 0 or abs(node_timex_offset_seconds) > 0.05.",
+      "sources": [
+        {"title": "Dan Luu: post-mortems collection (Time section)", "url": "https://github.com/danluu/post-mortems", "type": "postmortem", "verified": true},
+        {"title": "Server Fault search: timesyncd not synchronized", "url": "https://serverfault.com/search?q=timesyncd+not+synchronized", "type": "search", "verified": false},
+        {"title": "Stack Overflow search: \"certificate has expired or is not yet valid\" clock", "url": "https://stackoverflow.com/search?q=%22certificate+has+expired+or+is+not+yet+valid%22+clock", "type": "search", "verified": false}
+      ]
+    }
+/*MORE_PROBLEMS*/
+  ],
+  "tool_notes": [
+/*TOOLS*/
+  ],
+  "learning_signals": [
+/*LEARN*/
+  ],
+  "coverage_notes": "/*COVERAGE*/"
+}

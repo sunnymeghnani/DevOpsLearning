@@ -1,0 +1,6 @@
+{
+ "q1": "50-cloud-init.yaml",
+ "q2": "eth0",
+ "q3": "99-disable-network-config.cfg",
+ "q4": "120"
+}

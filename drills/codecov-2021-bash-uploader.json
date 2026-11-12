@@ -1,0 +1,71 @@
+{
+  "id": "codecov-2021-bash-uploader",
+  "title": "The CI script that mailed out your secrets",
+  "level": "L3",
+  "track": "security",
+  "topics": ["secrets", "container-hardening", "dockerfile", "gitlab-ci-harbor"],
+  "minutes": 7,
+  "role": "You run CI for a product team. Test jobs upload coverage with a vendor's Bash script, fetched with curl at the start of each job.",
+  "source": {
+    "label": "Codecov: Bash Uploader security update, April 2021",
+    "url": "https://about.codecov.io/security-update/",
+    "org": "Codecov",
+    "date": "2021-04-15",
+    "read_on": "2026-11-10"
+  },
+  "brief": "15 April 2021. Your coverage vendor emails: its Bash Uploader was altered by an attacker from 31 January, and anything in your CI environment may have been sent to an outside server. Coverage uploads kept working the whole time, so nobody noticed.",
+  "steps": [
+    {
+      "situation": "Where does this touch you, and what could it have read?",
+      "evidence": "$ grep -rn 'codecov.io/bash' --include='*.yml' .\nci/test.yml:14:  - curl -s https://codecov.io/bash | bash\n$ env | cut -d= -f1 | sort   # in a test job\nAWS_ACCESS_KEY_ID\nAWS_SECRET_ACCESS_KEY\nCODECOV_TOKEN\nDEPLOY_SSH_KEY\nREGISTRY_ROBOT_TOKEN",
+      "evidence_cmd": "grep -rn 'codecov.io/bash' --include='*.yml' .",
+      "choices": [
+        {"text": "List every pipeline that ran the script since 31 January and the variable names each job could see", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 5}, "why": "That is the vendor's own advice: run `env` in CI to see what was exposed. Names only, never values, in your notes."},
+        {"text": "Wait for the vendor to publish more details", "verdict": "risky", "effect": {"service": 0, "time": -15, "evidence": 0, "trust": -5}, "why": "The keys have been readable for ten weeks already. Every day of waiting is another day someone else can use them."},
+        {"text": "Delete the curl line and call it handled", "verdict": "bad", "effect": {"service": 0, "time": 5, "evidence": -15, "trust": -10}, "why": "It stops future leaks, but the secrets that already left are still valid."}
+      ]
+    },
+    {
+      "situation": "Cloud keys, a deploy key, a registry robot token and the coverage token were all in those jobs.",
+      "choices": [
+        {"text": "Rotate every secret those jobs could read, then check each one's usage logs since January", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 10, "trust": 15}, "why": "Anything in the environment may be in an attacker's hands. Rotation closes the door; the audit tells you whether someone already walked through."},
+        {"text": "Rotate only the coverage token named in the email", "verdict": "bad", "effect": {"service": 0, "time": 5, "evidence": -5, "trust": -15}, "why": "The script sent the whole environment. The coverage token is the least valuable thing in it."},
+        {"text": "Rotate everything at the next quarterly rotation", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -20}, "why": "Known-exposed credentials stay live for weeks."}
+      ]
+    },
+    {
+      "situation": "Codecov says the attacker got the key that let them change the script through an error in Codecov's Docker image creation process. Could your own images leak the same way?",
+      "choices": [
+        {"text": "Inspect your images' layers and move build-time secrets to build secrets and multi-stage builds", "verdict": "best", "effect": {"service": 0, "time": 0, "evidence": 15, "trust": 10}, "why": "A key copied in at build time lives in a layer even if a later step deletes it. `docker history --no-trunc` and a layer scanner show what's in there."},
+        {"text": "Our registry is private, so it's fine", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": -10}, "why": "Everyone who can pull, and every leaked pull credential, can read every layer."},
+        {"text": "Add `RUN rm` for key files at the end of each Dockerfile", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "The file is gone from the last layer only. The earlier layer still has it."}
+      ]
+    },
+    {
+      "situation": "How do you stop a tampered download from running in CI next time?",
+      "choices": [
+        {"text": "Verify a published checksum or pin a version or digest for anything you run with curl | bash", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 10, "trust": 10}, "why": "That is how this was found: a customer compared the script's SHA checksum with the published one and it didn't match."},
+        {"text": "HTTPS is enough: the download can't be changed", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": -5}, "why": "HTTPS protects the transport. Here the file was changed at the source."},
+        {"text": "Give CI jobs only the secrets each one needs", "verdict": "good", "effect": {"service": 0, "time": 0, "evidence": 5, "trust": 10}, "why": "It shrinks the blast radius of the next leak, but on its own doesn't stop tampered code from running."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "From 31 January 2021 an attacker made periodic changes to Codecov's Bash Uploader. The added line sent the output of `git remote -v` and `env` from customers' CI to an outside server, while uploads kept working. The attacker got the credential needed to change the script, a Google Cloud Storage key, through an error in Codecov's Docker image creation process. On 1 April a customer compared the downloaded script's SHA checksum with the one on GitHub, found a mismatch and reported it; Codecov fixed the script that day and notified users on 15 April. The GitHub Action, CircleCI Orb and Bitrise Step used the same uploader. Customers were told to run `env` in their pipelines to see what was exposed, regenerate those credentials and audit their use, and replace stored copies of the script. Codecov rotated its own credentials, audited where the key had been reachable and added monitoring for changes to the uploader.",
+    "lessons": ["Anything a CI job can read, a compromised step in that job can send away.", "Rotate every exposed secret, then audit its use since the start of exposure.", "Secrets copied into an image stay in its layers.", "Check checksums or pin versions for scripts you pipe into a shell."],
+    "commands": ["env | cut -d= -f1 | sort", "grep -rn 'curl.*| *bash' --include='*.yml' .", "docker history --no-trunc registry.example.com/shop/api:1.4", "sha256sum uploader.sh", "docker buildx build --secret id=npmrc,src=.npmrc ."]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Leaked secret response"},
+      {"file": "37-learn-security-devsecops.md", "heading": "Supply chain threats"},
+      {"file": "30-learn-docker.md", "heading": "Secrets done right"}
+    ],
+    "sites": [
+      {"label": "Kubernetes Goat: secrets hidden in image layers", "url": "https://madhuakula.com/kubernetes-goat/docs/scenarios/scenario-15/hidden-in-container-layers-in-kubernetes-cluster"},
+      {"label": "iximiuz: production image build, multi-stage and non-root", "url": "https://labs.iximiuz.com/challenges/container-image-production-build-40d49e95"},
+      {"label": "CI/CD Goat: attack a deliberately vulnerable pipeline", "url": "https://github.com/cider-security-research/cicd-goat"}
+    ]
+  }
+}

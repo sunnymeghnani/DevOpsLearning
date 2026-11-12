@@ -1,0 +1,75 @@
+{
+  "id": "github-2018-43-seconds",
+  "title": "Fast and wrong, or slow and right",
+  "level": "L4",
+  "track": "data",
+  "topics": ["db-ha", "incident-command", "availability-dr", "outage-basics"],
+  "minutes": 8,
+  "role": "You lead the incident response at a large code-hosting site whose MySQL clusters span an East Coast and a West Coast data center, with automated failover.",
+  "source": {
+    "label": "GitHub: October 21 post-incident analysis (2018)",
+    "url": "https://github.blog/news-insights/company-news/oct21-post-incident-analysis/",
+    "org": "GitHub",
+    "date": "2018-10-21",
+    "read_on": "2026-11-10"
+  },
+  "brief": "At 22:52 UTC routine maintenance on network equipment cuts the East Coast hub from the primary East Coast data center for 43 seconds. Alerts start at 22:54. Each choice below names its rung on the risk ladder.",
+  "steps": [
+    {
+      "situation": "23:02. The cluster topologies are in an unexpected state: the failover tool lists only West Coast servers as primaries. The East Coast holds some writes that never replicated to the West.",
+      "evidence": "$ orchestrator-client -c topology -i db-cluster-a.example.com\ndb-west-1.example.com:3306   [0s,ok,5.7,rw,ROW,>>,GTID]\n+ db-east-1.example.com:3306 [null,nonreplicating,5.7,ro,ROW,>>,GTID]",
+      "evidence_cmd": "orchestrator-client -c topology -i db-cluster-a.example.com",
+      "choices": [
+        {"text": "Lock deployments, set the status page, page database engineering", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 10, "trust": 15}, "why": "Rung 1 plus Protect and Report: freeze changes, then tell people. GitHub locked deploys at 23:07 and set status to yellow at 23:09; database engineering was paged soon after."},
+        {"text": "Fail back to the East Coast primaries right away", "verdict": "bad", "effect": {"service": -10, "time": 5, "evidence": -10, "trust": -10}, "why": "Rung 8 in disguise: the West Coast has been taking writes since the failover, and a fast failback throws them away."},
+        {"text": "Let the automation keep going and watch", "verdict": "risky", "effect": {"service": -5, "time": -5, "evidence": 5, "trust": -10}, "why": "The automation created the split; nobody is deciding yet."}
+      ]
+    },
+    {
+      "situation": "23:19. Each side now holds writes the other lacks, and background jobs keep writing.",
+      "choices": [
+        {"text": "Pause webhook delivery and Pages builds to protect the data already received", "verdict": "best", "effect": {"service": -5, "time": 10, "evidence": 10, "trust": 10}, "why": "Rung 2, shedding load: stop what makes it worse before deciding anything else. GitHub paused both at 23:19."},
+        {"text": "Restart the application tier to clear errors", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -10, "trust": 0}, "why": "Rung 3 on the wrong layer: the apps are fine, the data under them has diverged."},
+        {"text": "Keep everything running on the West Coast primaries", "verdict": "risky", "effect": {"service": 5, "time": -5, "evidence": 0, "trust": -5}, "why": "The site stays up, but every new write widens the gap you must reconcile."}
+      ]
+    },
+    {
+      "situation": "00:05. Recovery plan. A fast path exists: fail back and accept the loss of the newest writes. The safe path means restoring from backups and resynchronising.",
+      "choices": [
+        {"text": "Integrity first: restore from backups, sync replicas, return to the old topology, then resume queued jobs", "verdict": "best", "effect": {"service": 5, "time": -5, "evidence": 15, "trust": 15}, "why": "Rungs 7 and 8 chosen on purpose. GitHub chose to \"prioritize data integrity over site usability and time to recovery\"."},
+        {"text": "Fail back now and drop the newer writes", "verdict": "bad", "effect": {"service": 10, "time": 15, "evidence": -15, "trust": -20}, "why": "Fast, and users silently lose work they were told was saved."},
+        {"text": "Fail back now and re-enter the West Coast writes by hand", "verdict": "risky", "effect": {"service": 5, "time": -10, "evidence": -5, "trust": 0}, "why": "Rung 8 done by hand under pressure, for every affected cluster. Even after recovery, GitHub was still reading binary logs to decide which writes could be reconciled automatically."}
+      ]
+    },
+    {
+      "situation": "06:51. Several clusters are restored. Users ask when everything will be back.",
+      "choices": [
+        {"text": "Say what works and what does not, give the next update time, and no precise finish time", "verdict": "best", "effect": {"service": 0, "time": 0, "evidence": 5, "trust": 20}, "why": "No rung, this is Report. The two-hour estimate GitHub posted here proved far too optimistic: replicas caught up on a decay curve, not a straight line."},
+        {"text": "Post a confident estimate of two hours", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -20}, "why": "Full recovery took about 16 more hours. A missed estimate costs more trust than none."},
+        {"text": "Stay silent until it is over", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -15}, "why": "Silence reads as chaos."}
+      ]
+    },
+    {
+      "situation": "16:45. Replicas are in sync, but over five million webhook events and 80,000 Pages builds are queued, and some payloads have passed their expiry.",
+      "choices": [
+        {"text": "Pause processing, raise the expiry, then drain the backlog", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 10}, "why": "Rung 2 again: slow the flow to protect data. About 200,000 payloads had already expired and been dropped; GitHub paused, raised the TTL, and finished at 23:03."},
+        {"text": "Let it run as it is", "verdict": "bad", "effect": {"service": 0, "time": 5, "evidence": 0, "trust": -15}, "why": "More events expire and are lost while it drains."},
+        {"text": "Purge the backlog to go green sooner", "verdict": "risky", "effect": {"service": 5, "time": 10, "evidence": -10, "trust": -20}, "why": "Green status, lost deliveries: speed over data again."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 21 October 2018 at 22:52 UTC, maintenance on failing optical equipment broke the link between GitHub's East Coast hub and its primary East Coast data center for 43 seconds. Orchestrator failed MySQL primaries over to the West Coast, the app tier wrote there, and the East Coast held writes that had not replicated, so a safe failback was impossible. At 23:19 webhooks and Pages builds were paused, and GitHub put data integrity ahead of usability and recovery time. It restored from backups (taken every four hours, multiple terabytes, stored off-site) and resynchronised; a posted two-hour estimate proved far too optimistic. After failback a backlog of over five million hook events was drained, about 200,000 expired payloads were dropped, and the TTL was raised. Service was degraded for 24 hours and 11 minutes. Follow-ups: no cross-region promotion in Orchestrator, a per-component status page, and investment in fault injection and chaos engineering.",
+    "lessons": ["A long, announced degradation can be the safe choice when data is at stake.", "Automatic failover of state needs fences: limit where it may promote.", "Stop the writers that widen a split before choosing a recovery path.", "Never post an estimate the evidence cannot support."],
+    "commands": ["orchestrator-client -c topology -i CLUSTER", "mysql -e 'SHOW REPLICA STATUS\\G'"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "57-method-protect-risk-ladder.md", "heading": "4. The risk ladder"},
+      {"file": "38-learn-databases-ops.md", "heading": "Failover, fencing and Patroni"},
+      {"file": "39-learn-senior-architecture.md", "heading": "Incident command"}
+    ],
+    "sites": []
+  }
+}

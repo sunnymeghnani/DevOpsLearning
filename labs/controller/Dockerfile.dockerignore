@@ -1,0 +1,12 @@
+# Build context of the controller image is labs/. Only the controller and the rooms' public files
+# go in; every room's test-only files (solve.sh, answers.test.json) stay out.
+**/solve.sh
+**/answers.test.json
+**/__pycache__
+**/*.pyc
+**/.*
+base
+SPEC.md
+*.py
+clean.sh
+controller/Dockerfile*

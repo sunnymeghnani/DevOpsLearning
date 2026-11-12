@@ -1,0 +1,73 @@
+{
+  "id": "wikimedia-2024-calico-networkpolicies",
+  "title": "Two thousand NetworkPolicies and a network that gave up",
+  "level": "L4",
+  "track": "kubernetes",
+  "topics": ["k8s-networking", "helm-kustomize", "platform-engineering", "k8s-incidents"],
+  "minutes": 8,
+  "role": "You are an SRE for a large wiki platform. Its application servers run on Kubernetes with Calico, and engineers have just started running maintenance scripts as Kubernetes jobs through a new self-service tool.",
+  "source": {
+    "label": "Wikimedia Wikitech: Incidents/2024-10-09 calico-codfw",
+    "url": "https://wikitech.wikimedia.org/wiki/Incidents/2024-10-09_calico-codfw",
+    "org": "Wikimedia Foundation",
+    "date": "2024-10-09",
+    "read_on": "2026-11-10"
+  },
+  "brief": "05:01 UTC. Logged-in users, edits and API calls are slow or failing in the primary datacenter, while cached page views look fine. GatewayBackendErrorsHigh fires, then KubernetesCalicoDown on 16 instances.",
+  "steps": [
+    {
+      "situation": "The cluster network itself is failing.",
+      "evidence": "$ kubectl -n kube-system get pods | grep -E 'calico-kube|typha' | head -2\ncalico-kube-controllers-5c7d9-xk2  0/1  CrashLoopBackOff  12\ncalico-typha-7f8c4-q9w             1/1  Running           3\n$ kubectl -n kube-system get pods -l k8s-app=calico-node | grep -c ' 0/1 '\n61",
+      "evidence_cmd": "kubectl -n kube-system get pods",
+      "choices": [
+        {"text": "Find what changed: count NetworkPolicies and jobs per namespace", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "Calico's work grows with the number of policies and endpoints it must program. A sudden jump in objects is a prime suspect."},
+        {"text": "Restart every calico-node pod at once", "verdict": "bad", "effect": {"service": -15, "time": -5, "evidence": -10, "trust": -5}, "why": "Every node loses its network programming at the same moment, and the pods come back to the same load."},
+        {"text": "Drain the worst nodes", "verdict": "risky", "effect": {"service": -10, "time": -5, "evidence": 0, "trust": 0}, "why": "Their pods move onto nodes whose Calico is just as overloaded."}
+      ]
+    },
+    {
+      "situation": "One namespace stands out.",
+      "evidence": "$ kubectl get networkpolicy -A --no-headers | wc -l\n1968\n$ kubectl -n mw-script get jobs --no-headers | wc -l\n1791\n$ helm -n mw-script list --short | wc -l\n1790",
+      "evidence_cmd": "kubectl get networkpolicy -A --no-headers | wc -l",
+      "choices": [
+        {"text": "Ask the operator to pause new script runs, and raise Calico's limits through the normal helmfile deploy", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 5, "trust": 10}, "why": "Each run of the tool deploys a whole Helm release with its own policies. Stopping new runs stops the growth; more resources let Calico catch up."},
+        {"text": "Only raise Calico's limits through helmfile", "verdict": "good", "effect": {"service": 15, "time": 10, "evidence": 0, "trust": 0}, "why": "That's what responders did, and Calico recovered. But the source keeps growing while you wait."},
+        {"text": "`kubectl delete networkpolicy --all -n mw-script`", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": -15}, "why": "You remove the jobs' network protection, fight Helm, which owns those objects, and leave the scripts half done."}
+      ]
+    },
+    {
+      "situation": "06:05. Someone proposes moving traffic to the secondary datacenter. Calico pods are coming back, and it's unclear whether a switchover is safe for the databases.",
+      "choices": [
+        {"text": "Prepare the read-only services to move, ask the database team, and keep watching recovery", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 5, "trust": 10}, "why": "You keep the option ready without taking a risk you can't size. By 06:07, 212 calico-node pods were ready."},
+        {"text": "Switch everything over now", "verdict": "risky", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": -5}, "why": "A big move with open questions about replication, just as the primary recovers."},
+        {"text": "Do nothing and post nothing", "verdict": "bad", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": -15}, "why": "Users and other teams need to know what's happening and what you're weighing."}
+      ]
+    },
+    {
+      "situation": "The post-incident review: what should change?",
+      "choices": [
+        {"text": "One shared NetworkPolicy for script jobs, concurrency limits in the tool, and alerts on object counts", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "Self-service needs guardrails: the tool shouldn't be able to create thousands of objects, and you want to see the growth hours before Calico falls over."},
+        {"text": "Keep the higher Calico limits and move on", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": -5, "trust": 0}, "why": "It raises the ceiling. The next bigger batch hits it again."},
+        {"text": "Take the tool away from the operator who ran it", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "They used a supported tool as designed. The design is what failed."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 9 October 2024, from about 05:01 to 06:10 UTC, uncached traffic in Wikimedia's primary datacenter (codfw) saw high latency and errors. An operator was running a transcode maintenance script in batches through the new mwscript-k8s tool, and every invocation deployed a Helm release with its own jobs and NetworkPolicies. Nearly 2,000 Calico NetworkPolicies piled up, the namespace held 1,791 jobs by about 06:30, and etcd ConfigMaps roughly doubled, from about 6k to 12k. Calico controllers, Typha and calico-node hit their resource limits, were throttled and failed, taking nodes out of rotation. GatewayBackendErrorsHigh and KubernetesCalicoDown alerted the on-call. Around 06:00 a responder deployed higher Calico limits through helmfile, and by 06:07 212 calico-node pods were ready; the report says it's unclear whether the limits or the redeploy fixed it. Moving traffic to the other datacenter was discussed, but whether that was safe was unclear. Follow-up T376795 covers mwscript-k8s creating too many resources, with ideas such as one shared NetworkPolicy for scripts and concurrency limits.",
+    "lessons": ["Count objects: the control plane and CNI scale with them, not just with traffic.", "Stop the source of growth as well as adding capacity.", "Self-service tools need quotas and shared resources by design.", "Failover is an option to prepare, not a reflex."],
+    "commands": ["kubectl get networkpolicy -A --no-headers | wc -l", "kubectl get jobs -A --no-headers | awk '{print $1}' | sort | uniq -c", "kubectl -n kube-system get pods -l k8s-app=calico-node", "kubectl -n kube-system top pods", "helm -n mw-script list --short"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "31-learn-kubernetes.md", "heading": "NetworkPolicies"},
+      {"file": "31-learn-kubernetes.md", "heading": "Topology spread, quotas, LimitRange and priority"},
+      {"file": "31-learn-kubernetes.md", "heading": "Helm: charts, releases and values"}
+    ],
+    "sites": [
+      {"label": "iximiuz: restrict pod traffic with NetworkPolicy", "url": "https://labs.iximiuz.com/challenges/restrict-pod-traffic-using-networkpol-1a2781a8"},
+      {"label": "Network Policy Editor (Isovalent)", "url": "https://editor.networkpolicy.io/"},
+      {"label": "Helm Playground", "url": "https://helm-playground.com/"}
+    ]
+  }
+}

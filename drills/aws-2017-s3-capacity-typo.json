@@ -1,0 +1,71 @@
+{
+  "id": "aws-2017-s3-capacity-typo",
+  "title": "One wrong input in a trusted playbook",
+  "level": "L4",
+  "track": "cloud",
+  "topics": ["cloud-architecture", "change-management", "availability-dr", "incident-command"],
+  "minutes": 8,
+  "role": "You lead on-call for a large object-storage service in one cloud region. Half the region's other services store their data in it.",
+  "source": {
+    "label": "AWS: summary of the Amazon S3 service disruption in US-EAST-1, 28 February 2017",
+    "url": "https://aws.amazon.com/message/41926/",
+    "org": "Amazon Web Services",
+    "date": "2017-02-28",
+    "read_on": "2026-11-07"
+  },
+  "brief": "9:30 AM PST. The billing subsystem is slower than it should be, and the team is debugging it. An engineer, following an established playbook, is about to remove a few servers from a billing-related subsystem.",
+  "steps": [
+    {
+      "situation": "The playbook command takes a count or a selector of servers to remove. The tool accepts whatever it is given.",
+      "evidence": "$ capacity-remove --subsystem billing-frontend --count 2 --dry-run\nwould remove 2 hosts: bf-0141, bf-0142\nalso hosts roles: none\nremaining capacity: 98% (minimum 60%)",
+      "evidence_cmd": "capacity-remove --subsystem billing-frontend --count 2 --dry-run",
+      "choices": [
+        {"text": "Dry-run first, read what the tool would remove, then have a second person check the input", "verdict": "best", "effect": {"service": 15, "time": 0, "evidence": 15, "trust": 5}, "why": "A dry run shows the blast radius before it happens. At AWS one input was entered wrong and many more servers went than intended, including ones serving two other subsystems."},
+        {"text": "Run it: it's a playbook step done many times", "verdict": "risky", "effect": {"service": -10, "time": 5, "evidence": 0, "trust": 0}, "why": "Familiar steps are where typos hide. The playbook was trusted, but the tool had no guard on how much it could remove."},
+        {"text": "Skip the playbook and remove servers by hand to be careful", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": 0}, "why": "Hand steps add new risk and leave no record. Make the tool safe instead."}
+      ]
+    },
+    {
+      "situation": "9:37 AM. Too many servers are gone. They also ran the **index** subsystem (metadata for every object) and **placement** (where new objects go). GET, LIST, PUT and DELETE all fail. Both subsystems need a full restart, which nobody has done in years.",
+      "choices": [
+        {"text": "Restart index, then placement, with the integrity checks left on", "verdict": "best", "effect": {"service": 20, "time": -5, "evidence": 5, "trust": 5}, "why": "Placement depends on index, so the order matters. The checks are slow, but they protect every object's metadata. Serving bad data would be far worse than serving none."},
+        {"text": "Skip the metadata safety checks to come back faster", "verdict": "bad", "effect": {"service": -10, "time": 10, "evidence": -10, "trust": -20}, "why": "You'd trade hours for the chance of corrupting the index of the whole region."},
+        {"text": "Add the removed servers back one at a time and hope it heals", "verdict": "risky", "effect": {"service": 0, "time": -15, "evidence": 0, "trust": 0}, "why": "With too little capacity left, the subsystems had to restart fully. Hoping for a partial heal wastes the first hour."}
+      ]
+    },
+    {
+      "situation": "Customers need to know. But the status dashboard's admin console stores its data in... the service that is down.",
+      "evidence": "$ status-admin set --service s3 --region us-east-1 --state outage\nerror: PUT https://status-assets.example.com/state.json: 503 Service Unavailable",
+      "choices": [
+        {"text": "Switch to another channel at once (social feed, banner text) and say why the dashboard is stale", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 0, "trust": 25}, "why": "AWS couldn't update its dashboard until 11:37 AM and used its Twitter feed and banner text meanwhile. A status page that depends on what it reports on fails when you need it."},
+        {"text": "Wait until the dashboard can be updated", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -25}, "why": "Customers see a green page while their sites fail, and they stop trusting it."},
+        {"text": "Post only after the root cause is confirmed", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 5, "trust": -15}, "why": "People need to know it's you and that you're on it, not why, in the first minutes."}
+      ]
+    },
+    {
+      "situation": "Index is back at 1:18 PM and placement at 1:54 PM. Writing the follow-ups, what goes first?",
+      "choices": [
+        {"text": "Make the tool remove capacity slowly and refuse to go below minimums; audit other tools; split the index into cells", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "That was the AWS list. The fix is in the tool, which allowed too much capacity to go too fast, and in smaller cells that restart quickly."},
+        {"text": "Retrain the engineer and add a warning to the playbook", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -15}, "why": "The next tired person makes the next typo. Guard rails in the tool stop it for everyone."},
+        {"text": "Ban capacity changes during business hours", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "Night changes are no safer, just quieter. The tool still lets any one command take out a subsystem."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "At 9:37 AM PST on 28 February 2017 an authorised S3 engineer ran an established playbook command to remove a few servers from a billing-related subsystem. One input was wrong, and far more servers were removed, including ones that supported the index and placement subsystems. Both needed a full restart, which took longer than expected because S3 had grown and they hadn't been fully restarted in years. Index served requests again from 12:26 PM and was fully back at 1:18 PM; placement finished at 1:54 PM. The S3 console, new EC2 launches, EBS volumes restoring from snapshots and Lambda were hit. AWS couldn't update its Service Health Dashboard until 11:37 AM because the console depended on S3. AWS said the tool allowed \"too much capacity to be removed too quickly\". The tool now removes capacity slowly with minimums, other tools were audited, index cell work was moved forward, and the dashboard now runs across several regions.",
+    "lessons": ["Destructive tools need dry runs, rate limits and minimum-capacity guards.", "Fix the system, not the person who typed the input.", "Rehearse full restarts of core subsystems before you need one.", "Host your status page outside the platform it reports on."],
+    "commands": ["aws s3 ls", "aws health describe-events --region us-east-1", "aws ec2 terminate-instances --dry-run --instance-ids <id>"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "39-learn-senior-architecture.md", "heading": "Change management and CAB-lite [L2 · Mid]"},
+      {"file": "39-learn-senior-architecture.md", "heading": "Failure domains and blast radius [L2 · Mid]"},
+      {"file": "36-learn-cloud-aws.md", "heading": "Designing for failure and DR"}
+    ],
+    "sites": [
+      {"label": "AWS Skill Builder: free cloud labs (free account)", "url": "https://skillbuilder.aws/"},
+      {"label": "Wheel of Misfortune: replay an outage with a colleague", "url": "https://dastergon.github.io/wheel-of-misfortune/"}
+    ]
+  }
+}

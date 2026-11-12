@@ -1,0 +1,82 @@
+{
+  "id": "gitlab-2017-backup-restore",
+  "title": "The backups that were never tested",
+  "level": "L1",
+  "track": "data",
+  "topics": ["backups-restore", "db-basics", "db-ha", "outage-basics"],
+  "minutes": 7,
+  "role": "You are the on-call database engineer for a busy Git hosting site.",
+  "source": {
+    "label": "GitLab.com database incident, 31 January 2017 (post-mortem)",
+    "url": "https://about.gitlab.com/blog/postmortem-of-database-outage-of-january-31/",
+    "org": "GitLab",
+    "date": "2017-01-31",
+    "read_on": "2026-11-07"
+  },
+  "brief": "It's 23:00 UTC after a long evening of spam-driven load. The PostgreSQL secondary `db2` has fallen too far behind and replication is broken. Your repeated `pg_basebackup` runs hang. You decide to wipe the secondary's data directory and start the copy again.",
+  "steps": [
+    {
+      "situation": "Two terminals are open, one on each database host. You're tired. The command is ready.",
+      "evidence": "ops@db1:~$ sudo -u postgres psql -Atc 'select pg_is_in_recovery()'\nf\nops@db1:~$ sudo rm -rvf /var/opt/gitlab/postgresql/data",
+      "evidence_cmd": "psql -Atc 'select pg_is_in_recovery()'",
+      "choices": [
+        {"text": "Stop. Check hostname and role before any destructive command", "verdict": "best", "effect": {"service": 20, "time": 0, "evidence": 10, "trust": 10}, "why": "`f` means this host is not in recovery: it is the **primary**. Make the check a habit (prompt colour, `hostname`, the recovery flag) and hand over if you're too tired."},
+        {"text": "Run it: you're sure this is the secondary", "verdict": "bad", "effect": {"service": -30, "time": -20, "evidence": 0, "trust": -10}, "why": "This is what happened: the wipe ran on the primary and was stopped after about 300 GB were gone."},
+        {"text": "Run it, but with -i so rm asks for each file", "verdict": "risky", "effect": {"service": -10, "time": -10, "evidence": 0, "trust": 0}, "why": "After the 400th prompt you'll press y without reading. A guard has to check the target, not slow you down."}
+      ]
+    },
+    {
+      "situation": "Assume the wipe hit the primary. The site is down. Everyone asks one thing: when is it back?",
+      "evidence": "$ aws s3 ls s3://example-db-backups/daily/\n$\n$ tail -2 /var/log/gitlab/pg-backup.log\npg_dump: server version: 9.6.1; pg_dump version: 9.2.18\npg_dump: aborting because of server version mismatch",
+      "evidence_cmd": "aws s3 ls s3://example-db-backups/daily/",
+      "choices": [
+        {"text": "List every copy that exists and test what each can restore before promising a time", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 20, "trust": 5}, "why": "The bucket is empty: the dump job used 9.2 tools against a 9.6 server and failed every night. You need to know which copies are real before you choose."},
+        {"text": "Promise users an hour: restore from the nightly dump", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -10, "trust": -20}, "why": "There is no nightly dump. A promise made before you look turns into a second, public failure."},
+        {"text": "Rebuild the primary from the replica", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": 0}, "why": "The replica was wiped during the rebuild. Check before you plan around it."}
+      ]
+    },
+    {
+      "situation": "Recovery will take many hours. Users, customers and the press are watching.",
+      "choices": [
+        {"text": "Post honest, regular updates in public, including what you don't know yet", "verdict": "best", "effect": {"service": 0, "time": 0, "evidence": 5, "trust": 25}, "why": "GitLab kept a public notes document and even live-streamed the recovery. People forgave the outage because they could see the work."},
+        {"text": "Say nothing until it's fixed", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -25}, "why": "Silence fills with rumour, and support drowns in tickets asking the same question."},
+        {"text": "Explain that one engineer ran the wrong command", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "The command was the last step in a long chain: no WAL archiving, untested dumps, alerts nobody got. Blaming a person hides those."}
+      ]
+    },
+    {
+      "situation": "Copies found: an LVM snapshot about 24 hours old, and a manual one made about 6 hours before the wipe to refresh staging. Disk snapshots were never enabled for the database hosts.",
+      "choices": [
+        {"text": "Restore the 6-hour snapshot from staging and accept the slow copy", "verdict": "best", "effect": {"service": 20, "time": -5, "evidence": 5, "trust": 5}, "why": "It loses the least data. It took about 18 hours to copy, because the staging disks were slow, but it was the best copy there was."},
+        {"text": "Restore the 24-hour snapshot because it's on faster storage", "verdict": "risky", "effect": {"service": 15, "time": 5, "evidence": 0, "trust": -15}, "why": "Faster, but users lose a whole extra day of issues, comments and accounts to save some hours of copying."},
+        {"text": "Try file-recovery tools on the wiped disk first", "verdict": "bad", "effect": {"service": -5, "time": -20, "evidence": 0, "trust": 0}, "why": "Hours of scanning for a slim chance of a partial, inconsistent database. Restore from the known copy."}
+      ],
+      "evidence": "$ sudo lvs -o lv_name,origin,lv_time\n  LV            Origin  CTime\n  pgdata        -       2016-06-02 10:11\n  snap-daily    pgdata  2017-01-30 23:40\n  snap-staging  pgdata  2017-01-31 17:20",
+      "evidence_cmd": "sudo lvs -o lv_name,origin,lv_time"
+    },
+    {
+      "situation": "Service is back. What goes first on the follow-up list?",
+      "choices": [
+        {"text": "Name an owner for data durability and add automated restore tests with alerts that reach people", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "No one owned backup testing, and the failure emails were rejected because DMARC wasn't set up. A restore test that pages someone would have caught it months before."},
+        {"text": "Add a second nightly backup job", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "Two untested backups fail as quietly as one. The missing piece is proof that a restore works."},
+        {"text": "Take away production shell access from engineers", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": -10}, "why": "Recovery needed exactly that access. Remove sharp edges and add guard rails instead."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 31 January 2017 spam load and a background deletion job pushed GitLab.com's PostgreSQL secondary so far behind that replication broke. WAL archiving was off, so the secondary had to be rebuilt by hand. At about 23:30 UTC an engineer ran the wipe meant for the secondary on the primary; about 300 GB were removed before it was stopped. The `pg_dump` backups had been failing because they ran 9.2 tools against 9.6, and the failure emails were rejected for lack of DMARC. Azure disk snapshots weren't enabled for the database servers. The team restored a manual LVM snapshot taken about six hours earlier; copying it from staging took about 18 hours. Data from that window was lost (an estimated 5,000 projects, 5,000 comments and 700 accounts). The follow-ups included hourly snapshots, restore testing, backup monitoring, point-in-time recovery and an owner for data durability.",
+    "lessons": ["A backup you haven't restored is a hope, not a backup.", "Backup alerts must reach a person: test the alert path too.", "Before rm, check the host and its role, every time.", "Communicate early and blamelessly during long recoveries."],
+    "commands": ["psql -Atc 'select pg_is_in_recovery()'", "pg_dump --version", "pg_basebackup -h db1 -D /var/lib/postgresql/data -P", "aws s3 ls s3://example-db-backups/daily/", "lvs"]
+  },
+  "practise": {
+    "labs": ["00-start-here"],
+    "handbook": [
+      {"file": "51-problems-databases-storage-backup.md", "heading": "5.4 Backups stopped silently or are empty"},
+      {"file": "51-problems-databases-storage-backup.md", "heading": "9.3 No tested restore: RTO and RPO in the disaster"},
+      {"file": "38-learn-databases-ops.md", "heading": "Restore tests and backup alerts"}
+    ],
+    "sites": [
+      {"label": "Crunchy Data Postgres Playground (in the browser)", "url": "https://www.crunchydata.com/developers/tutorials"},
+      {"label": "Wheel of Misfortune: replay an outage with a colleague", "url": "https://dastergon.github.io/wheel-of-misfortune/"}
+    ]
+  }
+}

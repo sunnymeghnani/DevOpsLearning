@@ -1,0 +1,29 @@
+# --- machine-local and session files (never public)
+.claude/
+.codex/
+.agents/
+.env
+**/__pycache__/
+*.pyc
+
+# --- generated: index.html is kept (GitHub Pages serves it); the rest is rebuilt by build_site.py
+artifact.html
+*.html.gz
+
+# --- backups, staging and scratch
+*.before-*
+DOCKER.before-*.md
+research/*.before-*
+research/labs-qa6-backups/
+research/drills_staging-merged-*/
+drills_staging/
+k.html
+kc.html
+linkres.tsv
+
+# --- internal agent briefs (contain local paths)
+research/decoder-briefs/
+
+# --- the owner's own raw incident notes (the handbook carries anonymised versions)
+research/user-cases/
+research_notes/Free learning tools per DevOps topic/incident_no_ip_after_reset.md

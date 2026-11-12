@@ -1,0 +1,832 @@
+{
+  "schema_version": 1,
+  "created_on": "2026-10-04",
+  "scope": "Standalone interview practice; not registered in the website or progress map",
+  "scenario_count": 57,
+  "prompt_count": 114,
+  "modules": [
+    {
+      "module": "01",
+      "file": "01-storage-disk.md",
+      "handbook": "../01-storage-disk.md",
+      "title": "Free bytes, failed writes",
+      "question_ids": [
+        "M01-Q01",
+        "M01-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C13",
+        "C01"
+      ]
+    },
+    {
+      "module": "02",
+      "file": "02-network.md",
+      "handbook": "../02-network.md",
+      "title": "Ping works, application times out",
+      "question_ids": [
+        "M02-Q01",
+        "M02-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C04",
+        "C26"
+      ]
+    },
+    {
+      "module": "03",
+      "file": "03-cpu-performance.md",
+      "handbook": "../03-cpu-performance.md",
+      "title": "High load, mostly idle CPU",
+      "question_ids": [
+        "M03-Q01",
+        "M03-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C12"
+      ]
+    },
+    {
+      "module": "04",
+      "file": "04-memory.md",
+      "handbook": "../04-memory.md",
+      "title": "Exit 137 with free host RAM",
+      "question_ids": [
+        "M04-Q01",
+        "M04-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C12"
+      ]
+    },
+    {
+      "module": "05",
+      "file": "05-processes.md",
+      "handbook": "../05-processes.md",
+      "title": "A process comes back after being killed",
+      "question_ids": [
+        "M05-Q01",
+        "M05-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P02"
+      ]
+    },
+    {
+      "module": "06",
+      "file": "06-logs-journal.md",
+      "handbook": "../06-logs-journal.md",
+      "title": "Logs disagree about the incident time",
+      "question_ids": [
+        "M06-Q01",
+        "M06-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C24"
+      ]
+    },
+    {
+      "module": "07",
+      "file": "07-services-systemd.md",
+      "handbook": "../07-services-systemd.md",
+      "title": "Works in a terminal, fails as a service",
+      "question_ids": [
+        "M07-Q01",
+        "M07-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P02"
+      ]
+    },
+    {
+      "module": "08",
+      "file": "08-dns.md",
+      "handbook": "../08-dns.md",
+      "title": "DNS succeeds, the client still fails",
+      "question_ids": [
+        "M08-Q01",
+        "M08-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C02"
+      ]
+    },
+    {
+      "module": "09",
+      "file": "09-ssh-remote-access.md",
+      "handbook": "../09-ssh-remote-access.md",
+      "title": "SSH stopped after a configuration change",
+      "question_ids": [
+        "M09-Q01",
+        "M09-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C26"
+      ]
+    },
+    {
+      "module": "10",
+      "file": "10-users-permissions-security.md",
+      "handbook": "../10-users-permissions-security.md",
+      "title": "Add one permission without changing the rest",
+      "question_ids": [
+        "M10-Q01",
+        "M10-Q02"
+      ],
+      "provenance": "adapted-self-report",
+      "sources": [
+        "R02",
+        "P01"
+      ]
+    },
+    {
+      "module": "11",
+      "file": "11-packages.md",
+      "handbook": "../11-packages.md",
+      "title": "A package lock during emergency patching",
+      "question_ids": [
+        "M11-Q01",
+        "M11-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C10"
+      ]
+    },
+    {
+      "module": "12",
+      "file": "12-time-ntp.md",
+      "handbook": "../12-time-ntp.md",
+      "title": "Time drift looks like an authentication failure",
+      "question_ids": [
+        "M12-Q01",
+        "M12-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C09"
+      ]
+    },
+    {
+      "module": "13",
+      "file": "13-kernel-system.md",
+      "handbook": "../13-kernel-system.md",
+      "title": "Read-only filesystem after I/O errors",
+      "question_ids": [
+        "M13-Q01",
+        "M13-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C23"
+      ]
+    },
+    {
+      "module": "14",
+      "file": "14-docker-containers.md",
+      "handbook": "../14-docker-containers.md",
+      "title": "Published port, connection refused",
+      "question_ids": [
+        "M14-Q01",
+        "M14-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C04",
+        "C05"
+      ]
+    },
+    {
+      "module": "15",
+      "file": "15-kubernetes.md",
+      "handbook": "../15-kubernetes.md",
+      "title": "Running pods, empty Service backends",
+      "question_ids": [
+        "M15-Q01",
+        "M15-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C06"
+      ]
+    },
+    {
+      "module": "16",
+      "file": "16-aws-cloud.md",
+      "handbook": "../16-aws-cloud.md",
+      "title": "Open security group, unreachable EC2",
+      "question_ids": [
+        "M16-Q01",
+        "M16-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P04"
+      ]
+    },
+    {
+      "module": "17",
+      "file": "17-windows.md",
+      "handbook": "../17-windows.md",
+      "title": "Windows port 443 belongs to PID 4",
+      "question_ids": [
+        "M17-Q01",
+        "M17-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P05"
+      ]
+    },
+    {
+      "module": "18",
+      "file": "18-web-http-tls.md",
+      "handbook": "../18-web-http-tls.md",
+      "title": "Correct IP, wrong HTTPS site",
+      "question_ids": [
+        "M18-Q01",
+        "M18-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C02",
+        "C03"
+      ]
+    },
+    {
+      "module": "19",
+      "file": "19-cheatsheet.md",
+      "handbook": "../19-cheatsheet.md",
+      "title": "You get only three initial checks",
+      "question_ids": [
+        "M19-Q01",
+        "M19-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C12",
+        "C27"
+      ]
+    },
+    {
+      "module": "20",
+      "file": "20-macos.md",
+      "handbook": "../20-macos.md",
+      "title": "macOS resolves differently on VPN",
+      "question_ids": [
+        "M20-Q01",
+        "M20-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C02"
+      ]
+    },
+    {
+      "module": "21",
+      "file": "21-case-apache-443-dokploy.md",
+      "handbook": "../21-case-apache-443-dokploy.md",
+      "title": "Apache moved to 81/444: is deployment finished?",
+      "question_ids": [
+        "M21-Q01",
+        "M21-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C05"
+      ]
+    },
+    {
+      "module": "22",
+      "file": "22-playbook-ports-inventory.md",
+      "handbook": "../22-playbook-ports-inventory.md",
+      "title": "No obvious process owns an exposed port",
+      "question_ids": [
+        "M22-Q01",
+        "M22-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C04",
+        "C17"
+      ]
+    },
+    {
+      "module": "23",
+      "file": "23-playbook-slow-system.md",
+      "handbook": "../23-playbook-slow-system.md",
+      "title": "A slow system with no single hot process",
+      "question_ids": [
+        "M23-Q01",
+        "M23-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C11",
+        "C27"
+      ]
+    },
+    {
+      "module": "24",
+      "file": "24-playbook-network-speed.md",
+      "handbook": "../24-playbook-network-speed.md",
+      "title": "Fast speed test, slow application transfer",
+      "question_ids": [
+        "M24-Q01",
+        "M24-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C26"
+      ]
+    },
+    {
+      "module": "25",
+      "file": "25-playbook-site-down.md",
+      "handbook": "../25-playbook-site-down.md",
+      "title": "Which layer produced the 502?",
+      "question_ids": [
+        "M25-Q01",
+        "M25-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C17",
+        "C05"
+      ]
+    },
+    {
+      "module": "26",
+      "file": "26-playbook-containers-k8s.md",
+      "handbook": "../26-playbook-containers-k8s.md",
+      "title": "CrashLoopBackOff is a symptom",
+      "question_ids": [
+        "M26-Q01",
+        "M26-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P03",
+        "C14"
+      ]
+    },
+    {
+      "module": "27",
+      "file": "27-learn-linux.md",
+      "handbook": "../27-learn-linux.md",
+      "title": "A command works for root, not the service account",
+      "question_ids": [
+        "M27-Q01",
+        "M27-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P01",
+        "R02"
+      ]
+    },
+    {
+      "module": "28",
+      "file": "28-learn-networking.md",
+      "handbook": "../28-learn-networking.md",
+      "title": "Networking explanation without OSI memorization",
+      "question_ids": [
+        "M28-Q01",
+        "M28-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C02",
+        "C26"
+      ]
+    },
+    {
+      "module": "29",
+      "file": "29-learn-webservers-proxies.md",
+      "handbook": "../29-learn-webservers-proxies.md",
+      "title": "A proxy is healthy but users get errors",
+      "question_ids": [
+        "M29-Q01",
+        "M29-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C27",
+        "C03"
+      ]
+    },
+    {
+      "module": "30",
+      "file": "30-learn-docker.md",
+      "handbook": "../30-learn-docker.md",
+      "title": "The entrypoint file exists, but cannot run",
+      "question_ids": [
+        "M30-Q01",
+        "M30-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C14"
+      ]
+    },
+    {
+      "module": "31",
+      "file": "31-learn-kubernetes.md",
+      "handbook": "../31-learn-kubernetes.md",
+      "title": "A slow dependency causes a restart storm",
+      "question_ids": [
+        "M31-Q01",
+        "M31-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P03"
+      ]
+    },
+    {
+      "module": "32",
+      "file": "32-learn-performance-observability.md",
+      "handbook": "../32-learn-performance-observability.md",
+      "title": "The average looks good while users suffer",
+      "question_ids": [
+        "M32-Q01",
+        "M32-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C09",
+        "C21"
+      ]
+    },
+    {
+      "module": "33",
+      "file": "33-learn-cicd-iac-sre.md",
+      "handbook": "../33-learn-cicd-iac-sre.md",
+      "title": "Two green pipelines, one broken environment",
+      "question_ids": [
+        "M33-Q01",
+        "M33-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C10",
+        "C22"
+      ]
+    },
+    {
+      "module": "34",
+      "file": "34-roadmap.md",
+      "handbook": "../34-roadmap.md",
+      "title": "Choose a learning dependency, not another tool",
+      "question_ids": [
+        "M34-Q01",
+        "M34-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C12",
+        "G01"
+      ]
+    },
+    {
+      "module": "35",
+      "file": "35-deployment-patterns.md",
+      "handbook": "../35-deployment-patterns.md",
+      "title": "Pick a deployment pattern under constraints",
+      "question_ids": [
+        "M35-Q01",
+        "M35-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C05",
+        "C03"
+      ]
+    },
+    {
+      "module": "36",
+      "file": "36-learn-cloud-aws.md",
+      "handbook": "../36-learn-cloud-aws.md",
+      "title": "A private cloud workload needs dependencies",
+      "question_ids": [
+        "M36-Q01",
+        "M36-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P04"
+      ]
+    },
+    {
+      "module": "37",
+      "file": "37-learn-security-devsecops.md",
+      "handbook": "../37-learn-security-devsecops.md",
+      "title": "A secret appears in a successful CI log",
+      "question_ids": [
+        "M37-Q01",
+        "M37-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "P06"
+      ]
+    },
+    {
+      "module": "38",
+      "file": "38-learn-databases-ops.md",
+      "handbook": "../38-learn-databases-ops.md",
+      "title": "More app replicas make database availability worse",
+      "question_ids": [
+        "M38-Q01",
+        "M38-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C11"
+      ]
+    },
+    {
+      "module": "39",
+      "file": "39-learn-senior-architecture.md",
+      "handbook": "../39-learn-senior-architecture.md",
+      "title": "Design recovery before promising high availability",
+      "question_ids": [
+        "M39-Q01",
+        "M39-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C28"
+      ]
+    },
+    {
+      "module": "40",
+      "file": "40-career-ladder.md",
+      "handbook": "../40-career-ladder.md",
+      "title": "Describe experience honestly under interview pressure",
+      "question_ids": [
+        "M40-Q01",
+        "M40-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "R01",
+        "C12"
+      ]
+    },
+    {
+      "module": "41",
+      "file": "41-problems-linux-systems.md",
+      "handbook": "../41-problems-linux-systems.md",
+      "title": "Deleted logs did not free space",
+      "question_ids": [
+        "M41-Q01",
+        "M41-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C01"
+      ]
+    },
+    {
+      "module": "42",
+      "file": "42-problems-network-dns-tls-vpn.md",
+      "handbook": "../42-problems-network-dns-tls-vpn.md",
+      "title": "Route rollback is itself a coordinated change",
+      "question_ids": [
+        "M42-Q01",
+        "M42-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C26"
+      ]
+    },
+    {
+      "module": "43",
+      "file": "43-traefik-and-reverse-proxies.md",
+      "handbook": "../43-traefik-and-reverse-proxies.md",
+      "title": "Traefik routes disappear after a Docker upgrade",
+      "question_ids": [
+        "M43-Q01",
+        "M43-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C15"
+      ]
+    },
+    {
+      "module": "44",
+      "file": "44-problems-docker-swarm-registry.md",
+      "handbook": "../44-problems-docker-swarm-registry.md",
+      "title": "Runner cleanup targeted the wrong runtime",
+      "question_ids": [
+        "M44-Q01",
+        "M44-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C07"
+      ]
+    },
+    {
+      "module": "45",
+      "file": "45-dokploy-and-self-hosted-paas.md",
+      "handbook": "../45-dokploy-and-self-hosted-paas.md",
+      "title": "Dokploy says success, public route is gone",
+      "question_ids": [
+        "M45-Q01",
+        "M45-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C16"
+      ]
+    },
+    {
+      "module": "46",
+      "file": "46-problems-kubernetes.md",
+      "handbook": "../46-problems-kubernetes.md",
+      "title": "A historical Kubernetes answer meets a modern cluster",
+      "question_ids": [
+        "M46-Q01",
+        "M46-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C19"
+      ]
+    },
+    {
+      "module": "47",
+      "file": "47-cicd-gitlab-jenkins-actions-argocd.md",
+      "handbook": "../47-cicd-gitlab-jenkins-actions-argocd.md",
+      "title": "An unchanged pipeline breaks on a mutable image tag",
+      "question_ids": [
+        "M47-Q01",
+        "M47-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C22"
+      ]
+    },
+    {
+      "module": "48",
+      "file": "48-wazuh-and-security-tools.md",
+      "handbook": "../48-wazuh-and-security-tools.md",
+      "title": "Wazuh enrollment succeeds, events do not arrive",
+      "question_ids": [
+        "M48-Q01",
+        "M48-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C08",
+        "C18"
+      ]
+    },
+    {
+      "module": "49",
+      "file": "49-observability-stack-problems.md",
+      "handbook": "../49-observability-stack-problems.md",
+      "title": "Logging changes make the monitoring stack slow",
+      "question_ids": [
+        "M49-Q01",
+        "M49-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C21"
+      ]
+    },
+    {
+      "module": "50",
+      "file": "50-problems-cloud-iac-proxmox.md",
+      "handbook": "../50-problems-cloud-iac-proxmox.md",
+      "title": "A provider fix reveals a destructive Terraform plan",
+      "question_ids": [
+        "M50-Q01",
+        "M50-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C20"
+      ]
+    },
+    {
+      "module": "51",
+      "file": "51-problems-databases-storage-backup.md",
+      "handbook": "../51-problems-databases-storage-backup.md",
+      "title": "The backup job was green, restore failed",
+      "question_ids": [
+        "M51-Q01",
+        "M51-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C23"
+      ]
+    },
+    {
+      "module": "52",
+      "file": "52-devops-day-to-day.md",
+      "handbook": "../52-devops-day-to-day.md",
+      "title": "Your local command targeted production",
+      "question_ids": [
+        "M52-Q01",
+        "M52-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C24"
+      ]
+    },
+    {
+      "module": "53",
+      "file": "53-oss-devops-toolbox.md",
+      "handbook": "../53-oss-devops-toolbox.md",
+      "title": "Build an OSS pipeline with clear ownership",
+      "question_ids": [
+        "M53-Q01",
+        "M53-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C16",
+        "C18",
+        "C22"
+      ]
+    },
+    {
+      "module": "54",
+      "file": "54-practice-arena.md",
+      "handbook": "../54-practice-arena.md",
+      "title": "Make a safe incident exercise",
+      "question_ids": [
+        "M54-Q01",
+        "M54-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C17",
+        "C12"
+      ]
+    },
+    {
+      "module": "55",
+      "file": "55-paths-onprem-vs-cloud.md",
+      "handbook": "../55-paths-onprem-vs-cloud.md",
+      "title": "Cloud or on-prem is a constraint question",
+      "question_ids": [
+        "M55-Q01",
+        "M55-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C28",
+        "G01"
+      ]
+    },
+    {
+      "module": "56",
+      "file": "56-sources-and-verification.md",
+      "handbook": "../56-sources-and-verification.md",
+      "title": "A highly voted answer is not a verified fix",
+      "question_ids": [
+        "M56-Q01",
+        "M56-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C10",
+        "C15",
+        "R02"
+      ]
+    },
+    {
+      "module": "57",
+      "file": "57-method-protect-risk-ladder.md",
+      "handbook": "../57-method-protect-risk-ladder.md",
+      "title": "The only database is down, and the fast fix could lose data",
+      "question_ids": [
+        "M57-Q01",
+        "M57-Q02"
+      ],
+      "provenance": "original-practice",
+      "sources": [
+        "C28"
+      ]
+    }
+  ]
+}

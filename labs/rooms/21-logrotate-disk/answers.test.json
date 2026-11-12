@@ -1,0 +1,5 @@
+{
+ "q1": "-d",
+ "q2": "systemctl list-timers",
+ "q3": "journalctl --disk-usage"
+}

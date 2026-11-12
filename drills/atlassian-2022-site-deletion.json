@@ -1,0 +1,80 @@
+{
+  "id": "atlassian-2022-site-deletion",
+  "title": "The cleanup script that deleted 883 sites",
+  "level": "L4",
+  "track": "sre",
+  "topics": ["incident-command", "change-management", "availability-dr", "postmortems"],
+  "minutes": 9,
+  "role": "You are the incident commander for a SaaS company that hosts thousands of customer sites.",
+  "source": {
+    "label": "Atlassian: post-incident review of the April 2022 outage",
+    "url": "https://www.atlassian.com/blog/atlassian-engineering/post-incident-review-april-2022-outage",
+    "org": "Atlassian",
+    "date": "2022-04-05",
+    "read_on": "2026-11-07"
+  },
+  "brief": "A legacy app has been folded into the main product, and its old standalone copies must be removed from customer sites. One team sends another a list of IDs to feed into a deletion script. The script's API accepts either app IDs or whole-site IDs.",
+  "steps": [
+    {
+      "situation": "The change is peer-reviewed and passed in staging. You're asked to approve the production run.",
+      "evidence": "$ head -3 ids-to-delete.txt\n5c1e8a40-site\n7f02d913-site\n9a44b7c2-site\n$ delete-tool --ids ids-to-delete.txt --mode permanent --dry-run\nwould delete: 883 objects  type: SITE",
+      "evidence_cmd": "delete-tool --ids ids-to-delete.txt --dry-run",
+      "choices": [
+        {"text": "Block it: the IDs are sites, not apps. Make the tool check ID types, soft-delete, and start with one site", "verdict": "best", "effect": {"service": 20, "time": 0, "evidence": 15, "trust": 5}, "why": "The review checked the endpoint, not the IDs, and staging didn't have those IDs. A dry run that says what kind of object goes is the cheapest guard there is."},
+        {"text": "Approve: review and staging both passed", "verdict": "bad", "effect": {"service": -30, "time": -10, "evidence": 0, "trust": -10}, "why": "That is how it went: review and staging both missed that the list held site IDs."},
+        {"text": "Approve, but run it at night when fewer users are on", "verdict": "bad", "effect": {"service": -25, "time": -10, "evidence": 0, "trust": -5}, "why": "The timing changes nothing about what gets deleted, and fewer staff are around to notice."}
+      ]
+    },
+    {
+      "situation": "Assume it ran. Between 07:38 and 08:01 UTC it deleted 883 sites belonging to 775 customers. Calls flood in.",
+      "choices": [
+        {"text": "Stop the script, block bulk site deletion, keep the logs, and open an incident with clear roles", "verdict": "best", "effect": {"service": 10, "time": 10, "evidence": 15, "trust": 5}, "why": "First stop the damage from spreading, then make sure the next script can't run. The deletion logs say exactly what to restore."},
+        {"text": "Re-run the script with the correct app IDs to finish the job", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -5, "trust": -10}, "why": "Running more deletions before you understand the first ones is exactly the wrong reflex."},
+        {"text": "Start restoring the largest customer by hand", "verdict": "risky", "effect": {"service": 5, "time": -10, "evidence": 0, "trust": 0}, "why": "It helps one customer while 774 wait, and you have no plan for scale yet."}
+      ]
+    },
+    {
+      "situation": "The deleted sites took their admin contacts and site URLs with them. Customers can't even open support tickets, because the form wants a valid site.",
+      "evidence": "support-form: POST /ticket site=acme.example.com\n400 Bad Request: site not found",
+      "choices": [
+        {"text": "Make a public statement early, contact customers through billing and account records, add a support path that needs no site", "verdict": "best", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": 25}, "why": "Atlassian later said it should have communicated publicly sooner. When the product holds the contacts, you need a copy outside it."},
+        {"text": "Stay quiet until you can give firm restore dates", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -25}, "why": "Customers hear about it from each other and the press. Silence for days looks like hiding."},
+        {"text": "Promise everyone service back within 24 hours", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -20}, "why": "Restores took up to 14 days. A broken promise costs more trust than an honest range."}
+      ]
+    },
+    {
+      "situation": "Day 9. The first restore method takes about 48 hours per batch and has covered 112 sites. 771 remain.",
+      "evidence": "restore-batch-07: sites=18  started=Apr 12 06:00  eta=Apr 14 06:00\nrunbook: restore-method-1 (about 70 steps, many by hand)",
+      "choices": [
+        {"text": "Keep batches running while a team builds and tests a faster, more automated restore", "verdict": "best", "effect": {"service": 15, "time": 15, "evidence": 5, "trust": 5}, "why": "Atlassian moved to a second method of about 12 hours per site and restored the remaining 771 sites in three days."},
+        {"text": "Stop restores until the new method is ready", "verdict": "bad", "effect": {"service": -15, "time": -10, "evidence": 0, "trust": -10}, "why": "Every customer waits longer, and the new method might not work."},
+        {"text": "Add more people to the manual batches", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "More hands on a 70-step manual process mostly add coordination and mistakes."}
+      ]
+    },
+    {
+      "situation": "All sites are back by 18 April. Most customers lost five minutes of data or less. The review is due.",
+      "choices": [
+        {"text": "Soft delete by default, regular large-scale DR drills, contacts kept outside the product, blameless review", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 15}, "why": "That matches Atlassian's own list. Soft delete makes the mistake undoable; DR drills make restore at scale a known routine."},
+        {"text": "Fire the engineer who ran the script", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -15, "trust": -25}, "why": "The cause was a handover gap and an API that accepted either ID without warning. Blame makes the next person hide the next near miss."},
+        {"text": "Add a second reviewer to every script", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "Reviewers already approved this one. The tool must check what it deletes."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 5 April 2022 Atlassian ran a script to delete the standalone Insight app from sites, as the app had moved into Jira Service Management. A communication gap meant the team got site IDs instead of app IDs; the API accepted either without warning, review checked the endpoint rather than the IDs, and staging didn't contain them. From 07:38 to 08:01 UTC it deleted 883 sites for 775 customers. Site URLs and admin contacts were deleted too, so many customers couldn't reach support. A first restore method took about 48 hours per batch and covered 112 sites; a second, about 12 hours per site, restored the remaining 771. All sites were back by 18 April, up to 14 days later, and most customers lost no more than five minutes of data. Follow-ups: soft deletes by default, faster multi-site DR with regular exercises, better incident communication with contacts kept outside the product, and an immediate block on bulk site deletions.",
+    "lessons": ["Destructive APIs should validate object types and soft-delete by default.", "Practise restoring at the scale of your worst day, not one site.", "Keep customer contacts and comms tools outside the system that can fail.", "Communicate early with honest ranges, not promises."],
+    "commands": []
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "39-learn-senior-architecture.md", "heading": "Incident command [L4 · Lead/SRE]"},
+      {"file": "39-learn-senior-architecture.md", "heading": "DR drills and game days [L4 · Lead/SRE]"},
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Blameless postmortems"}
+    ],
+    "sites": [
+      {"label": "DevOps Dream: run an IT department in the browser", "url": "https://devops.games/"},
+      {"label": "Wheel of Misfortune: replay an outage with a colleague", "url": "https://dastergon.github.io/wheel-of-misfortune/"}
+    ]
+  }
+}

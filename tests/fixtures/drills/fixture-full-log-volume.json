@@ -1,0 +1,65 @@
+{
+  "id": "fixture-full-log-volume",
+  "title": "Fixture: the log volume that filled up",
+  "level": "L1",
+  "track": "linux",
+  "topics": ["disk-full", "journald-logs"],
+  "minutes": 4,
+  "role": "You are on call for a small web team (test fixture, not a real incident).",
+  "source": {
+    "label": "Example post-mortem (test fixture)",
+    "url": "https://example.com/postmortems/log-volume?team=ops&year=2026",
+    "org": "Example Ops",
+    "date": "2026-01-15",
+    "read_on": "2026-11-07"
+  },
+  "brief": "The disk alert for `web1.example.com` fires at 97% on `/var`. Priya asks in the team channel whether anyone changed logging. Text with a tag that must stay text: </script><b>not bold</b> & more.",
+  "steps": [
+    {
+      "situation": "The site still answers, slowly. Where is the space going?",
+      "evidence": "$ df -h /var\nFilesystem  Size  Used Avail Use% Mounted on\n/dev/sdb1    20G   19G  640M  97% /var",
+      "evidence_cmd": "df -h /var",
+      "choices": [
+        {"text": "Measure with `du` before deleting anything", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 5}, "why": "You find one 14 GB log file in a minute and know what to fix."},
+        {"text": "Tell the channel it is probably the new hire's change", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -30}, "why": "Guessing out loud about a person costs trust and finds nothing."},
+        {"text": "Reboot the server to clear temporary files", "verdict": "risky", "effect": {"service": -15, "time": -10, "evidence": -10, "trust": -5}, "why": "An outage for nothing: the log is still there after the reboot."},
+        {"text": "Ask Sam, who set up logging, what changed", "verdict": "good", "effect": {"service": 0, "time": 0, "evidence": 10, "trust": 10}, "why": "A fair question that keeps the team in the loop, but you still need to measure."}
+      ]
+    },
+    {
+      "situation": "The 14 GB file is the application log, still open by the service.",
+      "evidence": "-rw-r----- 1 deploy deploy 14G app.log",
+      "evidence_cmd": "ls -lh /var/log/app/",
+      "choices": [
+        {"text": "Truncate it in place and keep the last lines", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 0, "trust": 5}, "why": "Space comes back at once and the service keeps writing."},
+        {"text": "Delete it with rm", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -10, "trust": -30}, "why": "The space stays used while the service holds the file open, and the evidence is gone."},
+        {"text": "Stop the service until Monday", "verdict": "bad", "effect": {"service": -30, "time": -10, "evidence": 0, "trust": -10}, "why": "You turned a disk warning into a weekend outage."}
+      ]
+    },
+    {
+      "situation": "Space is back. How do you stop this happening again? The [logs module](06-logs-journal.md#grep-patterns) has notes.",
+      "choices": [
+        {"text": "Add a logrotate rule, test it with `logrotate -d`, and write a short incident note", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 10, "trust": 10}, "why": "The fix is tested and the team knows what happened."},
+        {"text": "Add a nightly cron job that empties the log", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": -10, "trust": 0}, "why": "It keeps the disk free but throws away every day's evidence."},
+        {"text": "Do nothing: it took a year to fill", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -10}, "why": "It will fill again, at a worse moment."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In this fixture the application log had no rotation rule, so it grew for a year until `/var` filled. The team truncated it in place, added a logrotate rule and checked it with a dry run. See [the module](01-storage-disk.md) too.",
+    "lessons": [
+      "Measure with df and du before deleting anything.",
+      "Truncate an open log; rm does not free the space while it is open.",
+      "Test a logrotate rule with a dry run."
+    ],
+    "commands": ["df -h /var", "du -xh /var --max-depth=2 | sort -h", "logrotate -d /etc/logrotate.d/app"]
+  },
+  "practise": {
+    "labs": ["07-text-tools"],
+    "handbook": [
+      {"file": "01-storage-disk.md", "heading": "Deleted-but-open files (classic trap)"},
+      {"file": "01-storage-disk.md", "heading": "`df` — filesystem free space"}
+    ],
+    "sites": [{"label": "SadServers scenarios", "url": "https://sadservers.com/scenarios"}]
+  }
+}

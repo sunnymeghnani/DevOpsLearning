@@ -1,0 +1,2384 @@
+{
+ "domain": "cicd",
+ "problems": [
+  {
+   "title": "Job stuck pending: no active runner matches the job's tags, protection or project",
+   "error_text": "This job is stuck because of one of the following problems. There are no active runners online, no runners for the protected branch, or no runners that match all of the job's tags: docker harbor",
+   "context": "Most-asked GitLab CI question: new runner registered, job sits in pending forever.",
+   "tool": "GitLab CI / GitLab Runner",
+   "area": "runners",
+   "level": "L1 Operator (Junior)",
+   "frequency_signal": "GitLab forum threads 28205 and 104997; 'Gitlab runner not picking up jobs' (forum 70464, ~68k views); gitlab issue 336205 asks to clarify the message because a runner must have ALL job tags.",
+   "root_causes": [
+    "Runner lacks one of the job tags (a runner must carry every tag the job lists).",
+    "Job has no tags but the runner has 'Run untagged jobs' off.",
+    "Runner marked protected: it only takes jobs from protected branches/tags.",
+    "Runner paused/offline, or a project runner assigned to another project; instance runners disabled for the project.",
+    "concurrent / limit reached, so jobs queue (pending but not 'stuck')."
+   ],
+   "diagnosis": [
+    "sudo gitlab-runner list ; sudo gitlab-runner verify",
+    "sudo journalctl -u gitlab-runner --since '15 min ago' --no-pager | tail",
+    "curl -sS -H 'PRIVATE-TOKEN: $TOKEN' https://gitlab.example.com/api/v4/runners/RUNNER_ID | jq '{status,paused,tag_list,run_untagged,access_level}'"
+   ],
+   "fix": [
+    "Edit the runner in the UI (tags, Run untagged jobs, Protected) or change the job tags.",
+    "Enable instance/group runners for the project; assign the project runner.",
+    "Raise concurrent in config.toml if the host has capacity; restart gitlab-runner."
+   ],
+   "prevention": "Document a tag vocabulary (docker, harbor-push, deploy-prod); alert on runner offline via the runner's Prometheus metrics.",
+   "sources": [
+    {
+     "title": "GitLab forum: This job is stuck because you don't have any active runners online with any of these tags assigned",
+     "url": "https://forum.gitlab.com/t/this-job-is-stuck-because-you-don-t-have-any-active-runners-online-with-any-of-these-tags-assigned/28205",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: This job is stuck because of one of the following problems",
+     "url": "https://forum.gitlab.com/t/this-job-is-stuck-because-of-one-of-the-following-problems/104997",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Gitlab runner not picking up jobs",
+     "url": "https://forum.gitlab.com/t/gitlab-runner-not-picking-up-jobs/70464",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "gitlab issue 336205: clarify stuck message (runner needs all tags)",
+     "url": "https://gitlab.com/gitlab-org/gitlab/-/issues/336205",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab runner \"This job is stuck\" tags",
+     "url": "https://stackoverflow.com/search?q=gitlab+runner+%22This+job+is+stuck%22+tags",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: job stuck pending runner tags",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=job+stuck+pending+runner+tags&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Runner can't register or authenticate: 410 Gone, FATAL reserved options, 403 Forbidden",
+   "error_text": "ERROR: Registering runner... failed ... 410 Gone (runner registration disallowed) | FATAL: Runner configuration other than name and executor configuration is reserved ... | WARNING: Checking for jobs... forbidden ... 403 Forbidden",
+   "context": "GitLab 16 introduced runner authentication tokens (glrt-). Since 17.0 registration tokens are disabled by default; removal planned for 20.0. Old Ansible roles and blog posts still pass --registration-token and --tag-list.",
+   "tool": "GitLab Runner",
+   "area": "runners",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Deprecation work item 380872; terraform-aws-gitlab-runner #850; frequent forum questions after the 17.0 upgrade.",
+   "root_causes": [
+    "Legacy registration token used on GitLab 17+ where it is disabled.",
+    "Passing --tag-list/--locked/--run-untagged/--access-level with a glrt- token: those settings now live on the server.",
+    "Runner deleted in the UI or token reset/expired: the runner keeps polling with a dead token (403).",
+    "Cloned VM with the same config.toml."
+   ],
+   "diagnosis": [
+    "sudo gitlab-runner verify",
+    "sudo journalctl -u gitlab-runner -n 30 --no-pager",
+    "grep -n 'token' /etc/gitlab-runner/config.toml | sed 's/=.*/= (hidden)/'"
+   ],
+   "fix": [
+    "Create the runner in the UI (Admin/Group/Project > CI/CD > Runners > New runner), set tags there, copy the glrt- token.",
+    "gitlab-runner register --non-interactive --url https://gitlab.example.com --token \"$RUNNER_TOKEN\" --executor docker --docker-image alpine:3.20",
+    "Remove dead entries: sudo gitlab-runner verify --delete; restart the service."
+   ],
+   "prevention": "Keep runner provisioning as code with the new workflow; track token expiry; never re-enable legacy tokens permanently.",
+   "sources": [
+    {
+     "title": "GitLab docs: Registering runners",
+     "url": "https://docs.gitlab.com/runner/register/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GitLab deprecation 380872: registration tokens and server-side runner arguments",
+     "url": "https://gitlab.com/gitlab-org/gitlab/-/work_items/380872",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "cattle-ops/terraform-aws-gitlab-runner #850: registration token deprecated",
+     "url": "https://github.com/cattle-ops/terraform-aws-gitlab-runner/issues/850",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab-runner register 410 Gone runner registration disallowed",
+     "url": "https://stackoverflow.com/search?q=gitlab-runner+register+410+Gone+runner+registration+disallowed",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: runner registration token deprecated glrt",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=runner+registration+token+deprecated+glrt&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Pipeline missing, doubled, or invalid because of rules, workflow and needs",
+   "error_text": "No pipeline after push | two pipelines per push (branch + merge request) | 'deploy' job needs 'build' job, but 'build' does not exist in the pipeline ... use needs:optional | Pipeline cannot be run. No stages / jobs for this pipeline.",
+   "context": "Teams move from only/except to rules and get duplicate MR+branch pipelines or jobs that silently vanish.",
+   "tool": "GitLab CI",
+   "area": "pipelines",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Forum: 'Multiple pipelines for same repo' (~96k views), 'OR condition with needs' (~73k), 'Pipeline fail in project with no CI configuration'.",
+   "root_causes": [
+    "rules match both push and merge_request_event sources -> two pipelines.",
+    "workflow:rules exclude the ref; [skip ci] in the message; CI config path changed.",
+    "needs references a job removed by rules (use needs:optional).",
+    "YAML invalid (unknown keys, bad anchors) so no pipeline is created."
+   ],
+   "diagnosis": [
+    "curl -sS -H 'PRIVATE-TOKEN: $TOKEN' 'https://gitlab.example.com/api/v4/projects/PROJECT_ID/ci/lint?dry_run=true&ref=main' | jq '.valid,.errors,.warnings'",
+    "Pipeline editor > Validate (simulate a branch)",
+    "git log -1 --format=%B | grep -i 'skip ci'"
+   ],
+   "fix": [
+    "Use the documented workflow:rules pattern that switches between branch and MR pipelines.",
+    "Mark conditional dependencies needs: [{job: build, optional: true}].",
+    "Fix YAML; keep includes small and lint in an MR."
+   ],
+   "prevention": "Lint .gitlab-ci.yml in every MR (dry_run lint job); keep one workflow:rules block at the top.",
+   "sources": [
+    {
+     "title": "GitLab forum: Multiple pipelines for same repo",
+     "url": "https://forum.gitlab.com/t/multiple-pipelines-for-same-repo/3897",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Is there a way to use OR condition with needs",
+     "url": "https://forum.gitlab.com/t/is-there-a-way-to-use-or-condition-with-needs-in-gitlab-ci-job/70393",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Pipeline fail in project with no CI configuration",
+     "url": "https://forum.gitlab.com/t/pipeline-fail-in-project-with-no-ci-configuration/54277",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab duplicate pipelines merge request branch workflow rules",
+     "url": "https://stackoverflow.com/search?q=gitlab+duplicate+pipelines+merge+request+branch+workflow+rules",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: duplicate pipelines merge request",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=duplicate+pipelines+merge+request&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Protected variables arrive empty: docker login 'Cannot perform an interactive login from a non TTY device'",
+   "error_text": "Error: Cannot perform an interactive login from a non TTY device",
+   "context": "docker login in a feature-branch or MR pipeline; credentials stored as protected CI/CD variables.",
+   "tool": "GitLab CI",
+   "area": "variables",
+   "level": "L1 Operator (Junior)",
+   "frequency_signal": "Forum thread 59936 (~92k views); classic SO question.",
+   "root_causes": [
+    "Protected variables are only exported to pipelines on protected branches/tags.",
+    "Variable scoped to an environment the job doesn't use.",
+    "Deprecated CI_BUILD_TOKEN after GitLab 16 (use CI_JOB_TOKEN).",
+    "Typos / group vs project scope."
+   ],
+   "diagnosis": [
+    "echo \"ref=$CI_COMMIT_REF_NAME protected=$CI_COMMIT_REF_PROTECTED env=${CI_ENVIRONMENT_NAME:-none}\"",
+    "echo \"user set: ${HARBOR_USER:+yes}\""
+   ],
+   "fix": [
+    "Protect the branches/tags that push or deploy; keep secrets protected.",
+    "Gate jobs: rules: - if: $CI_COMMIT_REF_PROTECTED == \"true\"",
+    "Use a separate low-privilege robot for MR builds instead of unprotecting prod credentials.",
+    "echo \"$HARBOR_PASSWORD\" | docker login -u \"$HARBOR_USER\" --password-stdin harbor.example.com"
+   ],
+   "prevention": "Fail fast: a before_script check that required variables are set (without printing them).",
+   "sources": [
+    {
+     "title": "GitLab forum: Error: Cannot perform an interactive login from a non TTY device",
+     "url": "https://forum.gitlab.com/t/error-cannot-perform-an-interactive-login-from-a-non-tty-device/59936",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab \"Cannot perform an interactive login from a non TTY device\"",
+     "url": "https://stackoverflow.com/search?q=gitlab+%22Cannot+perform+an+interactive+login+from+a+non+TTY+device%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: protected variable empty",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=protected+variable+empty&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Masked values and dollar-sign expansion (Harbor robot$ accounts)",
+   "error_text": "unauthorized: authentication required (login with robot$ci+gitlab) | 'This variable value does not meet the masking requirements'",
+   "context": "Harbor robot account names contain '$' (robot$project+name). GitLab expands $ in variable values by default.",
+   "tool": "GitLab CI + Harbor",
+   "area": "variables",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "goharbor/harbor #9732 and #9553; renovate discussion #32194; forum 16229; runner issue 1809 (variables in variables, 488 upvotes).",
+   "root_causes": [
+    "'$ci' in robot$ci+gitlab is expanded as an (empty) variable.",
+    "Masking requires a single line, minimum length and a limited character set.",
+    "Shell double quotes cannot undo GitLab-side expansion."
+   ],
+   "diagnosis": [
+    "echo \"len=${#HARBOR_USER} starts=${HARBOR_USER:0:6}\""
+   ],
+   "fix": [
+    "Untick 'Expand variable reference' on the variable (API: raw=true).",
+    "In YAML variables escape as $$: HARBOR_USER: 'robot$$ci+gitlab'.",
+    "Optionally change Harbor's robot name prefix in system settings."
+   ],
+   "prevention": "Store secrets as masked + protected + non-expanded; test login in a scratch pipeline when rotating.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #9732: robot account name containing $ breaks GitLab CI",
+     "url": "https://github.com/goharbor/harbor/issues/9732",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #9553: robot account should not have $",
+     "url": "https://github.com/goharbor/harbor/issues/9553",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "renovate discussion #32194: Harbor robot username with $",
+     "url": "https://github.com/renovatebot/renovate/discussions/32194",
+     "type": "discussion",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Cannot do docker login with gitlab-ci",
+     "url": "https://forum.gitlab.com/t/cannot-do-docker-login-with-gitlab-ci-in-local/16229",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner 1809: Use variable inside other variable",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/1809",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab ci harbor robot$ docker login unauthorized",
+     "url": "https://stackoverflow.com/search?q=gitlab+ci+harbor+robot%24+docker+login+unauthorized",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: harbor robot account dollar sign",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=harbor+robot+account+dollar+sign&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Cannot connect to the Docker daemon in docker-in-docker (2375 vs 2376, TLS, privileged, service name)",
+   "error_text": "Cannot connect to the Docker daemon at tcp://docker:2375. Is the docker daemon running? | error during connect: Post http://docker:2375/v1.40/auth: dial tcp: lookup docker on 169.254.169.254:53: no such host",
+   "context": "docker build in GitLab CI with services: docker:dind.",
+   "tool": "GitLab Runner docker executor",
+   "area": "image builds",
+   "level": "L1-L2",
+   "frequency_signal": "Forum 28678 (~141k views), forum 28664 'Docker:dind stops working after 12.1.0 update' (~62k).",
+   "root_causes": [
+    "dind >= 19.03 enables TLS on 2376 when DOCKER_TLS_CERTDIR is set; job still points at 2375.",
+    "Runner not privileged: the dind service dies at start.",
+    "No services: in this job, shell executor (services ignored) or network_mode breaking the service alias.",
+    "Client/daemon version mismatch with unpinned :latest images."
+   ],
+   "diagnosis": [
+    "env | grep -E '^DOCKER_(HOST|TLS|CERT)'",
+    "getent hosts docker",
+    "set CI_DEBUG_SERVICES=true to stream service logs",
+    "grep -n privileged /etc/gitlab-runner/config.toml"
+   ],
+   "fix": [
+    "DOCKER_HOST=tcp://docker:2376, DOCKER_TLS_CERTDIR=/certs, DOCKER_TLS_VERIFY=1, DOCKER_CERT_PATH=$DOCKER_TLS_CERTDIR/client",
+    "config.toml: privileged = true and volumes = ['/certs/client', '/cache'] on a dedicated build runner",
+    "Pin docker:28 with docker:28-dind."
+   ],
+   "prevention": "One shared CI template for image builds; pinned image versions; CI_DEBUG_SERVICES in the template docs.",
+   "sources": [
+    {
+     "title": "GitLab forum: error during connect ... lookup docker on 169.254.169.254:53: no such host",
+     "url": "https://forum.gitlab.com/t/error-during-connect-post-http-docker-2375-v1-40-auth-dial-tcp-lookup-docker-on-169-254-169-254-no-such-host/28678",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Docker:dind stops working after 12.1.0 update",
+     "url": "https://forum.gitlab.com/t/docker-dind-stops-working-after-12-1-0-update/28664",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab docs: Use Docker to build Docker images",
+     "url": "https://docs.gitlab.com/ci/docker/using_docker_build/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GitLab Runner docs: Docker executor",
+     "url": "https://docs.gitlab.com/runner/executors/docker/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab \"Cannot connect to the Docker daemon at tcp://docker:2375\"",
+     "url": "https://stackoverflow.com/search?q=gitlab+%22Cannot+connect+to+the+Docker+daemon+at+tcp%3A%2F%2Fdocker%3A2375%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: dind cannot connect docker daemon",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=dind+cannot+connect+docker+daemon&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "DinD builds hang on npm/pip/NuGet downloads (MTU mismatch)",
+   "error_text": "npm install / pip download / dotnet restore inside docker build hangs or times out; small requests work",
+   "context": "Runner host or cluster network MTU below 1500 (VXLAN, VPN, OpenStack, Flannel 1450); the inner dockerd uses 1500.",
+   "tool": "GitLab Runner + docker:dind",
+   "area": "image builds",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "Forum 133841 (NuGet hang), forum 26143 (pip hangs), runner issue 6697, GitLab support KB article on MTU mismatch.",
+   "root_causes": [
+    "Inner dockerd defaults to MTU 1500; packets larger than the path MTU are dropped and ICMP 'frag needed' is filtered (PMTUD black hole)."
+   ],
+   "diagnosis": [
+    "ip link | grep mtu (host)",
+    "cat /sys/class/net/eth0/mtu (job)",
+    "ping -M do -s 1472 -c 2 HOST vs -s 1372"
+   ],
+   "fix": [
+    "services: - name: docker:28-dind command: ['--mtu=1400'] (or lower, e.g. 1360)",
+    "Runner [runners.docker] network_mtu with FF_NETWORK_PER_BUILD",
+    "Host daemon.json mtu for the default bridge"
+   ],
+   "prevention": "Record the path MTU per network in the inventory; bake --mtu into the shared build template.",
+   "sources": [
+    {
+     "title": "GitLab forum: Docker-in-docker network issue / nuget hang",
+     "url": "https://forum.gitlab.com/t/docker-in-docker-network-issue-nuget-hang/133841",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab Support KB: DinD jobs fail to reach NuGet API due to MTU mismatch",
+     "url": "https://support.gitlab.com/hc/en-us/articles/27528955698972-Docker-in-Docker-jobs-on-GitLab-com-hosted-runners-fail-to-reach-NuGet-API-due-to-MTU-mismatch",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner #6697: job execution hangs with docker:dind",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/issues/6697",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: runner hangs infrequently on pip install",
+     "url": "https://forum.gitlab.com/t/gitlab-runner-hangs-infrequently-on-pythons-pip-install-or-pip-download/26143",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Dustin Rue: Fixing DIND builds that stall when using GitLab and Kubernetes",
+     "url": "https://dustinrue.com/2020/08/fixing-dind-builds-that-stall-when-using-gitlab-and-kubernetes/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab dind mtu hang npm install",
+     "url": "https://stackoverflow.com/search?q=gitlab+dind+mtu+hang+npm+install",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: docker in docker mtu hang",
+     "url": "https://www.reddit.com/r/devops/search/?q=docker+in+docker+mtu+hang&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Builds can't resolve internal names (Docker falls back to 8.8.8.8 inside DinD)",
+   "error_text": "Could not resolve host: git.internal.example.com | getaddrinfo EAI_AGAIN registry.npmjs.org | Temporary failure resolving 'archive.ubuntu.com'",
+   "context": "On-prem runner host with systemd-resolved; firewall only allows the internal resolvers.",
+   "tool": "GitLab Runner + Docker",
+   "area": "image builds",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "ops-ladder case 'DinD runner falls back to 8.8.8.8'; Dokploy docs networking troubleshooting covers the same build-DNS failure.",
+   "root_causes": [
+    "Containers inherit a resolv.conf with only loopback servers -> Docker substitutes 8.8.8.8/8.8.4.4, blocked on-prem.",
+    "The dind daemon has its own resolver chain; build containers on its default bridge get the fallback.",
+    "Split-horizon names exist only on internal DNS."
+   ],
+   "diagnosis": [
+    "cat /etc/resolv.conf (job)",
+    "docker run --rm busybox cat /etc/resolv.conf (inside dind)",
+    "docker run --rm busybox nslookup git.internal.example.com"
+   ],
+   "fix": [
+    "config.toml [runners.docker] dns = ['10.20.0.53'] and dns_search",
+    "dind service command: ['--dns=10.20.0.53']",
+    "host /etc/docker/daemon.json dns"
+   ],
+   "prevention": "Bake resolver settings into runner provisioning; a CI smoke job that resolves an internal and an external name.",
+   "sources": [
+    {
+     "title": "Dokploy docs: Troubleshooting - Networking & DNS",
+     "url": "https://docs.dokploy.com/docs/core/troubleshooting/networking",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GitLab Runner docs: Docker executor",
+     "url": "https://docs.gitlab.com/runner/executors/docker/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab runner docker build could not resolve host dind dns",
+     "url": "https://stackoverflow.com/search?q=gitlab+runner+docker+build+could+not+resolve+host+dind+dns",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/selfhosted search: gitlab runner dns docker build",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=gitlab+runner+dns+docker+build&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Runner host is root: docker.sock binding, privileged DinD, self-hosted runners on public repos",
+   "error_text": "Security finding: a job ran docker run -v /:/host ...; jobs see other projects' containers; 'Conflict. The container name ... is already in use'",
+   "context": "Shared on-prem runner that also holds deploy credentials; GitHub self-hosted runner on a public repository.",
+   "tool": "GitLab Runner / GitHub Actions runner",
+   "area": "runner security",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "Long-standing docs warnings; actions/runner #406 (runner inside Docker, 257 reactions).",
+   "root_causes": [
+    "/var/run/docker.sock = root on the host.",
+    "privileged = true is root-equivalent.",
+    "One runner for all trust levels (MR code + production secrets).",
+    "Fork PRs run arbitrary code on persistent self-hosted runners."
+   ],
+   "diagnosis": [
+    "grep -nE 'privileged|docker.sock|volumes' /etc/gitlab-runner/config.toml",
+    "API: runners/RUNNER_ID/projects"
+   ],
+   "fix": [
+    "Split runners: protected deploy runner vs unprivileged MR runner (buildah/rootless BuildKit).",
+    "Ephemeral VMs (docker-autoscaler) or Kubernetes executor.",
+    "GitHub: no self-hosted runners on public repos; --ephemeral or ARC."
+   ],
+   "prevention": "Runner inventory with trust level; quarterly review of privileged runners.",
+   "sources": [
+    {
+     "title": "GitLab docs: Use Docker to build Docker images",
+     "url": "https://docs.gitlab.com/ci/docker/using_docker_build/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "actions/runner #406: Support runner inside of Docker container",
+     "url": "https://github.com/actions/runner/issues/406",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab runner docker.sock security privileged",
+     "url": "https://stackoverflow.com/search?q=gitlab+runner+docker.sock+security+privileged",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: self hosted runner security docker socket",
+     "url": "https://www.reddit.com/r/devops/search/?q=self+hosted+runner+security+docker+socket&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Kaniko is archived: migrating image builds to Buildah (and kaniko x509 errors)",
+   "error_text": "kaniko: error checking push permissions ... x509: certificate signed by unknown authority | buildah: 'overlay' is not supported over overlayfs | unshare: operation not permitted",
+   "context": "GitLab removed its kaniko page; the kaniko repository is no longer maintained (2025).",
+   "tool": "kaniko / buildah",
+   "area": "image builds",
+   "level": "L2-L3",
+   "frequency_signal": "docs.gitlab.com/ci/docker/using_kaniko marked removed; to-be-continuous Docker template now defaults to Buildah.",
+   "root_causes": [
+    "Unmaintained builder = no CVE fixes.",
+    "Buildah in an unprivileged container needs vfs storage and chroot isolation.",
+    "kaniko only trusts /kaniko/ssl/certs unless --registry-certificate is given."
+   ],
+   "diagnosis": [
+    "buildah info | grep -i -E 'graphdriver|rootless'",
+    "kaniko log: 'checking push permission'"
+   ],
+   "fix": [
+    "image quay.io/buildah/stable pinned; STORAGE_DRIVER=vfs; BUILDAH_ISOLATION=chroot; CA in /etc/containers/certs.d/harbor.example.com/ca.crt",
+    "Interim kaniko: --registry-certificate harbor.example.com=/path/ca.crt"
+   ],
+   "prevention": "Track builder lifecycle like any dependency; one shared build template.",
+   "sources": [
+    {
+     "title": "GitLab docs: Use kaniko to build Docker images (removed)",
+     "url": "https://docs.gitlab.com/ci/docker/using_kaniko",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GoogleContainerTools/kaniko repository",
+     "url": "https://github.com/GoogleContainerTools/kaniko",
+     "type": "repo",
+     "verified": true
+    },
+    {
+     "title": "Stuart Ellis: Creating container images with Buildah and GitLab",
+     "url": "https://www.stuartellis.name/articles/buildah-gitlab/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "to be continuous: Docker template (Buildah default)",
+     "url": "https://to-be-continuous.gitlab.io/doc/ref/docker/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: buildah gitlab ci overlay is not supported over overlayfs",
+     "url": "https://stackoverflow.com/search?q=buildah+gitlab+ci+overlay+is+not+supported+over+overlayfs",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: kaniko archived alternative buildah",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=kaniko+archived+alternative+buildah&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Runner rejects GitLab's certificate (private CA): x509 / server certificate verification failed",
+   "error_text": "tls: failed to verify certificate: x509: certificate signed by unknown authority | fatal: unable to access 'https://gitlab.example.com/...': server certificate verification failed. CAfile: none CRLfile: none",
+   "context": "GitLab served with an internal CA; runner registration or the clone step fails.",
+   "tool": "GitLab Runner",
+   "area": "private CA",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Forum 59450 'Gitlab runner Server certificate verification failed' (~129k views).",
+   "root_causes": [
+    "Runner host does not trust the CA.",
+    "Server sends leaf only (missing intermediate).",
+    "Job images that clone/call APIs have their own trust store.",
+    "Hostname not in SAN."
+   ],
+   "diagnosis": [
+    "openssl s_client -connect gitlab.example.com:443 -servername gitlab.example.com -showcerts </dev/null | grep -E 's:|i:|Verify return code'"
+   ],
+   "fix": [
+    "/etc/gitlab-runner/certs/gitlab.example.com.crt or tls-ca-file",
+    "update-ca-certificates on the host",
+    "mount CA into job containers + pre_build_script update-ca-certificates",
+    "serve full chain"
+   ],
+   "prevention": "Distribute the CA with configuration management; monitor certificate expiry.",
+   "sources": [
+    {
+     "title": "GitLab forum: Gitlab runner Server certificate verification failed",
+     "url": "https://forum.gitlab.com/t/gitlab-runner-server-certificate-verification-failed/59450",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab Runner docs: Self-signed certificates or custom CAs",
+     "url": "https://docs.gitlab.com/runner/configuration/tls-self-signed/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab-runner x509 certificate signed by unknown authority",
+     "url": "https://stackoverflow.com/search?q=gitlab-runner+x509+certificate+signed+by+unknown+authority",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: runner x509 self signed",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=runner+x509+self+signed&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "docker push to Harbor fails with x509 inside DinD / BuildKit",
+   "error_text": "Error response from daemon: Get \"https://harbor.example.com/v2/\": tls: failed to verify certificate: x509: certificate signed by unknown authority",
+   "context": "Runner host trusts Harbor, but the push happens in the dind service container or a BuildKit container.",
+   "tool": "Docker / BuildKit / Harbor",
+   "area": "private CA",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "docker/buildx #1642; ops-ladder Harbor case; very common forum topic.",
+   "root_causes": [
+    "Each daemon has its own /etc/docker/certs.d.",
+    "BuildKit docker-container driver needs buildkitd.toml ca.",
+    "insecure-registries used as a shortcut."
+   ],
+   "diagnosis": [
+    "docker run --rm -v /etc/docker/certs.d:/x:ro alpine ls -R /x (shows dind's certs.d)"
+   ],
+   "fix": [
+    "config.toml volumes: CA file -> /etc/docker/certs.d/harbor.example.com/ca.crt (mounted into service containers too)",
+    "custom dind image with the CA",
+    "buildkitd.toml [registry] ca"
+   ],
+   "prevention": "CA distribution checklist per client: host, dind, BuildKit, containerd, Dokploy nodes.",
+   "sources": [
+    {
+     "title": "Docker docs: Registry certificates (certs.d)",
+     "url": "https://docs.docker.com/engine/security/certificates/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "docker/buildx #1642",
+     "url": "https://github.com/docker/buildx/issues/1642",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: BuildKit configuration",
+     "url": "https://docs.docker.com/build/buildkit/configure/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Harbor docs: Configure HTTPS access",
+     "url": "https://goharbor.io/docs/2.15.0/install-config/configure-https/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab dind harbor x509 certificate signed by unknown authority",
+     "url": "https://stackoverflow.com/search?q=gitlab+dind+harbor+x509+certificate+signed+by+unknown+authority",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/selfhosted search: harbor x509 gitlab runner",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=harbor+x509+gitlab+runner&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Push denied or unauthorized (Harbor project, robot permissions, expiry, image path)",
+   "error_text": "denied: requested access to the resource is denied | unauthorized: unauthorized to access repository: shop/web, action: push",
+   "context": "First push to Harbor from CI, or a pipeline that worked for a month.",
+   "tool": "Harbor / Docker",
+   "area": "registry",
+   "level": "L1 Operator (Junior)",
+   "frequency_signal": "Top forums.docker.com topic family; Harbor robot accounts expire after 30 days by default.",
+   "root_causes": [
+    "Image name without registry host -> push goes to Docker Hub.",
+    "Harbor project missing (no auto-create).",
+    "Robot has pull only.",
+    "Robot expired.",
+    "Logged into a different host string (harbor.example.com:443)."
+   ],
+   "diagnosis": [
+    "Harbor token service: curl -u ... '/service/token?service=harbor-registry&scope=repository:shop/web:pull,push' and decode access"
+   ],
+   "fix": [
+    "Full path harbor.example.com/PROJECT/REPO:TAG",
+    "project robot with push+pull",
+    "expiry/rotation process"
+   ],
+   "prevention": "Alert on robot expiry; one robot per project and purpose.",
+   "sources": [
+    {
+     "title": "Harbor docs: Create robot accounts",
+     "url": "https://goharbor.io/docs/1.10/working-with-projects/project-configuration/create-robot-accounts/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "forums.docker.com top (all time)",
+     "url": "https://forums.docker.com/top?period=all",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: harbor \"unauthorized to access repository\" push robot",
+     "url": "https://stackoverflow.com/search?q=harbor+%22unauthorized+to+access+repository%22+push+robot",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/docker search: denied requested access to the resource is denied push",
+     "url": "https://www.reddit.com/r/docker/search/?q=denied+requested+access+to+the+resource+is+denied+push&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Large docker pushes die behind the reverse proxy: 413, 499, unexpected EOF, blob unknown",
+   "error_text": "error parsing HTTP 413 response body: invalid character '<' looking for beginning of value | unexpected EOF | blob upload unknown",
+   "context": "Harbor or GitLab registry behind nginx/Traefik/Apache; big layers.",
+   "tool": "Harbor / Traefik / nginx",
+   "area": "registry",
+   "level": "L2-L3",
+   "frequency_signal": "Harbor #22353 (413), Traefik forum 29527 (499 after 60 s in v3), GitLab forum 97005.",
+   "root_causes": [
+    "nginx client_max_body_size 1m default",
+    "Traefik v3 readTimeout 60 s default",
+    "request buffering",
+    "external URL / X-Forwarded-Proto mismatch"
+   ],
+   "diagnosis": [
+    "proxy access log status and duration for PATCH /v2/.../blobs/uploads/"
+   ],
+   "fix": [
+    "nginx client_max_body_size 0; proxy_request_buffering off; proxy_read_timeout 900s",
+    "Traefik entryPoints.websecure.transport.respondingTimeouts.readTimeout: 0 or 600s",
+    "correct external_url"
+   ],
+   "prevention": "Test a 2 GB layer push after any proxy change.",
+   "sources": [
+    {
+     "title": "Harbor #22353: 413 on push",
+     "url": "https://github.com/goharbor/harbor/issues/22353",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Traefik forum: registry uploads fail with HTTP 499 behind Traefik v3.6 in Swarm",
+     "url": "https://community.traefik.io/t/docker-registry-uploads-fail-with-http-499-errors-when-running-behind-traefik-v3-6-in-docker-swarm-buffering-or-timeout-behavior-during-large-image-pushes/29527",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Claudio Kuenzler: Running Harbor behind a reverse proxy",
+     "url": "https://www.claudiokuenzler.com/blog/958/running-harbor-registry-behind-reverse-proxy-solve-docker-push-errors",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Container Registry behind Traefik",
+     "url": "https://forum.gitlab.com/t/troubles-enabling-container-registry-behind-traefik-reverse-proxy/97005",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Harbor #12135: relativeurls option",
+     "url": "https://github.com/goharbor/harbor/issues/12135",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: docker push 413 Request Entity Too Large nginx registry",
+     "url": "https://stackoverflow.com/search?q=docker+push+413+Request+Entity+Too+Large+nginx+registry",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/selfhosted search: docker push 413 traefik registry",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=docker+push+413+traefik+registry&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Runner disk full: cache volumes, images per SHA, old build dirs",
+   "error_text": "ERROR: Job failed (system failure): ... no space left on device",
+   "context": "Docker executor never removes runner-*-cache volumes; every SHA leaves an image.",
+   "tool": "GitLab Runner",
+   "area": "runner disk",
+   "level": "L1-L2",
+   "frequency_signal": "runner work items 3103 (Clean up old build directories, 186 upvotes) and 27332 (Smart cache cleanup, 179).",
+   "root_causes": [
+    "runner-*-cache volumes accumulate",
+    "dangling images and build cache",
+    "shell executor builds dir",
+    "dind volumes"
+   ],
+   "diagnosis": [
+    "df -h /var/lib/docker",
+    "docker system df",
+    "docker volume ls -q --filter name=runner- | wc -l"
+   ],
+   "fix": [
+    "/usr/share/gitlab-runner/clear-docker-cache on a timer",
+    "docker image prune -af --filter until=168h",
+    "docker builder prune"
+   ],
+   "prevention": "Dedicated runner disk, disk alerts at 80%, never share with Dokploy production.",
+   "sources": [
+    {
+     "title": "gitlab-runner 3103: Clean up old build directories",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/3103",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner 27332: Smart cache cleanup for Docker images & volumes",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/27332",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "GitLab Runner docs: Docker executor (clearing the Docker cache)",
+     "url": "https://docs.gitlab.com/runner/executors/docker/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab runner no space left on device docker volumes",
+     "url": "https://stackoverflow.com/search?q=gitlab+runner+no+space+left+on+device+docker+volumes",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: runner disk full cache volumes",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=runner+disk+full+cache+volumes&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Cache never hits or is slower than downloading",
+   "error_text": "No URL provided, cache will not be downloaded from shared cache server. Instead a local version of cache will be extracted. | WARNING: file does not exist | cache key ...-non_protected",
+   "context": "Several runners, branch-based keys, Node.js caches with many small files.",
+   "tool": "GitLab Runner",
+   "area": "cache",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "runner work item 1797 'Caching is very slow for Node.JS projects' (137 upvotes, 165 notes).",
+   "root_causes": [
+    "local cache per runner host",
+    "key per branch",
+    "protected vs non-protected cache separation",
+    "paths outside project dir",
+    "zip of thousands of files"
+   ],
+   "diagnosis": [
+    "job log lines 'Checking cache for KEY'",
+    "grep -A8 'runners.cache' config.toml"
+   ],
+   "fix": [
+    "distributed cache on S3/MinIO with Shared = true",
+    "cache:key:files: [package-lock.json]",
+    "FF_USE_FASTZIP + CACHE_COMPRESSION_LEVEL fast",
+    "policy: pull in test jobs"
+   ],
+   "prevention": "Measure cache restore time vs download time.",
+   "sources": [
+    {
+     "title": "gitlab-runner 1797: Caching is very slow for Node.JS projects",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/1797",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner 1107: Docker artifact caching MVC",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/1107",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab ci cache not working between jobs runners",
+     "url": "https://stackoverflow.com/search?q=gitlab+ci+cache+not+working+between+jobs+runners",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: cache not shared between runners",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=cache+not+shared+between+runners&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Artifacts missing, too large, expired, or blocked across projects",
+   "error_text": "ERROR: Uploading artifacts as \"archive\" to coordinator... 413 Request Entity Too Large | WARNING: dist/: no matching files | 404 on cross-project artifact download",
+   "context": "Passing build output or images between stages and projects.",
+   "tool": "GitLab CI",
+   "area": "artifacts",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Forum 2444 'Passing Docker image between build and test stage' (~106k), forum 6276 (cross-project artifacts), runner items 1057/1664.",
+   "root_causes": [
+    "max artifacts size (instance/project)",
+    "proxy body limit in front of GitLab",
+    "relative path wrong",
+    "expire_in elapsed",
+    "job token allowlist",
+    "needs:project is Premium"
+   ],
+   "diagnosis": [
+    "job log upload/download lines",
+    "API jobs/:id/artifacts"
+   ],
+   "fix": [
+    "raise limit or shrink artifacts",
+    "images go to the registry, not artifacts",
+    "Job Artifacts API with JOB-TOKEN + allowlist"
+   ],
+   "prevention": "expire_in on every artifact; registry for images.",
+   "sources": [
+    {
+     "title": "GitLab forum: Passing Docker image between build and test stage",
+     "url": "https://forum.gitlab.com/t/passing-docker-image-between-build-and-test-stage-in-gitlab-runner/2444",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "GitLab forum: Use an artifact from a project in a different project's CI",
+     "url": "https://forum.gitlab.com/t/use-an-artifact-from-a-project-in-a-different-projects-ci/6276",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner 1057: root folder for artifacts",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/1057",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner 1664: Artifacts filename cannot be set with dynamic variables",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/1664",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab artifacts 413 Request Entity Too Large",
+     "url": "https://stackoverflow.com/search?q=gitlab+artifacts+413+Request+Entity+Too+Large",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: artifacts too large 413",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=artifacts+too+large+413&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Dokploy deploy call succeeds but nothing changes (old image, 404, task rejected)",
+   "error_text": "CI job green; site still old; or every domain '404 page not found'; docker service ps shows 'No such image' or x509",
+   "context": "GitLab CI -> Harbor -> Dokploy API/webhook.",
+   "tool": "Dokploy + GitLab CI + Harbor",
+   "area": "deploy",
+   "level": "L2-L3",
+   "frequency_signal": "Dokploy #5453 (labels dropped on redeploy -> 404); recurring Dokploy questions on webhooks.",
+   "root_causes": [
+    "curl without -f exits 0 on 401/500",
+    "async deploy endpoint",
+    "reused :latest tag",
+    "Dokploy nodes lack Harbor credentials or CA",
+    "Traefik labels dropped (#5453)"
+   ],
+   "diagnosis": [
+    "curl -sS -o /dev/null -w '%{http_code}'",
+    "docker service ps APP --no-trunc",
+    "docker service inspect labels"
+   ],
+   "fix": [
+    "curl -fsS",
+    "immutable SHA tags",
+    "registry + CA on every Swarm node",
+    "verify loop on /version",
+    "rollback / pin version for #5453"
+   ],
+   "prevention": "Post-deploy verification as part of the pipeline.",
+   "sources": [
+    {
+     "title": "Dokploy #5453: deploy drops traefik labels -> 404",
+     "url": "https://github.com/Dokploy/dokploy/issues/5453",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Dokploy release v0.30.0",
+     "url": "https://github.com/Dokploy/dokploy/releases/tag/v0.30.0",
+     "type": "release",
+     "verified": true
+    },
+    {
+     "title": "Dokploy docs: Troubleshooting - Domains & Traefik",
+     "url": "https://docs.dokploy.com/docs/core/troubleshooting/domains",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GitHub Dokploy/dokploy issue search: webhook deploy gitlab",
+     "url": "https://github.com/Dokploy/dokploy/issues?q=webhook+deploy+gitlab",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/selfhosted search: dokploy gitlab ci deploy",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+gitlab+ci+deploy&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: docker swarm service \"No such image\" private registry",
+     "url": "https://stackoverflow.com/search?q=docker+swarm+service+%22No+such+image%22+private+registry",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "CI can't push back to the repository (tags, version bumps)",
+   "error_text": "remote: You are not allowed to push code to this project. | The requested URL returned error: 403 | error: src refspec main does not match any",
+   "context": "Release jobs that tag or commit.",
+   "tool": "GitLab CI",
+   "area": "deploy",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Forum 30554 'Git push from inside a gitlab-runner' (~150k views); runner item 4421 (326 upvotes).",
+   "root_causes": [
+    "CI_JOB_TOKEN not allowed to push (historically read-only)",
+    "detached HEAD checkout",
+    "shallow clone",
+    "loop of pipelines"
+   ],
+   "diagnosis": [
+    "git status; git rev-parse --abbrev-ref HEAD",
+    "git remote -v"
+   ],
+   "fix": [
+    "project access token write_repository",
+    "push HEAD:$CI_COMMIT_BRANCH -o ci.skip",
+    "GIT_DEPTH 0 for tags"
+   ],
+   "prevention": "Prefer tags and SHA images over committing from CI.",
+   "sources": [
+    {
+     "title": "GitLab forum: Git push from inside a gitlab-runner",
+     "url": "https://forum.gitlab.com/t/git-push-from-inside-a-gitlab-runner/30554",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "gitlab-runner 4421: Allow runners to push via their CI token",
+     "url": "https://gitlab.com/gitlab-org/gitlab-runner/-/work_items/4421",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab ci git push \"You are not allowed to push code to this project\"",
+     "url": "https://stackoverflow.com/search?q=gitlab+ci+git+push+%22You+are+not+allowed+to+push+code+to+this+project%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: push from ci job token",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=push+from+ci+job+token&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "SSH deploy from a job fails: Host key verification failed / error in libcrypto / Permission denied (publickey)",
+   "error_text": "Host key verification failed. | Load key \"/builds/...tmp/SSH_PRIVATE_KEY\": error in libcrypto | Permission denied (publickey).",
+   "context": "Deploy jobs that ssh to a VM (Ansible, rsync, docker compose).",
+   "tool": "GitLab CI / Jenkins",
+   "area": "deploy",
+   "level": "L1 Operator (Junior)",
+   "frequency_signal": "GitLab forum 'Permission Denied (publickey)' (~802k views); Jenkins forum 4534 'Host key verification failed' (~36k).",
+   "root_causes": [
+    "empty known_hosts in a fresh container",
+    "key variable without trailing newline / CRLF",
+    "wrong user or key not in authorized_keys",
+    "StrictHostKeyChecking=no habits"
+   ],
+   "diagnosis": [
+    "ssh -vvv -o BatchMode=yes deploy@HOST true",
+    "ssh-keygen -lf $SSH_PRIVATE_KEY"
+   ],
+   "fix": [
+    "File-type variables for key and known_hosts",
+    "ssh-agent",
+    "pin host keys"
+   ],
+   "prevention": "Rotate deploy keys; restrict with command= and from= in authorized_keys.",
+   "sources": [
+    {
+     "title": "GitLab forum: Permission Denied (publickey)",
+     "url": "https://forum.gitlab.com/t/permission-denied-publickey/29670",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Git stderr: Host key verification failed",
+     "url": "https://community.jenkins.io/t/git-stderr-host-key-verification-failed/4534",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: gitlab ci ssh \"error in libcrypto\"",
+     "url": "https://stackoverflow.com/search?q=gitlab+ci+ssh+%22error+in+libcrypto%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/gitlab search: ssh deploy host key verification failed",
+     "url": "https://www.reddit.com/r/gitlab/search/?q=ssh+deploy+host+key+verification+failed&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Two deploys race and the older pipeline wins",
+   "error_text": "Production runs an older SHA after two quick merges",
+   "context": "Long pipelines, retries of old pipelines.",
+   "tool": "GitLab CI (same idea in Argo CD/Jenkins)",
+   "area": "deploy",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "Classic release-engineering issue; GitLab offers resource_group and 'prevent outdated deployment jobs'.",
+   "root_causes": [
+    "no serialization",
+    "manual retry of an old pipeline",
+    "mutable tags"
+   ],
+   "diagnosis": [
+    "API deployments?environment=production order_by=finished_at"
+   ],
+   "fix": [
+    "resource_group: production",
+    "interruptible + auto-cancel",
+    "prevent outdated deployment jobs",
+    "deploy by SHA"
+   ],
+   "prevention": "Deployment freeze windows and an audit trail of deployed SHAs.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: gitlab resource_group deploy older pipeline overwrites",
+     "url": "https://stackoverflow.com/search?q=gitlab+resource_group+deploy+older+pipeline+overwrites",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: older pipeline deployed over newer",
+     "url": "https://www.reddit.com/r/devops/search/?q=older+pipeline+deployed+over+newer&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Jenkins won't install or start: NO_PUBKEY, Java too old, start timeout, port 8080 taken",
+   "error_text": "NO_PUBKEY 5BA31D57EF5975CA | Running with Java 17 ..., which is older than the minimum required version (Java 21). Supported Java versions are: [21, 25] | jenkins.service: start operation timed out",
+   "context": "apt upgrade on Ubuntu; LTS 2.555.1 (April 2026) and weekly 2.545+ require Java 21 or 25.",
+   "tool": "Jenkins",
+   "area": "jenkins install",
+   "level": "L1-L2",
+   "frequency_signal": "community.jenkins.io: signing keys topic (~12k), 'Failed to start Jenkins' (~36k), 'startup times out' (~47k), 'Jenkins 2.387 with java-11 failed to start'.",
+   "root_causes": [
+    "repository key rotated",
+    "Java baseline raised",
+    "slow start with many plugins",
+    "port 8080 in use (Traefik dashboard, other apps)"
+   ],
+   "diagnosis": [
+    "systemctl status jenkins",
+    "journalctl -u jenkins -n 50",
+    "java -version",
+    "ss -ltnp 'sport = :8080'"
+   ],
+   "fix": [
+    "install current key from docs",
+    "openjdk-21-jre",
+    "TimeoutStartSec override",
+    "JENKINS_PORT override"
+   ],
+   "prevention": "Read the LTS changelog/upgrade guide; pin and stage upgrades.",
+   "sources": [
+    {
+     "title": "Jenkins community: New Linux repository signing keys",
+     "url": "https://community.jenkins.io/t/new-linux-repository-signing-keys-for-jenkins-2-397-and-2-387-2/6509",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Failed to start Jenkins Continuous Integration Server",
+     "url": "https://community.jenkins.io/t/failed-to-start-jenkins-continuous-integration-server/8223",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: startup times out",
+     "url": "https://community.jenkins.io/t/my-jenkins-startup-times-out-it-appears-to-work-but-the-start-command-times-out-on-the-shell-prompt/1038",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: 2.387 with java-11 failed to start",
+     "url": "https://community.jenkins.io/t/newly-installed-jenkins-2-387-with-java-11-jenkins-service-failed-to-start/7357",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins docs: Java support policy",
+     "url": "https://www.jenkins.io/doc/book/platform-information/support-policy-java/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins \"older than the minimum required version\" java",
+     "url": "https://stackoverflow.com/search?q=jenkins+%22older+than+the+minimum+required+version%22+java",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: jenkins wont start after upgrade java",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=jenkins+wont+start+after+upgrade+java&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "A plugin update breaks jobs or locks you out",
+   "error_text": "Failed Loading plugin ... | CannotResolveClassException: hudson.security.GlobalMatrixAuthorizationStrategy | jobs missing after update",
+   "context": "'Update all' in the plugin manager on a long-lived controller.",
+   "tool": "Jenkins",
+   "area": "jenkins plugins",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "community.jenkins.io 4218 (~16k), 10341, 5866 'Post upgrade issue' (~21k).",
+   "root_causes": [
+    "dependency not updated",
+    "plugin needs newer core",
+    "partial update",
+    "security realm plugin failed to load"
+   ],
+   "diagnosis": [
+    "journalctl -u jenkins | grep -E 'SEVERE|Failed Loading plugin'",
+    "ls -lt $JENKINS_HOME/plugins/*.bak"
+   ],
+   "fix": [
+    "downgrade from .bak / backup",
+    "install missing dependency with jenkins-plugin-cli",
+    "disable plugin with .disabled file"
+   ],
+   "prevention": "plugins.txt pinned, staged upgrades, backups before updates.",
+   "sources": [
+    {
+     "title": "Jenkins community: Cannot resolve class GlobalMatrixAuthorizationStrategy",
+     "url": "https://community.jenkins.io/t/cannot-resolve-class-exception-hudson-security-global-matrix-authorization-strategy/4218",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: jobs can't be loaded after plugin update",
+     "url": "https://community.jenkins.io/t/why-my-jenkins-jobs-cant-be-loaded-after-updated-new-version-plugin/10341",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Jenkins post upgrade issue",
+     "url": "https://community.jenkins.io/t/jenkins-post-upgrade-issue/5866",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins plugin update Failed Loading plugin dependency",
+     "url": "https://stackoverflow.com/search?q=jenkins+plugin+update+Failed+Loading+plugin+dependency",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: plugin update broke jenkins",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=plugin+update+broke+jenkins&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "'No valid crumb was included in the request' / 403 behind a reverse proxy",
+   "error_text": "HTTP ERROR 403 No valid crumb was included in the request | It appears that your reverse proxy set up is broken.",
+   "context": "Jenkins behind nginx/Traefik/Apache; scripts calling the API.",
+   "tool": "Jenkins",
+   "area": "jenkins proxy",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "community.jenkins.io 3348 (~23k), 121 (~29k), 3214 (~23k).",
+   "root_causes": [
+    "missing Host/X-Forwarded headers",
+    "Jenkins URL mismatch",
+    "session not sticky",
+    "scripts with password instead of API token"
+   ],
+   "diagnosis": [
+    "curl -s -u ops:API_TOKEN https://jenkins.example.com/crumbIssuer/api/json",
+    "Manage Jenkins admin monitor"
+   ],
+   "fix": [
+    "proxy headers",
+    "Jenkins URL",
+    "API tokens for scripts",
+    "never disable CSRF"
+   ],
+   "prevention": "Reverse-proxy test in the upgrade checklist.",
+   "sources": [
+    {
+     "title": "Jenkins community: No valid crumb after plugin installation",
+     "url": "https://community.jenkins.io/t/no-valid-crumb-error-after-plug-in-installation/3348",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: How to fix 'invalid crumb' warnings",
+     "url": "https://community.jenkins.io/t/how-to-fix-invalid-crumb-warnings/121",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: HTTP Status 403 Forbidden",
+     "url": "https://community.jenkins.io/t/jenkins-http-status-403-forbidden-error/3214",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins \"No valid crumb was included in the request\" nginx",
+     "url": "https://stackoverflow.com/search?q=jenkins+%22No+valid+crumb+was+included+in+the+request%22+nginx",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: no valid crumb reverse proxy",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=no+valid+crumb+reverse+proxy&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Builds run on the controller and fill it (disk below threshold, RAM)",
+   "error_text": "Disk space is below threshold of 1.00 GiB. Only 812.34 MiB out of 49.12 GiB left on /var/lib/jenkins.",
+   "context": "Small single-VM Jenkins.",
+   "tool": "Jenkins",
+   "area": "jenkins capacity",
+   "level": "L2-L3",
+   "frequency_signal": "community.jenkins.io 11942 (~16k), 9666, 3975 (~17k).",
+   "root_causes": [
+    "built-in node executors > 0",
+    "no build discarder",
+    "workspaces/docker images on controller",
+    "JVM heap default"
+   ],
+   "diagnosis": [
+    "du -sh $JENKINS_HOME/{jobs,workspace}",
+    "find builds dirs sorted by size"
+   ],
+   "fix": [
+    "numExecutors: 0",
+    "buildDiscarder(logRotator(...))",
+    "cleanWs()",
+    "agents",
+    "-Xmx sizing"
+   ],
+   "prevention": "Disk alerts; controller = scheduler only.",
+   "sources": [
+    {
+     "title": "Jenkins community: Disk space below threshold",
+     "url": "https://community.jenkins.io/t/disk-space-below-threshold/11942",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: builds appearing on built-in node",
+     "url": "https://community.jenkins.io/t/why-are-builds-appearing-on-built-in-node-but-its-not-using-the-executors-assigned-causing-high-memory-issue/9666",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Jenkins on small environment taking too much RAM",
+     "url": "https://community.jenkins.io/t/jenkins-on-small-environment-taking-too-much-ram-too-much-processes/3975",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins \"Disk space is below threshold\"",
+     "url": "https://stackoverflow.com/search?q=jenkins+%22Disk+space+is+below+threshold%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: built-in node executors disk full",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=built-in+node+executors+disk+full&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Agents keep disconnecting (ClosedChannelException, port 50000 not reachable)",
+   "error_text": "java.nio.channels.ClosedChannelException | ChannelClosedException ... The channel is closing down or has closed down | provided port:50000 is not reachable",
+   "context": "SSH or inbound agents on VMs/containers.",
+   "tool": "Jenkins",
+   "area": "jenkins agents",
+   "level": "L2-L3",
+   "frequency_signal": "community.jenkins.io 1634 (~25k), 2824 (Java 17 agents, ~25k), 12460 'FATAL: command execution failed' (~19k).",
+   "root_causes": [
+    "agent JVM OOM-killed",
+    "idle TCP dropped by firewall/NAT",
+    "Java version mismatch",
+    "inbound TCP port blocked by proxy",
+    "agent host sleep/disk full"
+   ],
+   "diagnosis": [
+    "dmesg -T | grep -i oom",
+    "agent log",
+    "java -version on agent",
+    "nc -vz jenkins.example.com 50000"
+   ],
+   "fix": [
+    "WebSocket inbound agents",
+    "SSH agents",
+    "align Java",
+    "memory"
+   ],
+   "prevention": "Agents as cattle (containers/VM templates); monitor agent availability.",
+   "sources": [
+    {
+     "title": "Jenkins community: Agent does not stay connected: ClosedChannelException",
+     "url": "https://community.jenkins.io/t/agent-does-not-stay-connected-java-nio-channels-closedchannelexception/1634",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: upgrade agents to Java 17",
+     "url": "https://community.jenkins.io/t/how-to-upgrade-agents-to-java-17-but-keep-java-version-for-builds-at-java-8-11/2824",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: FATAL: command execution failed",
+     "url": "https://community.jenkins.io/t/jenkins-issue-fatal-command-execution-failed/12460",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins agent ClosedChannelException disconnect",
+     "url": "https://stackoverflow.com/search?q=jenkins+agent+ClosedChannelException+disconnect",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: agent keeps disconnecting",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=agent+keeps+disconnecting&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Git checkout fails in Jenkins (host key verification, credentials, private CA)",
+   "error_text": "stderr: Host key verification failed. fatal: Could not read from remote repository. | No ED25519 host key is known for gitlab.example.com and you have requested strict checking.",
+   "context": "After git-client plugin added host key verification strategies (Jenkins 2.332 era) or GitLab reinstall.",
+   "tool": "Jenkins",
+   "area": "jenkins scm",
+   "level": "L1 Operator (Junior)",
+   "frequency_signal": "community.jenkins.io 4534 (~36k), 1986 (~17k), 8707, 2007.",
+   "root_causes": [
+    "known_hosts missing for jenkins user/agent",
+    "strategy 'Known hosts file'",
+    "host key changed",
+    "wrong credential type",
+    "HTTPS with private CA"
+   ],
+   "diagnosis": [
+    "sudo -u jenkins ssh -T git@gitlab.example.com",
+    "sudo -u jenkins ssh-keygen -F gitlab.example.com"
+   ],
+   "fix": [
+    "Git Host Key Verification Configuration: manually provided keys (JCasC)",
+    "credentials of type SSH key",
+    "CA in agent trust store"
+   ],
+   "prevention": "Host keys managed as code.",
+   "sources": [
+    {
+     "title": "Jenkins community: Git stderr: Host key verification failed",
+     "url": "https://community.jenkins.io/t/git-stderr-host-key-verification-failed/4534",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Failed to connect to git repository after upgrade to 2.332.1",
+     "url": "https://community.jenkins.io/t/failed-to-connect-to-git-repository-after-upgrade-to-jenkins-2-332-1-with-git-source-code-management/1986",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: not able to connect to git repository",
+     "url": "https://community.jenkins.io/t/jenkins-not-able-to-connect-to-git-repository/8707",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Timeout connecting to GitHub",
+     "url": "https://community.jenkins.io/t/timeout-connecting-to-github/2007",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins \"Host key verification failed\" git",
+     "url": "https://stackoverflow.com/search?q=jenkins+%22Host+key+verification+failed%22+git",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: host key verification failed git",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=host+key+verification+failed+git&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Jenkins configuration drifts: rebuild the controller with JCasC",
+   "error_text": "ConfiguratorException: Invalid configuration elements for type ... | nobody knows how the controller was configured",
+   "context": "Long-lived controller configured by hand.",
+   "tool": "Jenkins JCasC",
+   "area": "jenkins as code",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "community.jenkins.io 'Migrating Jenkins' (~15k); JCasC is the standard answer.",
+   "root_causes": [
+    "UI-only config",
+    "unpinned plugins",
+    "schema changes between plugin versions",
+    "secrets inline"
+   ],
+   "diagnosis": [
+    "Manage Jenkins > Configuration as Code > View/Download configuration",
+    "jenkins-plugin-cli --available-updates"
+   ],
+   "fix": [
+    "image FROM jenkins/jenkins:lts-jdk21 + plugins.txt + CASC_JENKINS_CONFIG",
+    "secrets via env/secret files"
+   ],
+   "prevention": "Treat the controller as cattle; restore drill.",
+   "sources": [
+    {
+     "title": "Jenkins plugin: Configuration as Code",
+     "url": "https://plugins.jenkins.io/configuration-as-code/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Jenkins docs: Configuration as Code",
+     "url": "https://www.jenkins.io/doc/book/managing/casc/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Jenkins community: Migrating Jenkins",
+     "url": "https://community.jenkins.io/t/migrating-jenkins/894",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: jenkins configuration as code Invalid configuration elements",
+     "url": "https://stackoverflow.com/search?q=jenkins+configuration+as+code+Invalid+configuration+elements",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/jenkinsci search: jcasc migration",
+     "url": "https://www.reddit.com/r/jenkinsci/search/?q=jcasc+migration&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "GitHub Actions: 'Waiting for a runner to pick up this job...' on self-hosted runners",
+   "error_text": "Waiting for a runner to pick up this job...",
+   "context": "Org/repo self-hosted runners with labels and runner groups.",
+   "tool": "GitHub Actions runner",
+   "area": "actions runners",
+   "level": "L1-L2",
+   "frequency_signal": "actions/runner #3609 (141 comments), #756 (runners disappeared), #3857 ('Runner not found').",
+   "root_causes": [
+    "runs-on labels must all match",
+    "runner group not allowed for repo (public repos off by default)",
+    "runner offline/busy",
+    "runner removed after long offline period",
+    "outdated runner with auto-update off"
+   ],
+   "diagnosis": [
+    "journalctl -u 'actions.runner.*'",
+    "_diag/Runner_*.log",
+    "gh api repos/OWNER/REPO/actions/runners"
+   ],
+   "fix": [
+    "fix labels",
+    "runner group access",
+    "more runners/ARC",
+    "re-register"
+   ],
+   "prevention": "Alert on runner offline; ephemeral autoscaled runners.",
+   "sources": [
+    {
+     "title": "actions/runner #3609: stuck on Waiting for a runner",
+     "url": "https://github.com/actions/runner/issues/3609",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "actions/runner #756: Self-hosted runners disappeared",
+     "url": "https://github.com/actions/runner/issues/756",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "actions/runner #3857: Runner not found",
+     "url": "https://github.com/actions/runner/issues/3857",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "GitHub docs: Monitoring and troubleshooting self-hosted runners",
+     "url": "https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/monitoring-and-troubleshooting-self-hosted-runners",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: github actions self-hosted \"Waiting for a runner to pick up this job\"",
+     "url": "https://stackoverflow.com/search?q=github+actions+self-hosted+%22Waiting+for+a+runner+to+pick+up+this+job%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/github search: self hosted runner waiting for a runner",
+     "url": "https://www.reddit.com/r/github/search/?q=self+hosted+runner+waiting+for+a+runner&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "GitHub Actions: self-hosted job lost communication, abandoned or cancelled",
+   "error_text": "The self-hosted runner: RUNNER lost communication with the server. | The operation was canceled. | job abandoned",
+   "context": "Runner VM under memory/disk pressure or rebooted by unattended-upgrades.",
+   "tool": "GitHub Actions runner",
+   "area": "actions runners",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "actions/runner #1546 (job abandoned), #2468 (operation was canceled), #3819 (A task was cancelled).",
+   "root_causes": [
+    "OOM killer",
+    "disk full",
+    "host reboot/sleep",
+    "network",
+    "job kills runner processes"
+   ],
+   "diagnosis": [
+    "dmesg -T | grep -i oom",
+    "last -x reboot",
+    "_diag/Worker_*.log"
+   ],
+   "fix": [
+    "memory/disk sizing",
+    "ephemeral runners",
+    "maintenance windows for reboots"
+   ],
+   "prevention": "Monitor runner hosts like production.",
+   "sources": [
+    {
+     "title": "actions/runner #1546: [Self-hosted] job abandoned",
+     "url": "https://github.com/actions/runner/issues/1546",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "actions/runner #2468: The operation was canceled.",
+     "url": "https://github.com/actions/runner/issues/2468",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "actions/runner #3819: random 'A task was cancelled' errors",
+     "url": "https://github.com/actions/runner/issues/3819",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: github actions self-hosted runner lost communication with the server",
+     "url": "https://stackoverflow.com/search?q=github+actions+self-hosted+runner+lost+communication+with+the+server",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/github search: self hosted runner lost communication",
+     "url": "https://www.reddit.com/r/github/search/?q=self+hosted+runner+lost+communication&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Argo CD: OutOfSync right after a successful sync",
+   "error_text": "Status: OutOfSync immediately after Sync succeeded; diff shows normalized quantities, defaulted fields, HPA replicas, injected caBundle",
+   "context": "Helm/Kustomize apps on kubeadm clusters.",
+   "tool": "Argo CD",
+   "area": "gitops",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "Argo CD FAQ; #11143 (SSA StatefulSet diff), #9678 (RespectIgnoreDifferences, 69 comments), #4537, #5202 (Helm lookup, 254 reactions).",
+   "root_causes": [
+    "controllers/webhooks mutate fields",
+    "HPA owns replicas",
+    "quantity normalization",
+    "Helm random/lookup values",
+    "label conflicts with app.kubernetes.io/instance"
+   ],
+   "diagnosis": [
+    "argocd app diff APP",
+    "kubectl get ... --show-managed-fields"
+   ],
+   "fix": [
+    "ignoreDifferences (jsonPointers/jqPathExpressions/managedFieldsManagers)",
+    "RespectIgnoreDifferences=true",
+    "remove replicas when HPA",
+    "ServerSideDiff"
+   ],
+   "prevention": "Review diffs in PRs; keep generated values out of templates.",
+   "sources": [
+    {
+     "title": "Argo CD FAQ",
+     "url": "https://argo-cd.readthedocs.io/en/stable/faq/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #11143: StatefulSet diff with ServerSideApply",
+     "url": "https://github.com/argoproj/argo-cd/issues/11143",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #9678: ignoreDifferences + RespectIgnoreDifferences",
+     "url": "https://github.com/argoproj/argo-cd/issues/9678",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #4537: env diff not reported",
+     "url": "https://github.com/argoproj/argo-cd/issues/4537",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #5202: Helm lookup support",
+     "url": "https://github.com/argoproj/argo-cd/issues/5202",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: argocd OutOfSync after sync ignoreDifferences",
+     "url": "https://stackoverflow.com/search?q=argocd+OutOfSync+after+sync+ignoreDifferences",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search: argocd always outofsync",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=argocd+always+outofsync&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Argo CD: application stuck in Progressing (Ingress without an address on-prem)",
+   "error_text": "Health: Progressing (forever) on Ingress / SealedSecret",
+   "context": "kubeadm on-prem with Traefik ingress and no LoadBalancer IP.",
+   "tool": "Argo CD + Traefik",
+   "area": "gitops",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "argo-cd #14607, #5991 (SealedSecret), FAQ entry recommending Traefik publishedService.",
+   "root_causes": [
+    "Ingress health requires status.loadBalancer.ingress",
+    "controller doesn't publish status",
+    "CRDs without health checks"
+   ],
+   "diagnosis": [
+    "kubectl get ingress -o wide (ADDRESS empty)",
+    "argocd app resources APP"
+   ],
+   "fix": [
+    "Traefik providers.kubernetesIngress.publishedService.enabled",
+    "MetalLB",
+    "custom health Lua"
+   ],
+   "prevention": "Health checks reviewed when adding a new resource kind.",
+   "sources": [
+    {
+     "title": "argo-cd #14607: stuck in Progressing for ingress with no LB IP",
+     "url": "https://github.com/argoproj/argo-cd/issues/14607",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #5991: SealedSecret stuck Progressing",
+     "url": "https://github.com/argoproj/argo-cd/issues/5991",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Argo CD FAQ",
+     "url": "https://argo-cd.readthedocs.io/en/stable/faq/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: argocd ingress progressing traefik publishedService",
+     "url": "https://stackoverflow.com/search?q=argocd+ingress+progressing+traefik+publishedService",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search: argocd progressing ingress",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=argocd+progressing+ingress&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Argo CD can't reach Git, Helm/OCI or its own API (x509, knownhosts mismatch, oci://, grpc-web)",
+   "error_text": "x509: certificate signed by unknown authority | ssh: handshake failed: knownhosts: key mismatch | rpc error: code = Unavailable desc = transport is closing | not a valid chart repository",
+   "context": "Private GitLab with internal CA, Harbor as Helm OCI registry, CLI through Traefik.",
+   "tool": "Argo CD",
+   "area": "gitops",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "argo-cd #7723 (GitHub host key change), #10823 (oci:// prefix), FAQ grpc-web and x509 entries.",
+   "root_causes": [
+    "CA not in argocd-tls-certs-cm",
+    "known hosts outdated",
+    "OCI repo configured with oci:// prefix / without enableOCI",
+    "proxy without HTTP/2"
+   ],
+   "diagnosis": [
+    "argocd repo list",
+    "kubectl -n argocd logs deploy/argocd-repo-server | grep -E 'x509|knownhosts'"
+   ],
+   "fix": [
+    "argocd cert add-tls",
+    "argocd cert add-ssh --batch",
+    "helm repo secret enableOCI",
+    "--grpc-web"
+   ],
+   "prevention": "CA and host keys managed declaratively in argocd-*-cm.",
+   "sources": [
+    {
+     "title": "argo-cd #7723: SSH to github.com host key mismatch",
+     "url": "https://github.com/argoproj/argo-cd/issues/7723",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #10823: oci:// prefix not valid chart",
+     "url": "https://github.com/argoproj/argo-cd/issues/10823",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Argo CD FAQ",
+     "url": "https://argo-cd.readthedocs.io/en/stable/faq/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: argocd x509 certificate signed by unknown authority repository",
+     "url": "https://stackoverflow.com/search?q=argocd+x509+certificate+signed+by+unknown+authority+repository",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search: argocd private ca gitlab",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=argocd+private+ca+gitlab&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Argo CD sync waits forever for a hook",
+   "error_text": "waiting for completion of hook batch/Job/db-migrate",
+   "context": "PreSync migration Jobs.",
+   "tool": "Argo CD",
+   "area": "gitops",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "argo-cd #6880 (137 comments), #9830 (hooks only on manual sync).",
+   "root_causes": [
+    "Job never completes",
+    "Job deleted (TTL) before result recorded",
+    "missing hook-delete-policy",
+    "hook semantics differ between sync types"
+   ],
+   "diagnosis": [
+    "argocd app get APP",
+    "kubectl get jobs,pods -l job-name=db-migrate",
+    "kubectl logs job/db-migrate"
+   ],
+   "fix": [
+    "hook-delete-policy BeforeHookCreation",
+    "backoffLimit/activeDeadlineSeconds",
+    "argocd app terminate-op"
+   ],
+   "prevention": "Migration jobs idempotent with deadlines.",
+   "sources": [
+    {
+     "title": "argo-cd #6880: waiting for completion of hook",
+     "url": "https://github.com/argoproj/argo-cd/issues/6880",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #9830: hook not running on auto sync",
+     "url": "https://github.com/argoproj/argo-cd/issues/9830",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: argocd \"waiting for completion of hook\"",
+     "url": "https://stackoverflow.com/search?q=argocd+%22waiting+for+completion+of+hook%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search: argocd presync hook stuck",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=argocd+presync+hook+stuck&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Argo CD: a failed sync blocks newer commits; rollback vs auto-sync",
+   "error_text": "Skipping auto-sync: failed previous sync attempt to [SHA] | rollback cannot be initiated when auto-sync is enabled",
+   "context": "Auto-sync with retries in production.",
+   "tool": "Argo CD",
+   "area": "gitops",
+   "level": "L4 SRE (Senior/Lead)",
+   "frequency_signal": "argo-cd #11494 (retrying failed syncs block newer commits), #9570 (rollback-aware auto-sync, 117 reactions), #7385 image updater.",
+   "root_causes": [
+    "retry on the failed revision",
+    "auto-sync prevents UI rollback",
+    "drift between Git and cluster after manual fixes"
+   ],
+   "diagnosis": [
+    "argocd app get APP --show-operation",
+    "argocd app history APP"
+   ],
+   "fix": [
+    "git revert = GitOps rollback",
+    "terminate-op, sync newer revision",
+    "retry limits/backoff"
+   ],
+   "prevention": "Promotion via PRs; rollback runbook rehearsed.",
+   "sources": [
+    {
+     "title": "argo-cd #11494: retrying failed syncs block newer commits",
+     "url": "https://github.com/argoproj/argo-cd/issues/11494",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #9570: rollback aware auto-sync",
+     "url": "https://github.com/argoproj/argo-cd/issues/9570",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #7385: merge Argo CD Image Updater",
+     "url": "https://github.com/argoproj/argo-cd/issues/7385",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: argocd rollback auto-sync enabled",
+     "url": "https://stackoverflow.com/search?q=argocd+rollback+auto-sync+enabled",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search: argocd rollback auto sync",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=argocd+rollback+auto+sync&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Flux reconciliation stuck (Kustomization not ready, HelmRelease retries exhausted)",
+   "error_text": "kustomization path not found | install retries exhausted / upgrade retries exhausted | dependency ... is not ready",
+   "context": "Flux v2 bootstrap on GitLab.",
+   "tool": "Flux",
+   "area": "gitops",
+   "level": "L3 Platform (Senior)",
+   "frequency_signal": "Common Flux issue/discussion topics (search links).",
+   "root_causes": [
+    "wrong path/branch",
+    "auth to Git",
+    "Helm install failure then retries exhausted",
+    "dependsOn chain"
+   ],
+   "diagnosis": [
+    "flux get all -A",
+    "flux events",
+    "flux logs --level=error"
+   ],
+   "fix": [
+    "fix source, flux reconcile source git",
+    "suspend/resume HelmRelease after fixing"
+   ],
+   "prevention": "flux check in CI; alerts via notification-controller.",
+   "sources": [
+    {
+     "title": "GitHub fluxcd/flux2 issue search: \"upgrade retries exhausted\"",
+     "url": "https://github.com/fluxcd/flux2/issues?q=%22upgrade+retries+exhausted%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: flux helmrelease upgrade retries exhausted",
+     "url": "https://stackoverflow.com/search?q=flux+helmrelease+upgrade+retries+exhausted",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search: flux helmrelease retries exhausted",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=flux+helmrelease+retries+exhausted&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "SonarQube container won't start: vm.max_map_count too low",
+   "error_text": "bootstrap check failure [1] of [1]: max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144]",
+   "context": "SonarQube in Docker/Dokploy on Ubuntu.",
+   "tool": "SonarQube",
+   "area": "quality",
+   "level": "L1 Operator (Junior)",
+   "frequency_signal": "Sonar community thread 48406; official Linux prerequisites page.",
+   "root_causes": [
+    "Embedded Elasticsearch needs vm.max_map_count >= 524288 (Sonar requirement) and higher file limits; containers can't change it."
+   ],
+   "diagnosis": [
+    "sysctl vm.max_map_count",
+    "docker logs sonarqube | grep -i bootstrap"
+   ],
+   "fix": [
+    "/etc/sysctl.d/99-sonarqube.conf vm.max_map_count=524288 fs.file-max=131072",
+    "ulimits nofile 131072 nproc 8192"
+   ],
+   "prevention": "Host prerequisites in provisioning.",
+   "sources": [
+    {
+     "title": "Sonar docs: Linux pre-installation (Community Build)",
+     "url": "https://docs.sonarsource.com/sonarqube-community-build/server-installation/pre-installation/linux",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Sonar community: why vm.max_map_count=524288",
+     "url": "https://community.sonarsource.com/t/sonarqube-8-8-prerequisites-why-set-vm-max-map-count-524288-regardless-of-hardware-specifications/48406",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: sonarqube docker vm.max_map_count 65530 too low",
+     "url": "https://stackoverflow.com/search?q=sonarqube+docker+vm.max_map_count+65530+too+low",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: sonarqube docker max_map_count",
+     "url": "https://www.reddit.com/r/devops/search/?q=sonarqube+docker+max_map_count&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Sonar analysis or quality gate misleads in CI (shallow clone, branches, gate not enforced)",
+   "error_text": "Shallow clone detected, no blame information will be provided. | To use the property \"sonar.branch.name\" and analyze branches, Developer Edition or above is required.",
+   "context": "GitLab CI scanner job.",
+   "tool": "SonarQube",
+   "area": "quality",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Classic scanner warnings; docs.",
+   "root_causes": [
+    "GIT_DEPTH default 20",
+    "Community Build analyses main branch only",
+    "qualitygate.wait not set",
+    "token/URL/CA"
+   ],
+   "diagnosis": [
+    "scanner log warnings"
+   ],
+   "fix": [
+    "GIT_DEPTH 0",
+    "sonar.qualitygate.wait=true",
+    "SONAR_TOKEN masked",
+    "truststore for private CA"
+   ],
+   "prevention": "Gate in the pipeline, not a dashboard nobody reads.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: sonarqube \"Shallow clone detected\" gitlab",
+     "url": "https://stackoverflow.com/search?q=sonarqube+%22Shallow+clone+detected%22+gitlab",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: sonarqube quality gate gitlab ci",
+     "url": "https://www.reddit.com/r/devops/search/?q=sonarqube+quality+gate+gitlab+ci&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Nexus proxy repositories fail from CI (401, HTTP vs HTTPS connector, read-only disk)",
+   "error_text": "npm ERR! code E401 | server gave HTTP response to HTTPS client | read-only mode",
+   "context": "Nexus as npm/Maven/Docker proxy for on-prem CI.",
+   "tool": "Nexus Repository",
+   "area": "artifact repos",
+   "level": "L2 Troubleshooter (Mid-level)",
+   "frequency_signal": "Classic support topics; docs.",
+   "root_causes": [
+    "auth config per registry path",
+    "Docker connector port/protocol",
+    "disk free-space threshold",
+    "no compaction"
+   ],
+   "diagnosis": [
+    "npm config get registry; npm ping",
+    "curl -I https://nexus.example.com:8443/v2/"
+   ],
+   "fix": [
+    ".npmrc scoped _auth",
+    "HTTPS connector behind Traefik",
+    "cleanup policies + compact blob store task"
+   ],
+   "prevention": "Disk alerts; one group repo per ecosystem.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: nexus npm E401 Unable to authenticate gitlab ci",
+     "url": "https://stackoverflow.com/search?q=nexus+npm+E401+Unable+to+authenticate+gitlab+ci",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: nexus repository docker proxy",
+     "url": "https://www.reddit.com/r/devops/search/?q=nexus+repository+docker+proxy&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Secrets leak into job logs (set -x, transformed values, Groovy interpolation)",
+   "error_text": "token visible in job log | Warning: A secret was passed to \"sh\" using Groovy String interpolation, which is insecure.",
+   "context": "Any CI tool.",
+   "tool": "GitLab CI / Jenkins / GitHub Actions",
+   "area": "security",
+   "level": "L2-L3",
+   "frequency_signal": "Common incident class; Jenkins prints an explicit warning.",
+   "root_causes": [
+    "set -x / env / curl -v",
+    "masked value transformed (base64/url-encoded)",
+    "Groovy double quotes",
+    "derived secrets not masked in Actions"
+   ],
+   "diagnosis": [
+    "search job traces for token prefixes",
+    "gitleaks"
+   ],
+   "fix": [
+    "rotate",
+    "erase job logs",
+    "file variables",
+    "single quotes in Jenkins sh",
+    "::add-mask::",
+    "OIDC id_tokens"
+   ],
+   "prevention": "Secret detection; short-lived credentials.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: jenkins \"Groovy String interpolation, which is insecure\"",
+     "url": "https://stackoverflow.com/search?q=jenkins+%22Groovy+String+interpolation%2C+which+is+insecure%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/devops search: secret leaked in ci logs",
+     "url": "https://www.reddit.com/r/devops/search/?q=secret+leaked+in+ci+logs&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "GitLab CI/CD + GitLab Runner",
+   "what": "CI/CD built into GitLab; .gitlab-ci.yml defines pipelines; runners poll GitLab and execute jobs with an executor.",
+   "architecture": "GitLab (Rails/Puma, Sidekiq, Gitaly, PostgreSQL, Redis, registry) creates pipelines; gitlab-runner long-polls POST /api/v4/jobs/request over HTTPS (outbound only); executors: shell, docker, docker-autoscaler, kubernetes, instance, custom.",
+   "current_version_notes": "Runner authentication tokens (glrt-) since 16.0; registration tokens disabled by default since 17.0, removal planned for 20.0; kaniko docs removed (kaniko unmaintained); Buildah/BuildKit rootless recommended alternatives.",
+   "gotchas": [
+    "runner must carry all job tags",
+    "protected variables only on protected refs",
+    "dind TLS on 2376",
+    "local cache per runner unless distributed",
+    "docker.sock = root"
+   ],
+   "official_docs": "https://docs.gitlab.com/"
+  },
+  {
+   "tool": "Jenkins",
+   "what": "Self-hosted automation server; controller schedules, agents execute; Pipeline (Jenkinsfile), plugins, credentials, JCasC.",
+   "architecture": "Controller (Java, JENKINS_HOME on disk) + agents via SSH or inbound (TCP 50000 or WebSocket).",
+   "current_version_notes": "Java 21 or 25 required from weekly 2.545 / LTS 2.555.1 (April 2026); Java 17 last supported in LTS 2.541.x.",
+   "gotchas": [
+    "plugin dependency hell",
+    "builds on built-in node",
+    "crumb/proxy headers",
+    "Groovy interpolation of secrets"
+   ],
+   "official_docs": "https://www.jenkins.io/doc/"
+  },
+  {
+   "tool": "GitHub Actions self-hosted runner",
+   "what": "Runner application (Runner.Listener/Runner.Worker) that pulls jobs from GitHub.",
+   "architecture": "Outbound HTTPS long-poll; labels + runner groups; _diag logs; svc.sh service; ARC for Kubernetes.",
+   "current_version_notes": "Runner auto-updates; outdated runners stop receiving jobs; long-offline runners are removed automatically.",
+   "gotchas": [
+    "never on public repos",
+    "persistent state between jobs",
+    "docker group = root"
+   ],
+   "official_docs": "https://docs.github.com/en/actions"
+  },
+  {
+   "tool": "Argo CD",
+   "what": "Pull-based GitOps controller for Kubernetes.",
+   "architecture": "argocd-server (UI/API/gRPC), repo-server (renders Helm/Kustomize with helm template), application-controller (diff/sync), redis, dex; config in argocd-cm, argocd-rbac-cm, argocd-tls-certs-cm, argocd-ssh-known-hosts-cm.",
+   "current_version_notes": "Reconcile every ~3 min by default (timeout.reconciliation); helm ls shows nothing because Argo CD uses helm template.",
+   "gotchas": [
+    "OutOfSync from mutated fields",
+    "Ingress Progressing without LB status",
+    "hooks",
+    "auto-sync vs rollback"
+   ],
+   "official_docs": "https://argo-cd.readthedocs.io/en/stable/"
+  },
+  {
+   "tool": "Flux",
+   "what": "GitOps toolkit (source, kustomize, helm, notification, image automation controllers).",
+   "architecture": "CRDs GitRepository/OCIRepository, Kustomization, HelmRelease; flux CLI.",
+   "current_version_notes": "Flux v2 GA.",
+   "gotchas": [
+    "retries exhausted needs manual reset",
+    "path/branch mistakes"
+   ],
+   "official_docs": "https://fluxcd.io/flux/"
+  },
+  {
+   "tool": "SonarQube",
+   "what": "Static analysis server + scanners; quality gates.",
+   "architecture": "Web server + compute engine + embedded Elasticsearch + PostgreSQL.",
+   "current_version_notes": "Community Build (formerly Community Edition) analyses the main branch only.",
+   "gotchas": [
+    "vm.max_map_count 524288",
+    "shallow clones",
+    "qualitygate.wait"
+   ],
+   "official_docs": "https://docs.sonarsource.com/"
+  },
+  {
+   "tool": "Harbor",
+   "what": "OCI registry with projects, robot accounts, scanning (Trivy), replication, proxy cache, retention, GC.",
+   "architecture": "nginx/core/registry/jobservice/postgres/redis/trivy containers.",
+   "current_version_notes": "Docs at v2.15.0 verified in the KodeKloud map.",
+   "gotchas": [
+    "robot$ names",
+    "robot expiry 30 days default",
+    "GC after retention",
+    "external_url behind proxies"
+   ],
+   "official_docs": "https://goharbor.io/docs/"
+  },
+  {
+   "tool": "Nexus Repository",
+   "what": "Artifact repository manager (Maven, npm, PyPI, Docker, raw) with proxy/hosted/group repos.",
+   "architecture": "Java app with blob stores and an embedded or external database.",
+   "current_version_notes": "Check the edition/feature matrix for Community vs Pro.",
+   "gotchas": [
+    "Docker needs a connector/port",
+    "cleanup + compact tasks",
+    "free-space threshold"
+   ],
+   "official_docs": "https://help.sonatype.com/"
+  },
+  {
+   "tool": "Woodpecker / Drone",
+   "what": "Lightweight container-native CI servers (Woodpecker is the community fork of Drone).",
+   "architecture": "Server + agents; pipelines as YAML; each step a container.",
+   "current_version_notes": "Good fit for small Gitea/Forgejo setups.",
+   "gotchas": [
+    "fewer enterprise features"
+   ],
+   "official_docs": "https://woodpecker-ci.org/"
+  }
+ ],
+ "learning_signals": [
+  "Practitioners learn CI/CD by breaking a lab runner: wrong tags, protected variables, dind TLS, private CA.",
+  "Forum top lists are dominated by beginner questions (runner not picking jobs, docker login non-TTY, x509) that cost hours once and minutes after.",
+  "Seniors standardise: one shared CI template, pinned images, runners split by trust, everything (JCasC, Argo CD apps) in Git.",
+  "Release notes and deprecation pages (GitLab runner tokens, kaniko removal, Jenkins Java baseline) predict the next outage."
+ ],
+ "coverage_notes": "Researched 2026-10-03 with 20 web calls: forum.gitlab.com top (all time), gitlab-runner issues by popularity (GitLab API), community.jenkins.io top, actions/runner issues by reactions and bug label by comments, argo-cd issues by reactions and bug label, Argo CD FAQ, GitLab runner self-signed cert docs, kaniko status search, GitHub self-hosted runner troubleshooting docs, Jenkins Java support policy, Harbor robot$ search, SonarQube max_map_count search, forum thread 59936, job stuck searches, runner token deprecation, JCasC docs, DinD MTU search. Reddit/SO/SF not accessed (blocked); search links constructed. Some URLs reused from sibling catalogs (docker.json, paas.json, proxy.json) where they were already verified."
+}

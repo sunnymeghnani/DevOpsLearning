@@ -1,0 +1,71 @@
+{
+  "id": "proxmox-2023-two-node-ip-change",
+  "title": "Two nodes, one new IP, no quorum",
+  "level": "L3",
+  "track": "cloud",
+  "topics": ["proxmox-ve", "change-management"],
+  "minutes": 7,
+  "role": "You run a two-node Proxmox VE cluster for a small office: pve1 and pve2, each with its own VMs.",
+  "source": {
+    "label": "Proxmox Support Forum: cluster broken after changing 1 of 2 nodes' IP, no quorum (solved, June 2023)",
+    "url": "https://forum.proxmox.com/threads/cluster-broken-after-changing-1-of-2-nodes-ip-vms-not-starting-for-no-quorum-please-help.128377/",
+    "org": "Proxmox community",
+    "date": "2023-06-04",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You moved pve1 to a new address and edited `corosync.conf` on both nodes by hand. Now VMs won't start on either node, and the web shell on pve2 fails with code 1006. SSH to both still works.",
+  "steps": [
+    {
+      "situation": "Each node tells a different story.",
+      "evidence": "pve1$ pvecm status | grep -E 'Nodes|votes|Quorate'\nNodes:            1\nExpected votes:   2\nTotal votes:      1\nQuorate:          No\npve1$ journalctl -u corosync | tail -1\n[KNET  ] link: host: 2 link: 0 is down\npve2$ pvecm status\nCannot initialize CMAP service",
+      "evidence_cmd": "pvecm status",
+      "choices": [
+        {"text": "Compare both nodes: corosync state and the `config_version` in each node's corosync.conf", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "pve1 runs corosync alone; on pve2 corosync has failed. Two nodes disagreeing usually means two different configs."},
+        {"text": "Run `pvecm expected 1` on both nodes to get VMs running now", "verdict": "risky", "effect": {"service": 15, "time": 5, "evidence": -10, "trust": -10}, "why": "Each node then believes it alone is the cluster and writes to the shared config by itself. That's how a split brain starts."},
+        {"text": "Reboot both nodes and hope they find each other", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -5, "trust": 0}, "why": "They'll boot with the same mismatched configs and the same result."}
+      ]
+    },
+    {
+      "situation": "The versions don't match.",
+      "evidence": "pve1$ grep config_version /etc/pve/corosync.conf\n  config_version: 6\npve2$ grep config_version /etc/corosync/corosync.conf\n  config_version: 2",
+      "evidence_cmd": "grep config_version /etc/pve/corosync.conf",
+      "choices": [
+        {"text": "Back up both, then copy the correct, newer file to pve2, in /etc/pve and /etc/corosync", "verdict": "best", "effect": {"service": 10, "time": 10, "evidence": 10, "trust": 0}, "why": "One config, one version, both places. Check the new address and the version in it before you copy."},
+        {"text": "Delete corosync's config on pve2 so it runs standalone", "verdict": "risky", "effect": {"service": 10, "time": -5, "evidence": -5, "trust": -5}, "why": "In the thread this gave pve2 its VMs and web UI back, but the nodes still couldn't see each other, and the cluster was now in two halves."},
+        {"text": "Copy pve2's old version-2 file over pve1", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": 0, "trust": 0}, "why": "You'd throw away the new address and break the node that was still half working."}
+      ]
+    },
+    {
+      "situation": "The configs match, but the web UI says `Connection error 401: No ticket` between the nodes.",
+      "choices": [
+        {"text": "Run `pvecm updatecerts --force` on both nodes, then reboot them", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 5, "trust": 5}, "why": "That was the final step that fixed the cluster in the thread: same corosync files, regenerated certificates, reboot."},
+        {"text": "Reinstall pve2 and join it again", "verdict": "bad", "effect": {"service": -15, "time": -20, "evidence": -5, "trust": -5}, "why": "Hours of work, and its VMs go offline for all of them."},
+        {"text": "Delete the certificate files under /etc/pve by hand", "verdict": "risky", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": 0}, "why": "Guesswork on the cluster file system. Let the tool that owns the certificates rebuild them."}
+      ]
+    },
+    {
+      "situation": "The cluster is whole. What changes before the next address change?",
+      "choices": [
+        {"text": "Follow the documented procedure on a quorate cluster, back up corosync.conf, and add a QDevice as a third vote", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 5, "trust": 10}, "why": "Edit once in /etc/pve with the version bumped while the cluster can still agree, and a two-node cluster then survives losing one node."},
+        {"text": "Never change node addresses again", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "Networks change. A tested procedure beats a promise."},
+        {"text": "Keep editing files on each node, just more carefully", "verdict": "bad", "effect": {"service": -5, "time": 0, "evidence": -5, "trust": -5}, "why": "Two hand-edited copies is exactly how the versions drifted apart."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 4 June 2023 a Proxmox forum user changed the IP of one node in a two-node cluster and edited corosync.conf on both nodes. Quorum was lost and VMs would not start; the web shell failed with code 1006 while SSH worked. On the changed node corosync ran alone, logging that the link to host 2 was down, with 1 of 2 votes. On the other node corosync had failed, `pvecm status` said \"Cannot initialize CMAP service\", and its config version was 2 against 6. Copying corosync files across did not help at first. Deleting the corosync config on the failed node gave it back its local VMs and web UI, but the nodes stayed apart with \"401: No ticket\". What fixed it: copy `/etc/pve/corosync.conf` and `/etc/corosync/*` back from the other node, run `pvecm updatecerts --force` on both nodes, and reboot. The thread has no staff analysis of the cause.",
+    "lessons": ["Before changing a cluster address, have the procedure and a backup of corosync.conf.", "Two nodes disagreeing: compare config_version first.", "Forcing expected votes on both halves of a two-node cluster invites split brain.", "A two-node cluster needs a third vote (QDevice) to survive losing one node."],
+    "commands": ["pvecm status", "corosync-cfgtool -s", "journalctl -u corosync -b", "grep config_version /etc/pve/corosync.conf /etc/corosync/corosync.conf", "pvecm updatecerts --force"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "50-problems-cloud-iac-proxmox.md", "heading": "7.4 Cluster lost quorum"},
+      {"file": "50-problems-cloud-iac-proxmox.md", "heading": "7.2 Web UI dead after an IP, hostname or NIC change"}
+    ],
+    "sites": [
+      {"label": "Killercoda Devopsify: rewrite a broken runbook", "url": "https://killercoda.com/devopsify/course/en/rewrite-runbook-handover-run"},
+      {"label": "Wheel of Misfortune: replay this outage with a colleague", "url": "https://dastergon.github.io/wheel-of-misfortune/"}
+    ]
+  }
+}

@@ -1,0 +1,665 @@
+{
+  "domain": "paas",
+  "problems": [
+    {
+      "title": "Fresh install, but http://SERVER_IP:3000 doesn't open (timeout, refused or SSL error)",
+      "area": "install / first access",
+      "level": "L0 Foundations (Fresher)",
+      "tool": "Dokploy (same pattern: CapRover :3000, Coolify dashboard)",
+      "error_text": "Browser: ERR_CONNECTION_TIMED_OUT, ERR_CONNECTION_REFUSED, or ERR_SSL_PROTOCOL_ERROR when typing https://SERVER_IP:3000",
+      "context": "The first thing every new user does after the one-line install. The panel serves plain HTTP on port 3000 until it gets a domain. On-prem the server usually sits behind a corporate firewall or NAT, in the cloud behind a security group, so the port can be open on the host and still blocked on the path.",
+      "frequency_signal": "First entry of CapRover's troubleshooting page ('Cannot connect to ip_server:3000'); Dokploy has a 'UI not accessible' troubleshooting page; Coolify has 'Dashboard inaccessible'. Very common beginner question on r/selfhosted.",
+      "root_causes": [
+        "Using https:// on port 3000; the panel speaks plain HTTP there, so the browser reports an SSL protocol error.",
+        "A cloud security group, corporate firewall or NAT drops the port (timeout). UFW is rarely the cause, because Docker-published ports skip UFW's rules.",
+        "Wrong address: the private IP from outside the LAN, or the public NAT IP from inside it (no hairpin NAT).",
+        "Services still starting or crashed (dokploy waits for dokploy-postgres), or port 3000 already taken (Grafana also defaults to 3000)."
+      ],
+      "diagnosis": [
+        "curl -sS -o /dev/null -w '%{http_code}' http://localhost:3000   # on the server: 200/30x means the panel is up",
+        "docker service ls && docker service ps dokploy --no-trunc",
+        "sudo ss -ltnp 'sport = :3000'",
+        "nc -vz SERVER_IP 3000   # from your laptop: succeeded / timed out (path blocked) / refused (nothing listening)",
+        "CapRover: docker service ps captain-captain --no-trunc ; docker service logs captain-captain --since 60m"
+      ],
+      "fix": [
+        "Use http://SERVER_IP:3000, not https, for the first login.",
+        "Better: don't expose 3000 at all. Tunnel it: ssh -L 3000:localhost:3000 admin@SERVER_IP, then open http://localhost:3000 locally.",
+        "If you must open it, allow only your admin IP in the security group / corporate firewall, finish setup at once, give the panel a domain with HTTPS, then close 3000 again.",
+        "If dokploy isn't running: docker service logs dokploy --since 10m, then see the 'after a reboot' case (scale dokploy to 0 and back to 1)."
+      ],
+      "prevention": "Make an SSH tunnel your default way into admin panels, and record which firewall layers (UFW, security group, corporate firewall) sit in front of each server.",
+      "sources": [
+        {"title": "CapRover docs: Troubleshooting", "url": "https://caprover.com/docs/troubleshooting.html", "type": "official-docs", "verified": true},
+        {"title": "Dokploy docs: Troubleshooting - Dokploy Instance", "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance", "type": "official-docs", "verified": true},
+        {"title": "Coolify docs: Troubleshooting overview", "url": "https://coolify.io/docs/troubleshoot/overview", "type": "official-docs", "verified": true},
+        {"title": "Reddit r/selfhosted search: dokploy cannot access port 3000", "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+cannot+access+port+3000&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Installer aborts: 'Error: something is already running on port 443' (Apache, Nginx or Grafana hold 80/443/3000)",
+      "area": "install / ports",
+      "level": "L1 Operator (Junior)",
+      "tool": "Dokploy installer + Apache/Nginx on the same host",
+      "error_text": "Error: something is already running on port 80 | Error: something is already running on port 443 | Error: something is already running on port 3000 ('Dokploy requires port 3000 to be available...')",
+      "context": "install.sh checks the ports with ss -tulnp | grep ':443 ' and stops if anything listens. This is the reader's own Apache-holds-443 incident. Moving Apache to 81/444 gets the install through, but the old sites then answer only on odd ports until Traefik routes to them (see the 'Route a legacy Apache' case).",
+      "frequency_signal": "Hard-coded check in the official installer; 'port 80/443 already in use' with Docker/Traefik is one of the most repeated self-hosting questions on Server Fault and r/selfhosted; the reader hit it in production.",
+      "root_causes": [
+        "apache2 or nginx installed and enabled, bound to 0.0.0.0:80/443.",
+        "Another reverse proxy container (Nginx Proxy Manager, Caddy, an old Traefik) publishes 80/443.",
+        "Port 3000 taken by Grafana (its default), Gitea or a Node app.",
+        "A systemd socket unit holds the port, so stopping the service alone doesn't free it."
+      ],
+      "diagnosis": [
+        "sudo ss -ltnp '( sport = :80 or sport = :443 or sport = :3000 )'",
+        "sudo lsof -nP -iTCP:443 -sTCP:LISTEN",
+        "systemctl list-sockets | grep -E ':(80|443|3000)'",
+        "sudo apachectl -S   # every vhost with its port and config file",
+        "docker ps --format '{{.Names}} {{.Ports}}' | grep -E ':(80|443|3000)->'"
+      ],
+      "fix": [
+        "Cut-over: sudo systemctl disable --now apache2, then rerun: curl -sSL https://dokploy.com/install.sh | sudo sh",
+        "Staged (what the reader did): in /etc/apache2/ports.conf change Listen 80/443 to Listen 81 and Listen 444, update each <VirtualHost *:81>, run sudo apache2ctl configtest && sudo systemctl reload apache2, rerun the installer, then add a Traefik route to Apache.",
+        "Grafana on 3000: set http_port = 3001 under [server] in /etc/grafana/grafana.ini (or GF_SERVER_HTTP_PORT=3001) and restart grafana-server.",
+        "Re-check with ss before rerunning the installer."
+      ],
+      "prevention": "Keep a port inventory (ss -ltnp) per server and check it before installing anything that wants 80/443. Write the change with a rollback step (re-enable apache2).",
+      "sources": [
+        {"title": "Dokploy install.sh (port checks and messages)", "url": "https://dokploy.com/install.sh", "type": "official-script", "verified": true},
+        {"title": "Server Fault search: apache port 443 already in use docker traefik", "url": "https://serverfault.com/search?q=apache+port+443+already+in+use+docker+traefik", "type": "search", "verified": false},
+        {"title": "Reddit r/selfhosted search: dokploy port 80 already in use", "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+port+80+already+in+use&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Swarm init fails during install: advertise address not recognized or server IP not detected (multi-NIC, NAT, air-gapped)",
+      "area": "install / Docker Swarm",
+      "level": "L1 Operator (Junior)",
+      "tool": "Dokploy installer, Docker Swarm",
+      "error_text": "Error: Failed to initialize Docker Swarm | must specify a listening address because the address to advertise is not recognized as a system address, and a system's IP address to use could not be uniquely identified | ERROR: We couldn't detect your server IP address.",
+      "context": "The installer first asks public 'what is my IP' services (ifconfig.io, icanhazip.com), then local interfaces. On-prem the public address belongs to the corporate NAT, servers often have several NICs (management/production VLANs, bonds, Docker bridges), and air-gapped hosts can't reach the lookup services.",
+      "frequency_signal": "First item on Dokploy's Networking & DNS troubleshooting page; a wrong advertised address (Docker bridge 172.17.0.1) is the root cause in Dokploy #3375 (23 comments).",
+      "root_causes": [
+        "Several global IPv4 addresses, so Docker can't pick one.",
+        "The detected public IP is a NAT address that isn't on any local interface.",
+        "Outbound HTTP blocked, so detection returns nothing.",
+        "ADVERTISE_ADDR exported before sudo; sudo drops the environment."
+      ],
+      "diagnosis": [
+        "ip -o -4 addr show scope global",
+        "ip route get 192.0.2.1   # which source IP the kernel uses",
+        "curl -s ifconfig.io   # what the installer would detect",
+        "docker info --format '{{.Swarm.LocalNodeState}} {{.Swarm.NodeAddr}}'"
+      ],
+      "fix": [
+        "Pass it inline so sudo keeps it: curl -sSL https://dokploy.com/install.sh | sudo ADVERTISE_ADDR=192.0.2.10 sh (the LAN IP other nodes will use).",
+        "Half-initialised swarm: docker swarm leave --force, then rerun the installer.",
+        "Extra swarm flags go in DOCKER_SWARM_INIT_ARGS, e.g. --default-addr-pool 10.200.0.0/16.",
+        "Single-node cluster with a wrong address: #3375 used docker swarm init --force-new-cluster --advertise-addr 192.0.2.10 (back up first)."
+      ],
+      "prevention": "Static addresses in netplan, a documented 'cluster address' per server, and ADVERTISE_ADDR set explicitly in your install runbook or Ansible role.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Networking & DNS", "url": "https://docs.dokploy.com/docs/core/troubleshooting/networking", "type": "official-docs", "verified": true},
+        {"title": "Dokploy install.sh (IP detection, ADVERTISE_ADDR)", "url": "https://dokploy.com/install.sh", "type": "official-script", "verified": true},
+        {"title": "Dokploy #3375: Swarm services return 502 - overlay connectivity", "url": "https://github.com/Dokploy/dokploy/issues/3375", "type": "github-issue", "verified": true},
+        {"title": "Server Fault search: must specify a listening address docker swarm init", "url": "https://serverfault.com/search?q=%22must+specify+a+listening+address%22+docker+swarm+init", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Inside Proxmox LXC or on minimal kernels, services resolve but can't connect (no IPVS) - switch to DNSRR",
+      "area": "Docker Swarm networking",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Dokploy on Docker Swarm, Proxmox LXC",
+      "error_text": "Migration failed [Error: getaddrinfo ENOTFOUND dokploy-postgres] | connect ECONNREFUSED 10.0.1.2:5432 | postgres service cannot join the sandbox for 10.0.1.0/24",
+      "context": "Homelab and on-prem installs inside Proxmox LXC or on stripped kernels. Swarm's default VIP mode load-balances with kernel IPVS; without it a service name resolves to a virtual IP nobody answers. The UI hangs, apps can't reach databases, Cloudflare Tunnels can't reach apps.",
+      "frequency_signal": "Dokploy #2583 'Proxmox LXC Installation Issues' (23 comments) and #2331 'cannot connect to postgres' (19 comments, LXC the most common cause); the installer has ENDPOINT_MODE=dnsrr for LXC.",
+      "root_causes": [
+        "ip_vs kernel modules missing, so VIP endpoint mode can't work.",
+        "Unprivileged LXC without nesting/keyctl (and fuse).",
+        "Only the dokploy service switched to DNSRR; postgres and app services still use VIP."
+      ],
+      "diagnosis": [
+        "sudo modprobe ip_vs && lsmod | grep ip_vs",
+        "docker service inspect --format '{{.Spec.EndpointSpec.Mode}}' dokploy-postgres",
+        "docker exec CONTAINER getent hosts dokploy-postgres ; docker exec CONTAINER getent hosts tasks.dokploy-postgres",
+        "On the Proxmox host: pct config CTID | grep -E 'features|unprivileged'"
+      ],
+      "fix": [
+        "Fresh install: curl -sSL https://dokploy.com/install.sh | sudo ENDPOINT_MODE=dnsrr sh",
+        "Existing: docker service update --endpoint-mode dnsrr dokploy-postgres ; docker service update --endpoint-mode dnsrr dokploy (and every app service others call).",
+        "In DNSRR mode call services as tasks.SERVICE:PORT.",
+        "Proxmox: pct set CTID --features nesting=1,keyctl=1 (or a privileged CT); the robust fix is a full VM for Docker hosts."
+      ],
+      "prevention": "Run Docker/Swarm in VMs, not LXC, and test for ip_vs in your base image.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Networking & DNS (IPVS / DNSRR)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/networking", "type": "official-docs", "verified": true},
+        {"title": "Dokploy #2331: Dokploy container cannot connect to postgres", "url": "https://github.com/Dokploy/dokploy/issues/2331", "type": "github-issue", "verified": true},
+        {"title": "Dokploy #2583: Proxmox LXC Installation Issues", "url": "https://github.com/Dokploy/dokploy/issues/2583", "type": "github-issue", "verified": true},
+        {"title": "Reddit r/Proxmox search: docker swarm lxc overlay ipvs", "url": "https://www.reddit.com/r/Proxmox/search/?q=docker+swarm+lxc+overlay+ipvs&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "After a reboot the dashboard or every site is down (start-order race, Traefik needs a reload; Coolify's Redis)",
+      "area": "platform lifecycle / reboot",
+      "level": "L1 Operator (Junior)",
+      "tool": "Dokploy (same pattern in Coolify)",
+      "error_text": "Migration failed [Error: getaddrinfo ENOTFOUND dokploy-postgres] | Coolify: curl: (7) Failed to connect to 127.0.0.1 port 8080 | Redis: WARNING Memory overcommit must be enabled!",
+      "context": "After patching or a power cut, dokploy can start before dokploy-postgres and fail its migrations, and the Traefik container can come up before apps and networks are ready, so domains stay dead until someone reloads it.",
+      "frequency_signal": "Dokploy #1802 'Traefik not working properly upon restart' (54 comments, 2nd most-commented issue); Coolify #5933 'does not start correctly when the machine/host restart' (40 comments); Dokploy instance troubleshooting page.",
+      "root_causes": [
+        "No start ordering between Swarm services (dokploy, dokploy-postgres) and the standalone dokploy-traefik container.",
+        "Traefik started before the overlay network/services were ready.",
+        "A full disk made Postgres start in recovery mode.",
+        "Coolify: Redis saves failing without vm.overcommit_memory=1; another stack's service also named redis."
+      ],
+      "diagnosis": [
+        "docker ps -a --format '{{.Names}} {{.Status}}'   # expect dokploy, dokploy-postgres, dokploy-traefik",
+        "docker service logs dokploy --since 10m | tail -50 ; docker service logs dokploy-postgres --since 10m | tail -50",
+        "docker logs --tail 100 dokploy-traefik",
+        "df -h /var/lib/docker",
+        "Coolify: docker logs coolify-redis --tail 50 ; sysctl vm.overcommit_memory"
+      ],
+      "fix": [
+        "docker service scale dokploy=0 && docker service scale dokploy=1   # re-runs migrations once postgres is up",
+        "docker restart dokploy-traefik, or Web Server > Reload in the UI (#1802 workaround); if the panel domain is dead too: ssh -L 3000:localhost:3000 admin@SERVER_IP",
+        "Disk full: free space first (see the disk case), then restart dokploy.",
+        "Coolify: echo 'vm.overcommit_memory = 1' | sudo tee /etc/sysctl.d/99-redis.conf && sudo sysctl --system ; rename generic redis services in other stacks."
+      ],
+      "prevention": "Reboot test servers on purpose and time the recovery; external probes (blackbox_exporter) per domain so a post-reboot outage pages you.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Dokploy Instance", "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance", "type": "official-docs", "verified": true},
+        {"title": "Dokploy #1802: Traefik not working properly upon restart", "url": "https://github.com/Dokploy/dokploy/issues/1802", "type": "github-issue", "verified": true},
+        {"title": "Coolify #5933: does not start correctly when the host restarts", "url": "https://github.com/coollabsio/coolify/issues/5933", "type": "github-issue", "verified": true},
+        {"title": "Reddit r/selfhosted search: dokploy not working after reboot", "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+not+working+after+reboot&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Traefik never starts: 'read /etc/traefik/traefik.yml: is a directory'",
+      "area": "proxy / bind mounts",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Dokploy + Traefik (Docker bind-mount behaviour)",
+      "error_text": "Error: read /etc/traefik/traefik.yml: is a directory",
+      "context": "After manual installs, restores or cleaning /etc/dokploy. When a -v bind-mount source file is missing, dockerd creates an empty directory in its place; Traefik can't read its config and every domain is down. Same mechanism: 'read /root/.docker/config.json: is a directory' (#2098, 17 comments).",
+      "frequency_signal": "Dokploy #2018 (18 comments) and #2098 (17 comments); 'bind mount creates a directory' is a Stack Overflow classic.",
+      "root_causes": [
+        "/etc/dokploy/traefik/traefik.yml didn't exist when dokploy-traefik was (re)created.",
+        "Start-order timing between dokploy (which writes the file) and Traefik.",
+        "-v auto-creates missing sources; --mount type=bind would fail loudly instead."
+      ],
+      "diagnosis": [
+        "ls -ld /etc/dokploy/traefik/traefik.yml   # leading 'd' = directory",
+        "docker logs --tail 20 dokploy-traefik",
+        "docker inspect dokploy-traefik --format '{{json .Mounts}}' | jq '.[] | {Source, Destination}'"
+      ],
+      "fix": [
+        "docker service scale dokploy=0 ; docker stop dokploy-traefik",
+        "sudo rm -rf /etc/dokploy/traefik/traefik.yml   # only the wrongly created directory",
+        "docker service scale dokploy=1   # Dokploy writes the file again",
+        "docker rm -f dokploy-traefik and recreate it with the command from the Dokploy Instance troubleshooting page (current traefik:v3.6.x image).",
+        "config.json variant: remove the directory, create a file containing {} and restart the service."
+      ],
+      "prevention": "Back up all of /etc/dokploy (Dokploy's own backup includes it); in your own run/compose files prefer --mount type=bind.",
+      "sources": [
+        {"title": "Dokploy #2018: read /etc/traefik/traefik.yml: is a directory", "url": "https://github.com/Dokploy/dokploy/issues/2018", "type": "github-issue", "verified": true},
+        {"title": "Dokploy docs: Troubleshooting - Dokploy Instance (recreate services)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance", "type": "official-docs", "verified": true},
+        {"title": "Stack Overflow search: docker bind mount file is a directory", "url": "https://stackoverflow.com/search?q=docker+bind+mount+file+%22is+a+directory%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Compose or template domain answers '404 page not found' until you redeploy",
+      "area": "routing / Traefik labels",
+      "level": "L1 Operator (Junior)",
+      "tool": "Dokploy + Traefik",
+      "error_text": "404 page not found",
+      "context": "Applications are routed by files Dokploy writes to /etc/dokploy/traefik/dynamic, so domain changes apply at once. Compose services and templates are routed by Traefik labels injected only at deploy time, so a new or edited domain does nothing until the next deploy.",
+      "frequency_signal": "Dedicated section in Dokploy's Domains & Traefik troubleshooting page; recurring discussions (e.g. 'n8n 404 page not found'); 24 Dokploy issues/PRs contain the exact string (GitHub search API).",
+      "root_causes": [
+        "Domain added or changed without redeploying the Compose service.",
+        "Wrong service name or container port in the domain form.",
+        "Request on an entrypoint the router doesn't listen on (http vs https).",
+        "Manual labels without traefik.enable=true, or service not on dokploy-network (or the network attached in v0.30)."
+      ],
+      "diagnosis": [
+        "curl -sv -o /dev/null -H 'Host: app.example.com' http://SERVER_IP/   # Traefik 404 = no router matched",
+        "docker inspect CONTAINER --format '{{json .Config.Labels}}' | jq 'with_entries(select(.key|startswith(\"traefik\")))'",
+        "docker logs --tail 100 dokploy-traefik 2>&1 | grep -iE 'error|router'"
+      ],
+      "fix": [
+        "Compose service: Domains > set service name and container port > Deploy (redeploy is mandatory).",
+        "Manual labels per Dokploy docs: traefik.enable=true, traefik.http.routers.UNIQUE.rule=Host(`app.example.com`), traefik.http.routers.UNIQUE.entrypoints=web, traefik.http.services.UNIQUE.loadbalancer.server.port=3000, and join dokploy-network.",
+        "Use unique router names across stacks; same-name routers overwrite each other."
+      ],
+      "prevention": "Treat every domain change as a deploy, and add a post-deploy curl check in CI that fails on 404.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Domains & Traefik", "url": "https://docs.dokploy.com/docs/core/troubleshooting/domains", "type": "official-docs", "verified": true},
+        {"title": "Dokploy docs: Docker Compose Domains", "url": "https://docs.dokploy.com/docs/core/docker-compose/domains", "type": "official-docs", "verified": true},
+        {"title": "GitHub search API: Dokploy issues/PRs with '404 page not found' (24)", "url": "https://api.github.com/search/issues?q=repo:Dokploy/dokploy+%22404+page+not+found%22&per_page=1", "type": "github-search", "verified": true},
+        {"title": "Reddit r/Traefik search: 404 page not found docker labels", "url": "https://www.reddit.com/r/Traefik/search/?q=%22404+page+not+found%22+docker+labels&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Docker-image app goes 404 after a webhook or API redeploy: Traefik labels dropped from the Swarm service (Dokploy #5453)",
+      "area": "routing / deploy regression",
+      "level": "L3 Platform (Senior)",
+      "tool": "Dokploy v0.29.12-v0.30.6 + Docker Swarm",
+      "error_text": "404 page not found on every domain of the app; docker service inspect shows the traefik.* labels in PreviousSpec but not in Spec.Labels",
+      "context": "Exactly the pipeline the reader is building: CI pushes an image, then calls Dokploy's webhook or application.deploy API. In affected versions the deploy rewrites the service spec without the app's traefik.* labels, so containers stay healthy while Traefik has no router. Another reporter saw it for Compose services with custom labels after 0.29 -> 0.30.",
+      "frequency_signal": "Open as of Oct 2026 (reproduced on v0.30.6, tracked as DOK-772); commenters tie it to earlier label/domain regeneration bugs (#4243, #5018, #4415).",
+      "root_causes": [
+        "The deploy path regenerates the service spec/Traefik config instead of merging existing labels.",
+        "Domain config regeneration without merge after upgrades."
+      ],
+      "diagnosis": [
+        "docker service inspect SERVICE --format '{{json .Spec.Labels}}' | jq 'keys'",
+        "docker service inspect SERVICE --format '{{json .PreviousSpec.Labels}}' | jq 'keys'   # labels only here = this bug",
+        "curl -s -o /dev/null -w '%{http_code}' -H 'Host: app.example.com' http://SERVER_IP/"
+      ],
+      "fix": [
+        "Fast restore: docker service update --rollback SERVICE (labels come back, but so does the previous image).",
+        "Or re-add the labels copied from PreviousSpec: docker service update --label-add 'traefik.enable=true' --label-add 'KEY=VALUE' SERVICE",
+        "Redeploy from the UI and re-check labels; pin Dokploy to the last good version until a fix ships (watch #5453).",
+        "The reporter's stopgap: a systemd timer that re-adds labels when traefik.enable is missing (temporary only)."
+      ],
+      "prevention": "After every Dokploy upgrade push one canary app through the full CI path (build -> Harbor -> API deploy) and assert HTTP 200 from outside; keep a blackbox probe per domain.",
+      "sources": [
+        {"title": "Dokploy #5453: deploy drops traefik.* labels -> all domains 404", "url": "https://github.com/Dokploy/dokploy/issues/5453", "type": "github-issue", "verified": true},
+        {"title": "Dokploy #5453 comments (GitHub API)", "url": "https://api.github.com/repos/Dokploy/dokploy/issues/5453/comments?per_page=100", "type": "github-issue", "verified": true},
+        {"title": "Dokploy release v0.30.0", "url": "https://github.com/Dokploy/dokploy/releases/tag/v0.30.0", "type": "github-release", "verified": true},
+        {"title": "Reddit r/selfhosted search: dokploy 404 after redeploy", "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+404+after+redeploy&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "502 Bad Gateway right after a 'successful' deploy (wrong container port or app bound to 127.0.0.1) - Dokploy, Coolify, CapRover",
+      "area": "routing / app binding",
+      "level": "L1 Operator (Junior)",
+      "tool": "Dokploy/Traefik, Coolify, CapRover/nginx",
+      "error_text": "Bad Gateway | 502 Bad Gateway | Traefik debug log: '502 Bad Gateway' caused by: dial tcp 10.0.1.5:3000: connect: connection refused",
+      "context": "The classic first-week PaaS problem: the domain points at a port the app doesn't listen on, or the app listens only on localhost inside its container (Vite, Astro and Vue preview servers do by default).",
+      "frequency_signal": "54 Dokploy issues/PRs mention 'Bad Gateway' (GitHub search API); CapRover's troubleshooting page calls the wrong container port the most common cause; Coolify has a dedicated 502 page.",
+      "root_causes": [
+        "Domain container port differs from the app's listen port (CapRover 'Container HTTP Port' defaults to 80).",
+        "App bound to 127.0.0.1 inside the container.",
+        "App crashed or still starting (failing health check, missing env var).",
+        "Container not on the network Traefik uses."
+      ],
+      "diagnosis": [
+        "docker service ps APP --no-trunc | head",
+        "docker run --rm --net container:CONTAINER nicolaka/netshoot ss -ltnp   # 0.0.0.0:PORT or 127.0.0.1:PORT?",
+        "docker logs --tail 100 dokploy-traefik 2>&1 | grep -iE 'bad gateway|dial tcp'",
+        "docker service logs APP --since 10m | tail -50 ; CapRover: docker service ls, then docker service logs srv-captain--APP --since 60m"
+      ],
+      "fix": [
+        "Set the domain port to the app's listen port and redeploy.",
+        "Bind all interfaces: Vite/Astro server.host: true and preview.host: true; Node app.listen(3000, '0.0.0.0'); gunicorn --bind 0.0.0.0:8000.",
+        "CapRover: App > HTTP Settings > Container HTTP Port, then Save & Update.",
+        "If the service is restarting, fix the crash first."
+      ],
+      "prevention": "EXPOSE the real port in every Dockerfile, keep one port convention per framework, and add health checks so broken containers aren't routed.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Domains & Traefik (Bad Gateway)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/domains", "type": "official-docs", "verified": true},
+        {"title": "CapRover docs: Troubleshooting (502 after successful deploy)", "url": "https://caprover.com/docs/troubleshooting.html", "type": "official-docs", "verified": true},
+        {"title": "GitHub search API: Dokploy issues/PRs with 'Bad Gateway' (54)", "url": "https://api.github.com/search/issues?q=repo:Dokploy/dokploy+%22Bad+Gateway%22&per_page=1", "type": "github-search", "verified": true},
+        {"title": "Stack Overflow search: traefik 502 bad gateway docker 0.0.0.0", "url": "https://stackoverflow.com/search?q=traefik+502+bad+gateway+docker+0.0.0.0", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Intermittent 504 Gateway Timeout on Compose apps: container on two networks, Traefik picks the unreachable IP",
+      "area": "routing / Docker networks",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Dokploy + Traefik (same class in Coolify)",
+      "error_text": "Gateway Timeout (comes and goes) | Traefik log: dial tcp 172.18.0.5:3000: i/o timeout",
+      "context": "A Compose service joined to its project's default network and to dokploy-network. Traefik's Docker provider may pick the container IP on the network Traefik isn't attached to, so some requests hang. App logs show nothing because those requests never arrive.",
+      "frequency_signal": "Dokploy #821 'Frequent 504s and Poor Uptime on Docker Compose deployments' (28 comments, several confirmations of the fix); Coolify's Gateway Timeout page lists custom network isolation first.",
+      "root_causes": [
+        "Multi-network containers without traefik.docker.network or a provider-level network setting.",
+        "Custom networks the proxy isn't attached to."
+      ],
+      "diagnosis": [
+        "docker inspect CONTAINER --format '{{json .NetworkSettings.Networks}}' | jq 'map_values(.IPAddress)'",
+        "docker logs --tail 200 dokploy-traefik 2>&1 | grep -iE 'timeout|dial tcp'",
+        "docker network inspect dokploy-network --format '{{range .Containers}}{{.Name}}{{println}}{{end}}'"
+      ],
+      "fix": [
+        "In /etc/dokploy/traefik/traefik.yml set the default network, as confirmed in #821:\nproviders:\n  docker:\n    exposedByDefault: false\n    watch: true\n    network: dokploy-network\nthen docker restart dokploy-traefik (the swarm provider has the same option).",
+        "Or per service: label traefik.docker.network=dokploy-network.",
+        "Remove networks a service doesn't need; in v0.30 attach services explicitly in the network UI."
+      ],
+      "prevention": "One proxy-facing network per stack and the traefik.docker.network label on every routed service.",
+      "sources": [
+        {"title": "Dokploy #821: Frequent 504s on Docker Compose deployments", "url": "https://github.com/Dokploy/dokploy/issues/821", "type": "github-issue", "verified": true},
+        {"title": "Dokploy #821 comments with the traefik.yml fix (GitHub API)", "url": "https://api.github.com/repos/Dokploy/dokploy/issues/821/comments", "type": "github-issue", "verified": true},
+        {"title": "Coolify docs: Gateway Timeout (504)", "url": "https://coolify.io/docs/troubleshoot/applications/gateway-timeout", "type": "official-docs", "verified": true},
+        {"title": "Reddit r/Traefik search: traefik.docker.network gateway timeout", "url": "https://www.reddit.com/r/Traefik/search/?q=traefik.docker.network+gateway+timeout&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Every domain returns 404 after Docker Engine 29: 'client version 1.24 is too old' (old Traefik)",
+      "area": "updates / Docker API compatibility",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Docker Engine 29 + Traefik < v3.6.1 (Dokploy, Coolify)",
+      "error_text": "Error response from daemon: client version 1.24 is too old. Minimum supported API version is 1.44, please upgrade your client",
+      "context": "From November 2025 an apt upgrade (often unattended) moved hosts to Docker 29, which dropped old API versions. Traefik builds bundled by PaaS tools (Dokploy v3.1.2, Coolify pinned v3.1) spoke API 1.24, so the Docker provider failed, label routers vanished and every site returned 404 while containers kept running. Updating Dokploy doesn't necessarily replace the Traefik container: one 2026 report ran Dokploy v0.28.8 with Traefik v3.1.2.",
+      "frequency_signal": "Most-viewed Traefik forum thread of the year ('Traefik stops working, it uses old API version 1.24', 22 replies, ~32k views); Dokploy #4123 and #3053 (22 comments); Coolify #7549, #7259, #7193 (51 comments); Docker forum thread.",
+      "root_causes": [
+        "Docker 29 raised the minimum API version to 1.44 (1.40 on some builds).",
+        "Old Traefik's Docker SDK defaulted to API 1.24.",
+        "Docker packages upgraded automatically, with no hold or staging test."
+      ],
+      "diagnosis": [
+        "docker version --format 'server {{.Server.Version}} api {{.Server.APIVersion}} min {{.Server.MinAPIVersion}}'",
+        "docker logs dokploy-traefik 2>&1 | grep -m3 'too old'",
+        "docker inspect dokploy-traefik --format '{{.Config.Image}}'",
+        "zgrep -h 'docker-ce' /var/log/apt/history.log*"
+      ],
+      "fix": [
+        "Move Traefik to v3.6.1+: update Dokploy and check the image, or recreate dokploy-traefik with the documented command and a current tag; Coolify: update the proxy image.",
+        "Temporary daemon override: add \"min-api-version\": \"1.24\" to /etc/docker/daemon.json, then sudo systemctl restart docker.",
+        "Or roll Docker back to 28.5.x and hold it: sudo apt-mark hold docker-ce docker-ce-cli containerd.io (Dokploy's installer itself pins 28.5.0)."
+      ],
+      "prevention": "Hold Docker packages and upgrade them deliberately after checking proxy compatibility on a staging node; run blackbox probes right after patch windows.",
+      "sources": [
+        {"title": "Docker forum: Docker 29 increased minimum API version, breaks Traefik", "url": "https://forums.docker.com/t/docker-29-increased-minimum-api-version-breaks-traefik-reverse-proxy/150384", "type": "forum", "verified": true},
+        {"title": "Dokploy #4123: Traefik routing breaks after Docker Engine v29", "url": "https://github.com/Dokploy/dokploy/issues/4123", "type": "github-issue", "verified": true},
+        {"title": "Traefik community: top topics of the year", "url": "https://community.traefik.io/top?period=yearly", "type": "forum", "verified": true},
+        {"title": "Coolify #7549: Traefik fails with Docker 29.x", "url": "https://github.com/coollabsio/coolify/issues/7549", "type": "github-issue", "verified": true}
+      ]
+    },
+    {
+      "title": "Let's Encrypt never issues; the browser shows 'TRAEFIK DEFAULT CERT' (self-signed)",
+      "area": "TLS / ACME",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Dokploy/Coolify (Traefik ACME), CapRover (certbot)",
+      "error_text": "NET::ERR_CERT_AUTHORITY_INVALID, issuer 'TRAEFIK DEFAULT CERT' | Traefik log: Unable to obtain ACME certificate for domains ... | Let's Encrypt: Timeout during connect (likely firewall problem) | 429 rateLimited",
+      "context": "Dokploy's docs say the DNS record must point at the server before you add the domain. Traefik tries, fails, and keeps serving its built-in self-signed certificate. On-prem servers that aren't reachable from the internet on port 80 can never pass HTTP-01.",
+      "frequency_signal": "Dokploy #51 'ACME Let's Encrypt is failing' (18 comments) and the discussion 'Getting 403 Unauthorized Error for ACME SSL Certificate Generation'; 59 Dokploy issues/PRs with 'certificate' in the title; several 'fallback to self-signed' threads in the Traefik forum's yearly top; Coolify keeps a dedicated page.",
+      "root_causes": [
+        "Domain added before the A record pointed at the server (or still propagating).",
+        "Port 80 blocked by a security group, corporate firewall or ISP.",
+        "A stale AAAA record: validation can fail over IPv6 even when IPv4 works.",
+        "Cloudflare proxy, a WAF or geo-blocking intercepts the challenge (403).",
+        "Rate limits after repeated retries (5 certificates per identical name set per 7 days; 5 failed authorizations per name per hour)."
+      ],
+      "diagnosis": [
+        "dig +short A app.example.com @1.1.1.1 ; dig +short AAAA app.example.com @1.1.1.1",
+        "From outside: curl -sv http://app.example.com/.well-known/acme-challenge/test   # a quick 404 from Traefik is fine, a timeout is not",
+        "docker logs dokploy-traefik 2>&1 | grep -iE 'acme|certificate' | tail -20   (Coolify: docker logs coolify-proxy)",
+        "echo | openssl s_client -connect app.example.com:443 -servername app.example.com 2>/dev/null | openssl x509 -noout -issuer -subject -dates"
+      ],
+      "fix": [
+        "Fix DNS (correct A, fix or remove AAAA), open 80 and 443 to the internet, then re-save or redeploy the domain to retrigger issuance.",
+        "Behind Cloudflare: DNS-only while issuing, or Full (strict) with a Cloudflare Origin CA certificate.",
+        "Rate-limited: stop retrying, wait for the window, test against the Let's Encrypt staging environment.",
+        "Stuck state: Coolify documents rm /data/coolify/proxy/acme.json then restarting the proxy; in Dokploy find the acme storage path in /etc/dokploy/traefik/traefik.yml, back it up, remove the broken entry, restart dokploy-traefik.",
+        "Not reachable from the internet: use DNS-01 or your private CA (next cases)."
+      ],
+      "prevention": "DNS first, domain second; alert on certificate expiry from outside (blackbox_exporter probe_ssl_earliest_cert_expiry under 14 days).",
+      "sources": [
+        {"title": "Coolify docs: Let's Encrypt not working", "url": "https://coolify.io/docs/troubleshoot/dns-and-domains/lets-encrypt-not-working", "type": "official-docs", "verified": true},
+        {"title": "Let's Encrypt: Rate Limits", "url": "https://letsencrypt.org/docs/rate-limits/", "type": "official-docs", "verified": true},
+        {"title": "Dokploy #51: ACME Let's Encrypt is failing", "url": "https://github.com/Dokploy/dokploy/issues/51", "type": "github-issue", "verified": true},
+        {"title": "Server Fault search: traefik default cert lets encrypt not issued", "url": "https://serverfault.com/search?q=traefik+%22default+cert%22+lets+encrypt+not+issued", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Cloudflare in front of the PaaS: ERR_TOO_MANY_REDIRECTS, 525/526 errors, or CapRover domain verification error 1107",
+      "area": "TLS / CDN in front",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Dokploy, CapRover (Cloudflare proxy)",
+      "error_text": "ERR_TOO_MANY_REDIRECTS | Cloudflare Error 525 SSL handshake failed / 526 Invalid SSL certificate | CapRover: Domain Verification Failed - Error 1107 | ERR_SSL_VERSION_OR_CIPHER_MISMATCH",
+      "context": "With the orange cloud on, Cloudflare terminates TLS and opens its own connection to the origin. Flexible mode talks HTTP to the origin while Traefik redirects to HTTPS, so the browser loops. Full (strict) needs an origin certificate Cloudflare trusts. CapRover verifies domains by calling itself through DNS, which the proxy breaks; free Universal SSL covers only one subdomain level.",
+      "frequency_signal": "174 Dokploy issues/PRs mention Cloudflare (GitHub search API); Dokploy #1839 (22 comments) and #145 (19) on Origin CA support; CapRover #775 'A chat about Cloudflare and reverse proxy' (45 comments); CapRover's docs say Cloudflare isn't officially supported.",
+      "root_causes": [
+        "SSL/TLS mode Flexible combined with HTTPS on in Dokploy (redirect loop).",
+        "Full (strict) while the origin serves Traefik's default certificate (526).",
+        "Origin CA certificate doesn't cover sub-subdomains on the free plan.",
+        "Proxied records break HTTP-01 issuance and CapRover's domain check."
+      ],
+      "diagnosis": [
+        "dig +short app.example.com   # Cloudflare anycast IPs = proxied",
+        "curl -sI http://app.example.com | grep -i location",
+        "curl -sIL -o /dev/null -w '%{num_redirects} %{url_effective}' https://app.example.com",
+        "Bypass Cloudflare: curl -sv -o /dev/null --resolve app.example.com:443:ORIGIN_IP https://app.example.com/"
+      ],
+      "fix": [
+        "Dokploy docs option 1: Cloudflare Flexible + HTTPS off in Dokploy (origin traffic is plain HTTP; avoid for logins).",
+        "Option 2 (recommended): Cloudflare Full (strict) + HTTPS on, with Let's Encrypt or a Cloudflare Origin CA certificate pasted into Dokploy (certificate provider None).",
+        "Keep names one subdomain level deep, or use your own certificates for deeper names.",
+        "CapRover: turn the proxy off while verifying, or: echo '{\"skipVerifyingDomains\":\"true\"}' > /captain/data/config-override.json && docker service update captain-captain --force"
+      ],
+      "prevention": "Write down one TLS design per domain (where TLS terminates, which certificate, which Cloudflare mode) and probe both through Cloudflare and directly at the origin.",
+      "sources": [
+        {"title": "Dokploy docs: Cloudflare domains", "url": "https://docs.dokploy.com/docs/core/domains/cloudflare", "type": "official-docs", "verified": true},
+        {"title": "CapRover docs: Troubleshooting (Error 1107, Cloudflare SSL)", "url": "https://caprover.com/docs/troubleshooting.html", "type": "official-docs", "verified": true},
+        {"title": "GitHub search API: Dokploy issues/PRs mentioning cloudflare (174)", "url": "https://api.github.com/search/issues?q=repo:Dokploy/dokploy+cloudflare&per_page=1", "type": "github-search", "verified": true},
+        {"title": "Reddit r/selfhosted search: cloudflare too many redirects traefik", "url": "https://www.reddit.com/r/selfhosted/search/?q=cloudflare+too+many+redirects+traefik&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Internal or wildcard domains on-prem: Let's Encrypt can't validate and traefik.me/nip.io names fail - use DNS-01 or your private CA",
+      "area": "TLS / internal PKI",
+      "level": "L3 Platform (Senior)",
+      "tool": "Dokploy + Traefik (CapRover wildcard SSL is similar)",
+      "error_text": "Cannot issue for \"app.lan\": Domain name does not end with a valid public suffix (TLD) | acme: error presenting token: cloudflare: failed to find zone com.: zone could not be found | Dokploy: queryA ESERVFAIL (traefik.me domain validation)",
+      "context": "Apps on internal DNS (app.corp.example, *.lan) behind a firewall can't pass HTTP-01, non-public TLDs can't get public certificates, and wildcards always need DNS-01. Magic domains like traefik.me or nip.io resolve to private IPs, which many resolvers (pfSense/OPNsense, Pi-hole, dnsmasq, ISP routers) block as DNS rebinding. The reader already runs a private CA for Harbor; it can serve these apps too.",
+      "frequency_signal": "Dokploy #1404 'Ability to add own wildcard domain/subdomain' (open) and #3201 traefik.me ESERVFAIL (29 comments); Traefik forum yearly top: 'Traefik with Hetzner DNS to get valid ssl certificate for a local network service', 'Self Signed Certificates Not Working', 'ACME Cloudflare not working after 3.7.6+'; CapRover #1310 'Cant get wildcard SSL!' (26 comments).",
+      "root_causes": [
+        "HTTP-01 needs the server reachable from the internet on port 80.",
+        "Wildcards require DNS-01 with a DNS provider API token in certificatesResolvers.",
+        "Public CAs reject non-public TLDs.",
+        "DNS rebinding protection drops public names that resolve to RFC1918 addresses.",
+        "A custom certificate was uploaded but not attached; Dokploy's docs warn the files are created but nothing happens automatically."
+      ],
+      "diagnosis": [
+        "dig +short app.corp.example @1.1.1.1   # does a public record exist at all?",
+        "dig +short 192-168-1-10.traefik.me @LOCAL_RESOLVER ; dig +short 192-168-1-10.traefik.me @1.1.1.1   # only local fails = rebinding protection",
+        "openssl x509 -in app.crt -noout -subject -ext subjectAltName -dates ; openssl verify -CAfile corp-ca.crt app.crt",
+        "docker logs dokploy-traefik 2>&1 | grep -iE 'tls|certificate|acme' | tail ; ls /etc/dokploy/traefik/dynamic/"
+      ],
+      "fix": [
+        "Public domain you own + DNS-01: add a certificatesResolver with your DNS provider in /etc/dokploy/traefik/traefik.yml (v0.30 can also manage Cloudflare/Route53 records), with split-horizon DNS inside.",
+        "Private CA: issue a leaf whose SANs cover the app names, paste full chain + key in Dokploy > Certificates, enable HTTPS on the domain with provider None, confirm Traefik loads it, and install the CA on clients (sudo cp corp-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates).",
+        "Rebinding: whitelist the domain in the resolver's rebind settings, or use real internal DNS records.",
+        "Quick lab test: traefik.me publishes 30-day certificates you can paste in (Dokploy certificates docs)."
+      ],
+      "prevention": "Certificate inventory with expiry alerts; for many internal apps an internal ACME CA (for example smallstep step-ca) lets Traefik renew automatically via a custom caServer.",
+      "sources": [
+        {"title": "Dokploy docs: Certificates", "url": "https://docs.dokploy.com/docs/core/certificates", "type": "official-docs", "verified": true},
+        {"title": "Dokploy #3201: DNS validation fails with queryA ESERVFAIL using traefik.me", "url": "https://github.com/Dokploy/dokploy/issues/3201", "type": "github-issue", "verified": true},
+        {"title": "Traefik community: top topics of the year", "url": "https://community.traefik.io/top?period=yearly", "type": "forum", "verified": true},
+        {"title": "Server Fault search: traefik private ca certificate internal domain", "url": "https://serverfault.com/search?q=traefik+private+ca+certificate+internal+domain", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Route a legacy Apache (moved to 81/444) or any host service through Dokploy's Traefik - and the 502s on the way",
+      "area": "routing / file provider / migration",
+      "level": "L3 Platform (Senior)",
+      "tool": "Dokploy Traefik (file provider) + Apache on the host + UFW",
+      "error_text": "Bad Gateway | Traefik log: dial tcp 127.0.0.1:81: connect: connection refused | dial tcp: lookup host.docker.internal: no such host | x509: certificate signed by unknown authority (HTTPS backend on 444)",
+      "context": "The reader's next step after moving Apache to 81/444: publish the old vhosts on 443 again through Traefik with a dynamic file in /etc/dokploy/traefik/dynamic. Traefik runs in a container, so 'localhost' and the host's firewall behave differently from what you expect.",
+      "frequency_signal": "Traefik forum yearly top: 'Reaching another host on LAN from container', 'Can't get external service, declared by file provider, to work', 'Minimum settings for having Nginx behind Traefik'; the reader's own cut-over.",
+      "root_causes": [
+        "127.0.0.1 inside the Traefik container is Traefik itself, not the host.",
+        "host.docker.internal doesn't exist on Linux unless the container was started with --add-host host.docker.internal:host-gateway.",
+        "Apache listens only on 127.0.0.1:81, or UFW drops traffic from Docker's bridge subnets to port 81 (traffic to the host's own ports does pass UFW's INPUT rules, unlike published ports).",
+        "HTTPS backend (444) with a self-signed certificate Traefik doesn't trust.",
+        "Apache still forces its own HTTP->HTTPS redirect, causing loops."
+      ],
+      "diagnosis": [
+        "sudo ss -ltnp 'sport = :81'   # 0.0.0.0, LAN IP or 127.0.0.1?",
+        "docker exec dokploy-traefik wget -qS -O /dev/null http://192.0.2.10:81/ 2>&1 | head -3",
+        "docker network inspect docker_gwbridge --format '{{json .IPAM.Config}}'",
+        "sudo ufw status verbose ; sudo tcpdump -ni any tcp port 81",
+        "docker logs --tail 50 dokploy-traefik 2>&1 | grep -i error"
+      ],
+      "fix": [
+        "Have Apache listen on the host's LAN IP (Listen 192.0.2.10:81) and allow only the Docker subnet you saw above: sudo ufw allow from 172.18.0.0/16 to any port 81 proto tcp",
+        "Create /etc/dokploy/traefik/dynamic/legacy-apache.yml:\nhttp:\n  routers:\n    legacy-apache:\n      rule: Host(`legacy.example.com`)\n      entryPoints: [websecure]\n      service: legacy-apache\n      tls:\n        certResolver: letsencrypt\n  services:\n    legacy-apache:\n      loadBalancer:\n        passHostHeader: true\n        servers:\n          - url: http://192.0.2.10:81\n(use the resolver name defined in your traefik.yml; Traefik watches the directory).",
+        "Prefer plain HTTP on this private hop; for 444 add a serversTransport with your CA (rootCAs) instead of insecureSkipVerify.",
+        "Apache: enable mod_remoteip (RemoteIPHeader X-Forwarded-For, RemoteIPTrustedProxy = the Docker subnet) and drop its own HTTPS redirect for proxied vhosts."
+      ],
+      "prevention": "Migrate vhosts one at a time with a tested rollback, keep dynamic files in git, and plan to containerise the legacy apps.",
+      "sources": [
+        {"title": "Traefik docs: File provider", "url": "https://doc.traefik.io/traefik/reference/install-configuration/providers/others/file/", "type": "official-docs", "verified": true},
+        {"title": "Dokploy docs: Troubleshooting - Dokploy Instance (Traefik paths)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance", "type": "official-docs", "verified": true},
+        {"title": "Traefik community: top topics of the year", "url": "https://community.traefik.io/top?period=yearly", "type": "forum", "verified": true},
+        {"title": "Server Fault search: traefik file provider apache backend 502", "url": "https://serverfault.com/search?q=traefik+file+provider+apache+backend+502", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "A hand edit takes the whole proxy down (Traefik 'field not found', YAML mistakes, v2 syntax; CapRover custom nginx)",
+      "area": "proxy configuration",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Dokploy Traefik, CapRover nginx",
+      "error_text": "field not found, node: passHostHeader | (normal, ignore) accept tcp [::]:443: use of closed network connection",
+      "context": "Dokploy exposes traefik.yml and dynamic files in its UI; CapRover allows custom nginx templates. One misplaced key makes Traefik reject the file (routers disappear) or nginx refuse to reload. The 'use of closed network connection' line during a Traefik restart is normal.",
+      "frequency_signal": "Dokploy instance troubleshooting lists the passHostHeader error; Dokploy #1586 'The new version' Traefik is broken?' (20 comments); CapRover #380 custom nginx for Laravel (45 comments) and an official nginx fixer script.",
+      "root_causes": [
+        "passHostHeader placed next to the server URLs instead of inside loadBalancer.",
+        "YAML indentation/tabs, or Traefik v2 syntax in v3 (swarmMode on the docker provider, regex in PathPrefix).",
+        "Editors replacing a single bind-mounted file break the watch.",
+        "CapRover: invalid directives in a custom nginx template."
+      ],
+      "diagnosis": [
+        "docker logs --tail 50 dokploy-traefik 2>&1 | grep -iE 'error|field not found'",
+        "python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' /etc/dokploy/traefik/dynamic/FILE.yml",
+        "diff -u BACKUP/FILE.yml /etc/dokploy/traefik/dynamic/FILE.yml",
+        "CapRover: docker service logs captain-nginx --since 10m"
+      ],
+      "fix": [
+        "Move passHostHeader under loadBalancer, or restore the last good file, then docker restart dokploy-traefik.",
+        "Translate v2 config to v3 (separate swarm provider, v3 rule syntax).",
+        "CapRover: scale captain-captain to 0, run the documented clear-custom-nginx.js in a caprover/caprover container with /captain mounted, scale back to 1."
+      ],
+      "prevention": "Keep /etc/dokploy/traefik (or CapRover templates) in git, lint YAML before saving, change one file at a time while tailing the proxy log.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Dokploy Instance (passHostHeader)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance", "type": "official-docs", "verified": true},
+        {"title": "CapRover docs: Troubleshooting (broken nginx config)", "url": "https://caprover.com/docs/troubleshooting.html", "type": "official-docs", "verified": true},
+        {"title": "Traefik docs: v2 to v3 migration details", "url": "https://doc.traefik.io/traefik/migrate/v2-to-v3-details/", "type": "official-docs", "verified": true},
+        {"title": "Reddit r/Traefik search: field not found", "url": "https://www.reddit.com/r/Traefik/search/?q=%22field+not+found%22&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Uploads and long requests die after about 60 s behind Traefik v3 (readTimeout default), including docker push to a registry behind Traefik",
+      "area": "proxy timeouts",
+      "level": "L3 Platform (Senior)",
+      "tool": "Traefik v3 (Dokploy, Coolify), Cloudflare in front",
+      "error_text": "Client sees 499/502/504 or a reset after ~60 s; Traefik access log status 499; behind Cloudflare, Error 524 after 100 s",
+      "context": "Traefik v3's entryPoint transport.respondingTimeouts.readTimeout defaults to 60s and covers reading the whole request including the body. Large uploads on slow links (files, registry layer pushes, backups over HTTP) exceed it. Cloudflare adds its own limits (100 s origin timeout, 100 MB request body on Free/Pro).",
+      "frequency_signal": "Traefik forum yearly top: 'Docker Registry uploads fail with HTTP 499 errors when running behind Traefik (v3.6) in Docker Swarm' and 'Appropriate limit for maxResponseBodySize'; Coolify's 504 page lists large uploads as a cause.",
+      "root_causes": [
+        "readTimeout 60s default on the entryPoint.",
+        "App-server timeouts or body limits behind Traefik (gunicorn 30 s, nginx client_max_body_size).",
+        "Cloudflare timeout and upload limits."
+      ],
+      "diagnosis": [
+        "curl -o /dev/null -w '%{http_code} %{time_total}s' -T big.bin https://app.example.com/upload",
+        "Enable accessLog in traefik.yml and look for status 499 at ~60 s durations.",
+        "Repeat the request bypassing Traefik (container IP or a test port) to find the hop that cuts it."
+      ],
+      "fix": [
+        "In /etc/dokploy/traefik/traefik.yml (keep existing keys):\nentryPoints:\n  websecure:\n    address: ':443'\n    transport:\n      respondingTimeouts:\n        readTimeout: 600s\nthen docker restart dokploy-traefik.",
+        "Raise the app server's limits to match.",
+        "For a registry, give it its own hostname/entryPoint with long timeouts, or push to Harbor directly instead of through the PaaS proxy."
+      ],
+      "prevention": "Set timeouts on purpose per entryPoint (readTimeout also protects against slow-client attacks, so don't set 0 everywhere); use resumable uploads for big files.",
+      "sources": [
+        {"title": "Traefik docs: EntryPoints (respondingTimeouts, forwardedHeaders)", "url": "https://doc.traefik.io/traefik/reference/install-configuration/entrypoints/", "type": "official-docs", "verified": true},
+        {"title": "Traefik community: top topics of the year", "url": "https://community.traefik.io/top?period=yearly", "type": "forum", "verified": true},
+        {"title": "Coolify docs: Gateway Timeout (504)", "url": "https://coolify.io/docs/troubleshoot/applications/gateway-timeout", "type": "official-docs", "verified": true},
+        {"title": "Stack Overflow search: traefik v3 upload timeout readTimeout", "url": "https://stackoverflow.com/search?q=traefik+v3+upload+timeout+readTimeout", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Apps see the wrong client IP (10.0.x.x, 172.x.0.1 or Cloudflare addresses)",
+      "area": "proxy / forwarded headers",
+      "level": "L3 Platform (Senior)",
+      "tool": "Traefik, Docker Swarm, Cloudflare, app frameworks",
+      "error_text": "No error: access logs, rate limits, fail2ban and audit logs show Docker or proxy IPs instead of users",
+      "context": "Each hop can replace the source address: Swarm's ingress mesh, docker-proxy for IPv6 clients, Cloudflare or a load balancer in front. Rate limiting and security tooling then act on the wrong IP.",
+      "frequency_signal": "Traefik forum yearly top includes 'Cannot get real IP address - Rootless Docker + Traefik + Apache'; perennial Server Fault/Reddit question.",
+      "root_causes": [
+        "Swarm ingress-mode published ports SNAT the source address.",
+        "IPv6 clients on a Docker host without IPv6 go through docker-proxy and arrive as the bridge gateway (172.x.0.1).",
+        "Traefik doesn't trust the CDN/LB's X-Forwarded-For (forwardedHeaders.trustedIPs not set).",
+        "The app doesn't trust the proxy (Express trust proxy, Django/Flask proxy fix, Apache mod_remoteip)."
+      ],
+      "diagnosis": [
+        "Route a traefik/whoami container through the same path and curl it: compare X-Forwarded-For, X-Real-Ip and RemoteAddr.",
+        "docker service inspect SERVICE --format '{{json .Endpoint.Ports}}'   # PublishMode ingress vs host",
+        "dig +short AAAA app.example.com   # are clients arriving over IPv6?"
+      ],
+      "fix": [
+        "Keep Traefik as the single entry (Dokploy publishes it directly on 80/443, which keeps IPv4 client IPs); use mode: host for any port that must see clients directly.",
+        "Behind Cloudflare/LB: set forwardedHeaders.trustedIPs on the web and websecure entryPoints to the provider's ranges or the LB IP (never insecure: true in production).",
+        "Enable IPv6 in Docker or remove the AAAA record.",
+        "Make the app trust only the proxy's subnet."
+      ],
+      "prevention": "Keep a whoami route in every environment and check it after proxy changes; document the trusted proxy chain.",
+      "sources": [
+        {"title": "Traefik docs: EntryPoints (forwardedHeaders)", "url": "https://doc.traefik.io/traefik/reference/install-configuration/entrypoints/", "type": "official-docs", "verified": true},
+        {"title": "Traefik community: top topics of the year", "url": "https://community.traefik.io/top?period=yearly", "type": "forum", "verified": true},
+        {"title": "Server Fault search: traefik docker real client ip x-forwarded-for", "url": "https://serverfault.com/search?q=traefik+docker+real+client+ip+x-forwarded-for", "type": "search", "verified": false},
+        {"title": "Reddit r/Traefik search: real ip cloudflare trustedIPs", "url": "https://www.reddit.com/r/Traefik/search/?q=real+ip+cloudflare+trustedIPs&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Builds fail with 'Could not resolve host: github.com' (DNS inside build containers, on-prem resolvers)",
+      "area": "build / container DNS",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Docker daemon DNS (Dokploy, Coolify, CI runners)",
+      "error_text": "Could not resolve host: github.com | lookup registry-1.docker.io on 127.0.0.11:53: server misbehaving",
+      "context": "Ubuntu hosts resolve through systemd-resolved's stub 127.0.0.53, which containers can't use, so Docker copies upstreams from /run/systemd/resolve/resolv.conf and falls back to 8.8.8.8/8.8.4.4 when none is usable, which on-prem firewalls block. Dokploy's docs fix it with 1.1.1.1/8.8.8.8; on-prem use internal resolvers or internal names (git.corp.example, harbor.corp.example) stop resolving.",
+      "frequency_signal": "Dokploy Networking & DNS troubleshooting section (common on Hetzner and similar); the same case is in the reader's ops-ladder library; Stack Overflow classic.",
+      "root_causes": [
+        "Fallback public resolvers blocked by the firewall.",
+        "Upstream resolvers unreachable from Docker networks.",
+        "daemon.json dns set to public resolvers that don't know internal zones."
+      ],
+      "diagnosis": [
+        "docker run --rm alpine nslookup github.com",
+        "docker run --rm alpine cat /etc/resolv.conf",
+        "resolvectl status ; cat /run/systemd/resolve/resolv.conf",
+        "sudo tcpdump -ni any port 53   # during a build"
+      ],
+      "fix": [
+        "Add internal resolvers to /etc/docker/daemon.json, merged with existing keys: {\"dns\": [\"192.0.2.53\", \"192.0.2.54\"]}",
+        "sudo systemctl restart docker (restarts containers; do it in a window).",
+        "Verify: docker run --rm alpine nslookup github.com ; docker run --rm alpine nslookup harbor.corp.example"
+      ],
+      "prevention": "Manage daemon.json with Ansible (ops-ladder L3 drill) and never overwrite it with echo > as quick guides do.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Networking & DNS (build DNS failures)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/networking", "type": "official-docs", "verified": true},
+        {"title": "Stack Overflow search: docker build could not resolve host systemd-resolved", "url": "https://stackoverflow.com/search?q=docker+build+%22could+not+resolve+host%22+systemd-resolved", "type": "search", "verified": false},
+        {"title": "Reddit r/docker search: container dns 8.8.8.8 blocked", "url": "https://www.reddit.com/r/docker/search/?q=container+dns+8.8.8.8+blocked&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "'all predefined address pools have been fully subnetted' - or Docker subnets collide with the office LAN/VPN",
+      "area": "Docker networking / IPAM",
+      "level": "L2 Troubleshooter (Mid-level)",
+      "tool": "Docker daemon (Dokploy creates a network per Compose project)",
+      "error_text": "all predefined address pools have been fully subnetted | could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network | Pool overlaps with other one on this address space",
+      "context": "Every Compose project and preview deployment gets its own bridge network; the default pools allow about 31. On-prem the defaults (172.17-172.31, 192.168.x) often overlap office LANs or VPN pools, and a bridge on an overlapping subnet silently steals the route to those users.",
+      "frequency_signal": "Dokploy Networking & DNS troubleshooting section; Dokploy #1004 'network conflict' (18 comments).",
+      "root_causes": [
+        "Many projects and leftover networks exhaust the default pools.",
+        "Default pools overlap corporate subnets, VPN pools or another Docker host's ranges."
+      ],
+      "diagnosis": [
+        "docker network ls | wc -l",
+        "docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'",
+        "ip route | grep -E 'br-|docker'",
+        "ip route get 10.20.30.40   # does traffic to a user subnet leave via a Docker bridge?"
+      ],
+      "fix": [
+        "Quick: docker network prune -f (unused networks only).",
+        "Permanent: a range nobody else uses in /etc/docker/daemon.json: {\"default-address-pools\": [{\"base\": \"10.200.0.0/16\", \"size\": 24}]}, then sudo systemctl restart docker and recreate affected networks (adapt the docs' example ranges to your IP plan).",
+        "Swarm overlay pools are fixed at swarm init (--default-addr-pool), e.g. via the installer's DOCKER_SWARM_INIT_ARGS."
+      ],
+      "prevention": "Reserve a Docker address range with the network team and bake it into your server build.",
+      "sources": [
+        {"title": "Dokploy docs: Troubleshooting - Networking & DNS (address pools)", "url": "https://docs.dokploy.com/docs/core/troubleshooting/networking", "type": "official-docs", "verified": true},
+        {"title": "Dokploy #1004: network conflict", "url": "https://github.com/Dokploy/dokploy/issues/1004", "type": "github-issue", "verified": true},
+        {"title": "Server Fault search: pool overlaps with other one on this address space", "url": "https://serverfault.com/search?q=docker+%22pool+overlaps+with+other+one+on+this+address+space%22", "type": "search", "verified": false}
+      ]
+    },
+<<<NEXT>>>

@@ -1,0 +1,1424 @@
+{
+ "domain": "daily",
+ "problems": [
+  {
+   "title": "Disk full on Docker/Dokploy hosts and CI runners",
+   "area": "Disk & resources",
+   "level": "L1",
+   "tool": "Docker / Dokploy / GitLab Runner / Linux",
+   "context": "The most common night page on container hosts. Builds, old images and unrotated container logs grow until the root filesystem fills, and then Docker, databases and runners all fail together.",
+   "error_text": "write /var/lib/docker/...: no space left on device | ERROR: Job failed (system failure): ... no space left on device",
+   "frequency_signal": "Long-running classic on Server Fault and Stack Overflow. Dan Luu's postmortem list has a filesystem filled by batch-job logs. GitLab documents weekly cache clearing for runners because of it.",
+   "root_causes": [
+    "The json-file log driver defaults to max-size -1 (unlimited), so container logs never rotate",
+    "Build cache, dangling images and old releases left behind by CI and Dokploy deploys",
+    "Runner caches and volumes never cleaned, and Harbor running without tag retention or garbage collection",
+    "journald or syslog growth, or backups written to the same disk",
+    "The only alert is a fixed 90% threshold with no trend, so it fires at 3 AM"
+   ],
+   "diagnosis": [
+    "df -hT && df -i",
+    "sudo du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -15",
+    "docker system df -v",
+    "sudo du -xh --max-depth=1 /var/lib/docker | sort -h",
+    "sudo find /var/lib/docker/containers -name '*-json.log' -size +500M -exec ls -lh {} \\;",
+    "journalctl --disk-usage"
+   ],
+   "fix": [
+    "docker builder prune -af --filter until=168h",
+    "docker image prune -af --filter until=168h   # keep the images you need for rollback",
+    "Emergency only: sudo truncate -s 0 /var/lib/docker/containers/ID/ID-json.log",
+    "Set {\"log-driver\":\"json-file\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"}} in /etc/docker/daemon.json, restart Docker, then recreate the containers. Existing containers keep their old log settings.",
+    "sudo journalctl --vacuum-size=500M, and set SystemMaxUse=500M in /etc/systemd/journald.conf",
+    "Runners: run /usr/share/gitlab-runner/clear-docker-cache weekly from cron. Harbor: add a tag retention policy and scheduled garbage collection."
+   ],
+   "prevention": "Alert on the trend, for example predict_linear(node_filesystem_avail_bytes{mountpoint=\"/\"}[6h], 24*3600) < 0, as well as on 80% and 90%. Put /var/lib/docker on its own volume and bake log rotation into the Ansible baseline.",
+   "sources": [
+    {
+     "title": "Docker docs: JSON File logging driver (max-size defaults to unlimited)",
+     "url": "https://docs.docker.com/engine/logging/drivers/json-file/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GitLab Runner docs: Docker executor, clearing the Docker cache",
+     "url": "https://docs.gitlab.com/runner/executors/docker/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: no space left on device docker overlay2",
+     "url": "https://serverfault.com/search?q=no+space+left+on+device+docker+overlay2",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "r/docker search: disk full overlay2",
+     "url": "https://www.reddit.com/r/docker/search/?q=disk+full+overlay2&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Disk numbers don't add up: deleted-but-open files, inodes, reserved blocks",
+   "area": "Disk & resources",
+   "level": "L1",
+   "tool": "Linux",
+   "context": "Two classic puzzles. In the first, inodes run out because of millions of small files. In the second, a deleted file still holds its space because a process keeps it open.",
+   "error_text": "No space left on device while df -h shows free space | df shows 100% but du adds up to far less",
+   "frequency_signal": "Perennial Server Fault and Stack Overflow questions (\"df vs du\", \"no space left but df shows space\").",
+   "root_causes": [
+    "Inodes exhausted by session files, mail queues, cache directories or many small image layers",
+    "A log deleted with rm while the process keeps writing to the open file handle",
+    "logrotate configured without a reload or copytruncate",
+    "ext4 reserves 5% of blocks for root, and files can be hidden under a mount point"
+   ],
+   "diagnosis": [
+    "df -i",
+    "sudo du --inodes -xd2 / 2>/dev/null | sort -n | tail",
+    "sudo lsof -nP +L1",
+    "ls -l /proc/PID/fd | grep deleted",
+    "sudo tune2fs -l /dev/sdXN | grep -i 'reserved block count'"
+   ],
+   "fix": [
+    "Reload or restart the process that holds the deleted file: sudo systemctl reload UNIT, or restart it",
+    "If it can't be restarted: sudo truncate -s 0 /proc/PID/fd/FD",
+    "Archive or delete the pile of small files, and fix the application that creates them",
+    "Fix logrotate with a postrotate reload or copytruncate"
+   ],
+   "prevention": "Alert on node_filesystem_files_free as well as on bytes. Never rm a live log: truncate it or let logrotate handle it.",
+   "sources": [
+    {
+     "title": "Server Fault search: df du difference deleted files lsof",
+     "url": "https://serverfault.com/search?q=df+du+difference+deleted+files+lsof",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: no space left on device inodes",
+     "url": "https://stackoverflow.com/search?q=no+space+left+on+device+inodes",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "r/linuxadmin search: inodes full",
+     "url": "https://www.reddit.com/r/linuxadmin/search/?q=inodes+full&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "\"The server is slow\" and no method to find out why",
+   "area": "Performance triage",
+   "level": "L1-L2",
+   "tool": "Linux",
+   "context": "This is the vaguest ticket and the most common one. Juniors restart things. Seniors check utilization, saturation and errors for every resource before they touch anything.",
+   "error_text": "load average: 24.10, 22.85, 20.02 with a mostly idle CPU | users say \"the site is slow\"",
+   "frequency_signal": "Brendan Gregg says the USE method solves about 80% of server issues with 5% of the effort. Slowness is a constant Server Fault topic.",
+   "root_causes": [
+    "Disk I/O saturation. Tasks in D state count toward the load average.",
+    "Memory pressure and swapping",
+    "One runaway process, or a noisy neighbour VM that shows up as CPU steal",
+    "Network saturation, or DNS timeouts that look like slowness",
+    "A slow dependency, such as the database, rather than the host"
+   ],
+   "diagnosis": [
+    "uptime; dmesg -T | tail",
+    "vmstat 1 5   # r, b, si/so, wa, st",
+    "mpstat -P ALL 1 3; pidstat 1 3",
+    "iostat -xz 1 3   # %util and await per device",
+    "free -m; sar -n DEV 1 3; sar -n TCP,ETCP 1 3",
+    "ps -eo state,pid,cmd | awk '$1 ~ /D/'"
+   ],
+   "fix": [
+    "Name the saturated resource first, then act: limit or reschedule the culprit with nice or ionice, and move backups off-peak",
+    "Set container CPU and memory limits so one app can't starve the host",
+    "Fix the slow query or endpoint. Add capacity only after you know the bottleneck."
+   ],
+   "prevention": "Build node_exporter dashboards per USE resource, and practise with stress-ng so you know what normal looks like.",
+   "sources": [
+    {
+     "title": "Brendan Gregg: The USE Method",
+     "url": "https://www.brendangregg.com/usemethod.html",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: high load average low cpu iowait",
+     "url": "https://serverfault.com/search?q=high+load+average+low+cpu+iowait",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "r/linuxadmin search: server slow troubleshooting",
+     "url": "https://www.reddit.com/r/linuxadmin/search/?q=server+slow+troubleshooting&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "A process was killed without a log line (OOM killer, exit code 137)",
+   "area": "Disk & resources",
+   "level": "L1",
+   "tool": "Linux / Docker / Kubernetes",
+   "context": "The app vanishes and its own log ends mid-line, because the kernel or a cgroup memory limit killed it.",
+   "error_text": "Out of memory: Killed process 1234 (java) | \"OOMKilled\": true | exit code 137",
+   "frequency_signal": "Classic on Stack Overflow and Server Fault. Node OOM and evictions are among the most common themes on k8s.af.",
+   "root_causes": [
+    "A memory leak or an unbounded cache",
+    "No limits are set, so the kernel kills the biggest process, which is often the database",
+    "The container limit is lower than the runtime's heap (JVM, Node)",
+    "Reading 'used' instead of 'available' in free, so real memory pressure goes unnoticed"
+   ],
+   "diagnosis": [
+    "journalctl -k -b | grep -iE 'out of memory|oom-kill|killed process'",
+    "docker inspect -f '{{.State.OOMKilled}} {{.State.ExitCode}}' CONTAINER",
+    "kubectl describe pod POD | grep -A5 'Last State'",
+    "free -h   # read the 'available' column",
+    "ps aux --sort=-rss | head"
+   ],
+   "fix": [
+    "Set limits and requests that match real usage, and size heaps to the limit (for example -XX:MaxRAMPercentage=75)",
+    "Fix the leak. Scheduled restarts are toil, not a fix.",
+    "For systemd services, set MemoryMax= in a drop-in"
+   ],
+   "prevention": "Alert when the working set passes 90% of the limit, and on restart counts (kube_pod_container_status_restarts_total).",
+   "sources": [
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: exit code 137 OOMKilled docker",
+     "url": "https://stackoverflow.com/search?q=exit+code+137+OOMKilled+docker",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Server Fault search: \"Out of memory: Killed process\"",
+     "url": "https://serverfault.com/search?q=%22Out+of+memory%3A+Killed+process%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "It's always DNS: things stop resolving after a change",
+   "area": "Network & DNS",
+   "level": "L1-L2",
+   "tool": "Ubuntu systemd-resolved / Docker embedded DNS / CoreDNS",
+   "context": "Name resolution sits under everything, so a DNS change looks like an app, registry or CI outage. AWS's October 2025 us-east-1 outage started when automation left an empty DNS record for DynamoDB's regional endpoint.",
+   "error_text": "Temporary failure in name resolution | curl: (6) Could not resolve host | lookup harbor.example.com on 127.0.0.53:53: server misbehaving",
+   "frequency_signal": "DNS is one of the two biggest themes on k8s.af, with 8 of 57 stories. AWS's 2025 postmortem is a DNS race. \"It's always DNS\" is a running sysadmin joke.",
+   "root_causes": [
+    "netplan nameservers or search domains changed or lost",
+    "/etc/resolv.conf symlink replaced, or split DNS for an internal zone (Domains=~corp.example) not set in systemd-resolved",
+    "A firewall blocks port 53, including TCP, and containers fall back to 8.8.8.8",
+    "Negative answers and long TTLs stay cached after a record change",
+    "Automation wrote an empty or wrong record"
+   ],
+   "diagnosis": [
+    "resolvectl status; resolvectl query HOST",
+    "getent ahosts HOST   # what applications actually see",
+    "dig +short HOST @INTERNAL_DNS",
+    "ls -l /etc/resolv.conf",
+    "sudo tcpdump -ni any port 53",
+    "docker exec CONTAINER cat /etc/resolv.conf"
+   ],
+   "fix": [
+    "Fix the nameservers in netplan and apply with sudo netplan try",
+    "For containers, set \"dns\": [\"192.0.2.53\"] in /etc/docker/daemon.json and restart Docker",
+    "sudo resolvectl flush-caches after the record is fixed",
+    "Restore the record from zone history or DNS-as-code"
+   ],
+   "prevention": "Lower TTLs before planned moves, run two internal resolvers, and probe critical names with blackbox_exporter's DNS module.",
+   "sources": [
+    {
+     "title": "AWS: Summary of the Amazon DynamoDB service disruption (us-east-1, October 2025)",
+     "url": "https://aws.amazon.com/message/101925/",
+     "type": "postmortem",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: temporary failure in name resolution systemd-resolved",
+     "url": "https://serverfault.com/search?q=temporary+failure+in+name+resolution+systemd-resolved",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "r/sysadmin search: \"always DNS\"",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=%22always+DNS%22&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Clock drift breaks TLS, logins, apt and log timelines",
+   "area": "Certificates & time",
+   "level": "L1",
+   "tool": "Linux (systemd-timesyncd / chrony)",
+   "context": "On-prem networks often block outbound NTP without offering an internal time server, and restored or paused VMs drift. TLS, TOTP, Kerberos, apt and SIEM timelines then break in confusing ways.",
+   "error_text": "x509: certificate has expired or is not yet valid | Release file ... is not valid yet | Clock skew too great",
+   "frequency_signal": "Time has its own category in Dan Luu's postmortem collection, with leap-second panics and a leap-year certificate outage.",
+   "root_causes": [
+    "UDP 123 is blocked and there is no internal NTP server",
+    "The VM was restored from a snapshot or paused",
+    "Two time daemons are fighting (chrony and systemd-timesyncd)",
+    "The hardware clock is in local time on a dual-boot machine"
+   ],
+   "diagnosis": [
+    "timedatectl; timedatectl timesync-status",
+    "chronyc tracking; chronyc sources -v",
+    "journalctl -u systemd-timesyncd -n 50",
+    "for h in host1 host2; do ssh $h date -u; done"
+   ],
+   "fix": [
+    "Point timesyncd at internal servers: set NTP=ntp1.example.internal in /etc/systemd/timesyncd.conf, then sudo systemctl restart systemd-timesyncd",
+    "Or use chrony with server lines, and run sudo chronyc makestep once for a large offset",
+    "Allow UDP 123 to the internal NTP servers"
+   ],
+   "prevention": "Alert on node_timex_sync_status == 0 or abs(node_timex_offset_seconds) > 0.05.",
+   "sources": [
+    {
+     "title": "Dan Luu: post-mortems collection (Time section)",
+     "url": "https://github.com/danluu/post-mortems",
+     "type": "postmortem",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: timesyncd not synchronized",
+     "url": "https://serverfault.com/search?q=timesyncd+not+synchronized",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: \"certificate has expired or is not yet valid\" clock",
+     "url": "https://stackoverflow.com/search?q=%22certificate+has+expired+or+is+not+yet+valid%22+clock",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Toil eats the week: tickets and manual steps crowd out engineering",
+   "area": "Toil & interruptions",
+   "level": "L1-L3",
+   "tool": "Process",
+   "context": "Manual, repetitive, automatable, tactical work with no lasting value that grows with the service. Interrupts, on-call and releases are the biggest sources.",
+   "error_text": "\"I spent the whole week on tickets again\" | the same request type 10+ times a month",
+   "frequency_signal": "Google SRE book: quarterly surveys average about 33% toil per SRE, range 0-80%; the team cap is 50% ops work. Top sources: interrupts, on-call response, releases.",
+   "root_causes": [
+    "No intake process; every request arrives by chat",
+    "Repeat requests never automated or self-served",
+    "On-call load sits on too few people",
+    "Release process is manual"
+   ],
+   "diagnosis": [
+    "Tag tickets by type for 4 weeks and count",
+    "Measure hours per type x frequency"
+   ],
+   "fix": [
+    "Automate the top 3 repeat types (Ansible, CI job, self-service form)",
+    "Create an interrupt rotation so one person shields the rest",
+    "Make runbooks for what can't be automated yet"
+   ],
+   "prevention": "Track toil % per quarter; keep ops work under 50%.",
+   "sources": [
+    {
+     "title": "Google SRE book: Eliminating Toil",
+     "url": "https://sre.google/sre-book/eliminating-toil/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "r/devops search: toil",
+     "url": "https://www.reddit.com/r/devops/search/?q=toil+automation&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Unsustainable on-call: pages every night, rotation too small",
+   "area": "On-call",
+   "level": "L2-L4",
+   "tool": "Process / Alertmanager",
+   "context": "Small teams with a 2-3 person rotation and noisy alerts. Burnout and attrition follow.",
+   "error_text": "paged 4 times last night, 3 were not actionable",
+   "frequency_signal": "SRE book: about 6 hours per incident including postmortem, so at most 2 incidents per 12-hour shift; 8 engineers single-site, 6 per site multi-site; on-call at most 25% of time. Ask HN threads on rotations (2016, 82 points) and how often people get called (2019).",
+   "root_causes": [
+    "Rotation too small",
+    "Alerts on causes, not symptoms; no actionability review",
+    "No escalation path or runbooks",
+    "Same people fix everything (hero culture)"
+   ],
+   "diagnosis": [
+    "Count pages per shift and the % actionable for 4 weeks",
+    "Look at pages outside working hours"
+   ],
+   "fix": [
+    "Delete or downgrade non-actionable alerts",
+    "Fix the top noisy alert sources",
+    "Grow the rotation (include developers for their services) or reduce hours covered",
+    "Compensation / time off in lieu"
+   ],
+   "prevention": "Weekly on-call handoff with page review; on-call load as a team metric.",
+   "sources": [
+    {
+     "title": "Google SRE book: Being On-Call",
+     "url": "https://sre.google/sre-book/being-on-call/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Ask HN: What is your company's on-call rotation like? (2016)",
+     "url": "https://news.ycombinator.com/item?id=10892771",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Ask HN: For those on call, how often are you called? (2019)",
+     "url": "https://news.ycombinator.com/item?id=21039191",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Ask HN: What on-call benefits do you get in your company? (2022)",
+     "url": "https://news.ycombinator.com/item?id=30600755",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "r/sre search: on-call burnout",
+     "url": "https://www.reddit.com/r/sre/search/?q=on-call+burnout&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "A routine config change takes production down",
+   "area": "Changes that go wrong",
+   "level": "L1-L3",
+   "tool": "Process / Git / CI",
+   "context": "Most public outages in Dan Luu's collection are config errors: bad router rule, typo during maintenance, autogenerated bad config, firewall rule, operator typo in a removal command (Amazon S3 2017).",
+   "error_text": "everything was fine until the change at 14:02",
+   "frequency_signal": "Config Errors is the first and largest section in danluu/post-mortems (Allegro, Amazon Seoul DNS resolver, CircleCI, Cloudflare x2, Google x2, Heroku, Azure, Stack Overflow firewall). Amazon S3 2017: operator typo removed far more servers than intended.",
+   "root_causes": [
+    "Change applied by hand to all hosts at once",
+    "No review or dry run (terraform plan, nginx -t, ansible --check)",
+    "No canary or staged rollout",
+    "No rollback plan written before the change",
+    "Tool allows a too-large blast radius (no rate limit / min capacity check)"
+   ],
+   "diagnosis": [
+    "What changed in the last hour? git log, CI deploy history, Dokploy deployments, audit log",
+    "Compare running config with Git"
+   ],
+   "fix": [
+    "Roll back first, debug second",
+    "Revert the commit and redeploy via the pipeline"
+   ],
+   "prevention": "Change template with plan/verify/rollback; config validation in CI; staged rollout; guard rails on destructive commands; freeze windows only where needed.",
+   "sources": [
+    {
+     "title": "Dan Luu: post-mortems collection (Config Errors)",
+     "url": "https://github.com/danluu/post-mortems",
+     "type": "postmortem",
+     "verified": true
+    },
+    {
+     "title": "r/sysadmin search: change broke production",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=change+broke+production+rollback&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Postmortem never written, the same incident repeats",
+   "area": "Incidents",
+   "level": "L2-L4",
+   "tool": "Process",
+   "context": "Teams fix the symptom at 3am and move on. Without a blameless write-up and owned action items, the same failure returns.",
+   "error_text": "\"Didn't we have this exact outage in March?\"",
+   "frequency_signal": "Google SRE book postmortem triggers: user-visible downtime beyond a threshold, any data loss, on-call intervention (rollback, reroute), resolution time beyond a threshold, monitoring failure; anyone may request one. Ask HN on-call threads list fix-the-cause culture as what makes rotations bearable.",
+   "root_causes": [
+    "Blame culture: people hide mistakes",
+    "Action items without owners or dates",
+    "No postmortem trigger criteria"
+   ],
+   "diagnosis": [
+    "Search the ticket system for the same alert name over 90 days"
+   ],
+   "fix": [
+    "Write a blameless postmortem within 5 working days; 3-5 action items with owners",
+    "Review action items weekly until closed"
+   ],
+   "prevention": "Postmortem of the month, reading club, Wheel of Misfortune for new on-call people.",
+   "sources": [
+    {
+     "title": "Google SRE book: Postmortem Culture",
+     "url": "https://sre.google/sre-book/postmortem-culture/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "KodeKloud notes: Blameless Postmortem Culture",
+     "url": "https://notes.kodekloud.com/docs/Fundamentals-of-SRE/Incident-Management/Blameless-Postmortem-Culture/page",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Burnout from deployment pain and unplanned work",
+   "area": "Burnout",
+   "level": "L1-L4",
+   "tool": "Process",
+   "context": "Scary manual releases, rework and constant interrupts drive burnout more than raw hours.",
+   "error_text": "dread before every release; weekends spent on deploys",
+   "frequency_signal": "DORA well-being capability: deployment pain and rework/unplanned work undermine well-being; low performers spend 27% of time on rework vs 21% for high performers; continuous delivery predicts lower burnout; Maslach's six burnout factors (workload, control, reward, community, fairness, values).",
+   "root_causes": [
+    "Manual, rare, large releases",
+    "Heavy change approval boards",
+    "No control over workload; hero culture"
+   ],
+   "diagnosis": [
+    "Count after-hours work and unplanned tickets per week"
+   ],
+   "fix": [
+    "Smaller, automated deploys with rollback",
+    "Lightweight peer-review change approval",
+    "Fix the environment, not the person"
+   ],
+   "prevention": "Track unplanned-work % and after-hours pages as team health metrics.",
+   "sources": [
+    {
+     "title": "DORA: Well-being capability",
+     "url": "https://dora.dev/capabilities/well-being/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "DORA capabilities index",
+     "url": "https://dora.dev/capabilities/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "r/devops search: burnout",
+     "url": "https://www.reddit.com/r/devops/search/?q=burnout&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Access request for production",
+   "area": "Access requests",
+   "level": "L1-L3",
+   "tool": "SSH / sudo / IAM / GitLab",
+   "context": "A developer or contractor asks for prod SSH, sudo, database or cloud console access, often urgently and by chat.",
+   "error_text": "\"can you give me access to prod, just for today?\"",
+   "frequency_signal": "Classic r/sysadmin and r/devops topic (least privilege vs speed); ticket type #1 in most ops queues.",
+   "root_causes": [
+    "No role-based access model",
+    "No expiry on grants",
+    "Access granted by chat without a ticket or approver"
+   ],
+   "diagnosis": [
+    "Who approves? Which role? Until when?",
+    "getent group / sudo -l -U USER / aws iam list-attached-user-policies"
+   ],
+   "fix": [
+    "Grant the smallest role via a group, with an expiry date",
+    "Offer an alternative: logs in Grafana/Loki, read-only DB replica, CI job"
+   ],
+   "prevention": "Quarterly access review; time-boxed grants; everything through groups in Git (Ansible/Terraform).",
+   "sources": [
+    {
+     "title": "r/sysadmin search: developer production access",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=developers+production+access&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Server Fault search: temporary sudo access",
+     "url": "https://serverfault.com/search?q=temporary+sudo+access+expire",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "A secret was pasted in chat or committed to Git",
+   "area": "Access requests",
+   "level": "L1-L3",
+   "tool": "Git / GitLab / Vault",
+   "context": "A token, password or private key lands in a Slack channel, a ticket or a Git commit.",
+   "error_text": "glpat-xxxx visible in #dev-help | AWS key in .env committed",
+   "frequency_signal": "Constant theme in security forums; GitLab and GitHub both ship secret push protection because of it.",
+   "root_causes": [
+    "No secret manager or CI variables",
+    "Copy-paste debugging",
+    "No pre-commit scanning"
+   ],
+   "diagnosis": [
+    "git log -p -S 'TOKEN_PREFIX'",
+    "Check token audit logs for use since the leak"
+   ],
+   "fix": [
+    "Revoke and rotate first, clean history second",
+    "Move the secret into CI masked variables or Vault"
+   ],
+   "prevention": "gitleaks pre-commit + CI job; secret push protection; never share secrets in chat.",
+   "sources": [
+    {
+     "title": "r/devops search: secret committed to git rotate",
+     "url": "https://www.reddit.com/r/devops/search/?q=secret+committed+git+rotate&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: remove secret from git history",
+     "url": "https://stackoverflow.com/search?q=remove+password+from+git+history",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "A leaver still has access",
+   "area": "Access requests",
+   "level": "L1-L3",
+   "tool": "SSH / GitLab / cloud IAM",
+   "context": "Weeks after someone leaves, their SSH key, GitLab token, VPN profile or cloud keys still work.",
+   "error_text": "authorized_keys still contains the leaver's key on 14 hosts",
+   "frequency_signal": "Perennial r/sysadmin offboarding thread; audit finding #1 in ISO 27001/SOC 2 reviews.",
+   "root_causes": [
+    "Keys copied by hand to hosts",
+    "Personal tokens used in CI",
+    "No offboarding checklist"
+   ],
+   "diagnosis": [
+    "grep -r 'KEY_COMMENT' /home/*/.ssh/authorized_keys",
+    "GitLab admin: list personal access tokens"
+   ],
+   "fix": [
+    "Offboarding checklist covering SSO, VPN, SSH, Git, cloud, shared passwords",
+    "Central SSH keys via Ansible or SSH certificates"
+   ],
+   "prevention": "Joiner-mover-leaver process with HR trigger; service accounts instead of personal tokens.",
+   "sources": [
+    {
+     "title": "r/sysadmin search: offboarding checklist",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=offboarding+checklist&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "A developer asks you to open a port",
+   "area": "Network requests",
+   "level": "L1-L2",
+   "tool": "UFW / Docker / Traefik / AWS security groups",
+   "context": "\"Please open 8080 on prod\". Usually the real need is reaching an app, which belongs behind the reverse proxy.",
+   "error_text": "curl: (7) Failed to connect to 192.0.2.10 port 8080",
+   "frequency_signal": "Most common network ticket; Docker published ports bypassing UFW is a top Docker docs topic.",
+   "root_causes": [
+    "App not behind Traefik",
+    "Docker -p publishes and bypasses UFW",
+    "Request lacks source, destination, protocol, reason"
+   ],
+   "diagnosis": [
+    "sudo ss -ltnp 'sport = :8080'",
+    "sudo ufw status numbered",
+    "docker ps --format '{{.Names}} {{.Ports}}'"
+   ],
+   "fix": [
+    "Route through Traefik with a hostname and TLS instead",
+    "If a port is truly needed: one source CIDR, one port, a comment, a ticket number, an expiry"
+   ],
+   "prevention": "Port request template; ports inventory; DOCKER-USER rules.",
+   "sources": [
+    {
+     "title": "Docker docs: Packet filtering and firewalls",
+     "url": "https://docs.docker.com/engine/network/packet-filtering-firewalls/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "r/devops search: open port request",
+     "url": "https://www.reddit.com/r/devops/search/?q=developer+asked+open+port&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "New app needs a domain and HTTPS",
+   "area": "Network requests",
+   "level": "L1-L2",
+   "tool": "DNS / Traefik / Dokploy",
+   "context": "Add app.example.com, point it at the Dokploy host and get a Let's Encrypt certificate.",
+   "error_text": "404 page not found | TRAEFIK DEFAULT CERT | NET::ERR_CERT_AUTHORITY_INVALID",
+   "frequency_signal": "Top Dokploy troubleshooting topic (domains); Traefik community top threads.",
+   "root_causes": [
+    "DNS not yet propagated or wrong record",
+    "Port 80 blocked so HTTP-01 fails",
+    "Wrong container port in the domain settings"
+   ],
+   "diagnosis": [
+    "dig +short app.example.com",
+    "curl -sI http://app.example.com/.well-known/acme-challenge/test",
+    "docker service logs dokploy-traefik --since 10m | grep -i acme"
+   ],
+   "fix": [
+    "Create the A record first, wait for TTL, then add the domain in Dokploy with the right container port"
+   ],
+   "prevention": "Request template with hostname, port, health path, owner.",
+   "sources": [
+    {
+     "title": "Dokploy docs: troubleshooting domains",
+     "url": "https://docs.dokploy.com/docs/core/troubleshooting/domains",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "App can't reach a partner API (egress)",
+   "area": "Network requests",
+   "level": "L1-L2",
+   "tool": "Firewall / NAT / proxy / DNS",
+   "context": "An integration times out from prod but works from a laptop. Usually egress filtering, a partner allowlist that lacks our NAT IP, or a proxy.",
+   "error_text": "curl: (28) Connection timed out after 10001 milliseconds",
+   "frequency_signal": "Classic Server Fault question; partner IP allowlists are a weekly ticket in B2B shops.",
+   "root_causes": [
+    "Partner allowlists our old IP",
+    "Corporate egress firewall or proxy",
+    "DNS resolves differently in containers"
+   ],
+   "diagnosis": [
+    "curl -sv --max-time 10 https://api.partner.example",
+    "curl -s https://ifconfig.me (what IP the partner sees)",
+    "sudo tcpdump -ni any host PARTNER_IP"
+   ],
+   "fix": [
+    "Send the partner the real egress IP; add an egress rule; set HTTPS_PROXY for the container"
+   ],
+   "prevention": "Document egress IPs; keep them stable (NAT gateway / static SNAT).",
+   "sources": [
+    {
+     "title": "Server Fault search: outbound connection timeout firewall",
+     "url": "https://serverfault.com/search?q=outbound+connection+timeout+firewall+whitelist",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "\"Deploy this to prod today\"",
+   "area": "Deploys & pipelines",
+   "level": "L1-L2",
+   "tool": "GitLab CI / Dokploy",
+   "context": "A manager or developer asks for a manual deploy outside the pipeline or change window.",
+   "error_text": "\"just docker pull and restart it, it's a small fix\"",
+   "frequency_signal": "Daily request in small shops; DORA: lightweight, clear change process beats heavy approval and ad-hoc deploys.",
+   "root_causes": [
+    "Pipeline too slow or broken",
+    "No standard change type for small fixes"
+   ],
+   "diagnosis": [
+    "Is it in Git? Did CI pass? Is there a rollback?"
+   ],
+   "fix": [
+    "Deploy through the pipeline; agree a standard-change path for low-risk fixes"
+   ],
+   "prevention": "Make the pipeline the fastest path.",
+   "sources": [
+    {
+     "title": "DORA capabilities",
+     "url": "https://dora.dev/capabilities/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Deploy broke production",
+   "area": "Deploys & pipelines",
+   "level": "L1-L3",
+   "tool": "GitLab CI / Dokploy / Kubernetes",
+   "context": "Errors spike right after a deploy. Roll back first; database migrations can make rollback hard.",
+   "error_text": "HTTP 502 for 4 minutes after deploy 7f3c2a1 | CrashLoopBackOff",
+   "frequency_signal": "Deploys are the top trigger of incidents in most postmortem collections; Dokploy zero-downtime issue #319.",
+   "root_causes": [
+    "No health check, so traffic hits a starting container",
+    "Config/secret missing in prod",
+    "Irreversible migration"
+   ],
+   "diagnosis": [
+    "Dokploy deployments tab / kubectl rollout history",
+    "docker service ps APP --no-trunc"
+   ],
+   "fix": [
+    "Redeploy the previous image tag; kubectl rollout undo",
+    "Expand-contract migrations"
+   ],
+   "prevention": "Health checks, canary, immutable tags, rollback rehearsed.",
+   "sources": [
+    {
+     "title": "Dokploy issue #319",
+     "url": "https://github.com/Dokploy/dokploy/issues/319",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "GitHub availability report Nov 2021",
+     "url": "https://github.blog/2021-12-01-github-availability-report-november-2021/",
+     "type": "postmortem",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Pipeline red before a release",
+   "area": "Deploys & pipelines",
+   "level": "L1-L2",
+   "tool": "GitLab CI / runners",
+   "context": "Release day, pipeline fails: flaky test, runner disk full, expired token, stuck pending.",
+   "error_text": "This job is stuck because you don't have any active runners online with any of these tags | no space left on device",
+   "frequency_signal": "GitLab forum top threads on stuck jobs and runners.",
+   "root_causes": [
+    "Runner offline or tag mismatch",
+    "Runner disk full",
+    "Expired deploy token or registry credentials",
+    "Flaky test"
+   ],
+   "diagnosis": [
+    "Read the first error in the job log",
+    "gitlab-runner status / df -h on the runner"
+   ],
+   "fix": [
+    "Fix the cause; retry only once for known flaky tests and file a ticket"
+   ],
+   "prevention": "Runner monitoring, cache cleanup, token expiry calendar.",
+   "sources": [
+    {
+     "title": "GitLab forum: job stuck, no active runners",
+     "url": "https://forum.gitlab.com/t/this-job-is-stuck-because-you-don-t-have-any-active-runners-online-with-any-of-these-tags-assigned/28205",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Works in staging, fails in production",
+   "area": "Deploys & pipelines",
+   "level": "L2",
+   "tool": "Config / env vars / secrets",
+   "context": "Environment drift: different env vars, secrets, versions, data size, network rules.",
+   "error_text": "KeyError: 'SMTP_HOST' | connection refused to db:5432",
+   "frequency_signal": "Classic Stack Overflow theme.",
+   "root_causes": [
+    "Env vars set by hand per environment",
+    "Different image tag",
+    "Firewall/egress differs"
+   ],
+   "diagnosis": [
+    "Diff env and image digest between environments"
+   ],
+   "fix": [
+    "Config in Git per environment; same image promoted"
+   ],
+   "prevention": "Promote one artifact through environments.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: works in staging not production docker",
+     "url": "https://stackoverflow.com/search?q=works+in+staging+not+production+docker",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Certificate expired",
+   "area": "Certificates & time",
+   "level": "L1-L2",
+   "tool": "Let's Encrypt / Traefik / certbot / private CA",
+   "context": "Renewal silently failed; Let's Encrypt stopped expiry emails on 4 June 2025 and lifetimes shrink to 45 days.",
+   "error_text": "NET::ERR_CERT_DATE_INVALID | x509: certificate has expired or is not yet valid",
+   "frequency_signal": "Let's Encrypt announcements; renewal threads on NPM and Caddy forums.",
+   "root_causes": [
+    "Port 80 or DNS changed so HTTP-01 fails",
+    "acme.json lost on redeploy",
+    "Manually installed cert with no renewal",
+    "Clock wrong"
+   ],
+   "diagnosis": [
+    "echo | openssl s_client -connect HOST:443 -servername HOST 2>/dev/null | openssl x509 -noout -dates -issuer",
+    "timedatectl"
+   ],
+   "fix": [
+    "Fix renewal path, renew, reload; monitor expiry"
+   ],
+   "prevention": "probe_ssl_earliest_cert_expiry alert at 14 days.",
+   "sources": [
+    {
+     "title": "Let's Encrypt: expiration emails ended",
+     "url": "https://letsencrypt.org/docs/expiration-emails/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Let's Encrypt: decreasing lifetimes to 45 days",
+     "url": "https://letsencrypt.org/2025/12/02/from-90-to-45",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "x509 unknown authority with the private CA",
+   "area": "Certificates & time",
+   "level": "L1-L2",
+   "tool": "Harbor / GitLab / Docker / runners",
+   "context": "New host or runner doesn't trust the internal CA.",
+   "error_text": "x509: certificate signed by unknown authority",
+   "frequency_signal": "Top CI and Docker registry problem.",
+   "root_causes": [
+    "CA not installed in OS store, Docker certs.d, or runner config"
+   ],
+   "diagnosis": [
+    "openssl s_client -connect harbor.example.com:443 -showcerts"
+   ],
+   "fix": [
+    "Install CA in /usr/local/share/ca-certificates + update-ca-certificates; /etc/docker/certs.d/HOST/ca.crt; runner tls-ca-file"
+   ],
+   "prevention": "Bake the CA into the base image/Ansible baseline.",
+   "sources": [
+    {
+     "title": "Docker docs: certificates",
+     "url": "https://docs.docker.com/engine/security/certificates/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "GitLab Runner docs: self-signed certificates",
+     "url": "https://docs.gitlab.com/runner/configuration/tls-self-signed/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Restore request: we need yesterday's data",
+   "area": "Backups",
+   "level": "L1-L3",
+   "tool": "restic / pg_dump / Dokploy backups",
+   "context": "Someone deleted rows or a file. Backups exist but the restore has never been tested.",
+   "error_text": "\"can you restore the orders table as of 09:00?\"",
+   "frequency_signal": "GitLab 2017 postmortem; dev.to 'I Thought My Backups Were Safe - Until I Tried Restoring One'.",
+   "root_causes": [
+    "Untested restores",
+    "Only daily backups (RPO 24h)",
+    "Restore over production by mistake"
+   ],
+   "diagnosis": [
+    "List snapshots; check the backup age and size"
+   ],
+   "fix": [
+    "Restore to a side database, extract the rows, hand them over; never restore over prod without approval"
+   ],
+   "prevention": "Quarterly restore drills with timings.",
+   "sources": [
+    {
+     "title": "GitLab 2017 postmortem",
+     "url": "https://about.gitlab.com/blog/2017/02/10/postmortem-of-database-outage-of-january-31/",
+     "type": "postmortem",
+     "verified": true
+    },
+    {
+     "title": "dev.to: I Thought My Backups Were Safe",
+     "url": "https://dev.to/highflyer910/i-thought-my-backups-were-safe-until-i-tried-restoring-one-387i",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "\"Why is the bill so high?\" / \"Do we need more servers?\"",
+   "area": "Cost & capacity",
+   "level": "L2-L3",
+   "tool": "AWS Cost Explorer / Prometheus",
+   "context": "Cost questions from managers: cloud bill spikes or on-prem hardware requests.",
+   "error_text": "\"AWS bill went from $1,900 to $3,400\"",
+   "frequency_signal": "Top r/aws theme; AWS public IPv4 charges since Feb 2024.",
+   "root_causes": [
+    "NAT gateway data, idle IPs, forgotten volumes",
+    "No tagging",
+    "On-prem: no utilisation data"
+   ],
+   "diagnosis": [
+    "Cost Explorer grouped by service and tag",
+    "Prometheus: CPU/RAM/disk utilisation p95 over 30 days"
+   ],
+   "fix": [
+    "Tag, delete orphans, schedule dev shutdowns; on-prem: show utilisation before buying"
+   ],
+   "prevention": "Monthly cost review; budgets and alerts.",
+   "sources": [
+    {
+     "title": "AWS blog: public IPv4 charge",
+     "url": "https://aws.amazon.com/blogs/aws/new-aws-public-ipv4-address-charge-public-ip-insights/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Patch everything by Friday (CVE)",
+   "area": "Patching",
+   "level": "L1-L3",
+   "tool": "apt / unattended-upgrades / Docker images",
+   "context": "A scary CVE arrives; management wants all servers patched now.",
+   "error_text": "\"Are we affected by CVE-2026-XXXX?\"",
+   "frequency_signal": "Recurring r/sysadmin theme; Docker 29 upgrade broke Traefik/Dokploy (2nd most-viewed Docker forum topic of the year).",
+   "root_causes": [
+    "No inventory of versions",
+    "Upgrades untested",
+    "Kernel/Docker restarts take apps down"
+   ],
+   "diagnosis": [
+    "apt list --installed | grep PKG",
+    "docker image inspect / trivy image"
+   ],
+   "fix": [
+    "Triage: affected? exposed? exploited (KEV)? Patch in rings: lab, one host, the rest"
+   ],
+   "prevention": "Patch rings and a monthly window.",
+   "sources": [
+    {
+     "title": "Docker forums: Docker 29 breaks Traefik",
+     "url": "https://forums.docker.com/t/docker-29-increased-minimum-api-version-breaks-traefik-reverse-proxy/150384",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Ubuntu Server docs: automatic updates",
+     "url": "https://ubuntu.com/server/docs/how-to/software/automatic-updates/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Paged by an alert you don't understand",
+   "area": "On-call",
+   "level": "L1-L2",
+   "tool": "Alertmanager / Grafana",
+   "context": "Alert with no runbook link, no dashboard, vague name.",
+   "error_text": "[FIRING:1] HighLoad instance=10.10.0.20:9100",
+   "frequency_signal": "SRE book on-call chapter: clear escalation paths and procedures reduce stress; HN on-call threads.",
+   "root_causes": [
+    "No runbook annotation",
+    "Cause-based alert"
+   ],
+   "diagnosis": [
+    "Open the alert's expression in Prometheus; check recent changes"
+   ],
+   "fix": [
+    "Acknowledge, assess user impact, escalate after 15-30 min"
+   ],
+   "prevention": "Every alert has runbook_url and owner.",
+   "sources": [
+    {
+     "title": "Google SRE book: Being On-Call",
+     "url": "https://sre.google/sre-book/being-on-call/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Big outage, everybody in the call, nobody leading",
+   "area": "Incidents",
+   "level": "L2-L4",
+   "tool": "Process",
+   "context": "Ten people debugging in parallel, no incident commander, no comms.",
+   "error_text": "\"who changed what?\" in a 40-person bridge",
+   "frequency_signal": "SRE book Managing Incidents: declare if a second team is needed, customers see it, or unresolved after 1 hour.",
+   "root_causes": [
+    "No declared incident or roles"
+   ],
+   "diagnosis": [
+    "Is there an incident channel, IC, status doc?"
+   ],
+   "fix": [
+    "Declare; assign IC, ops lead, comms; status every 30 min"
+   ],
+   "prevention": "Practise roles on game days.",
+   "sources": [
+    {
+     "title": "Google SRE book: Managing Incidents",
+     "url": "https://sre.google/sre-book/managing-incidents/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Users reported the outage before monitoring did",
+   "area": "Incidents",
+   "level": "L2-L3",
+   "tool": "Monitoring",
+   "context": "Monitoring was silent; customer support found it first.",
+   "error_text": "\"the checkout has been down for 40 minutes\"",
+   "frequency_signal": "SRE postmortem triggers include monitoring failure.",
+   "root_causes": [
+    "Only host metrics, no black-box probes",
+    "Alert routed to nobody"
+   ],
+   "diagnosis": [
+    "Was there a probe? Did Alertmanager send it?"
+   ],
+   "fix": [
+    "Add symptom-based probes and a dead man's switch"
+   ],
+   "prevention": "Probe each user journey.",
+   "sources": [
+    {
+     "title": "Google SRE book: Postmortem Culture",
+     "url": "https://sre.google/sre-book/postmortem-culture/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Ran the command on the wrong server",
+   "area": "Changes that go wrong",
+   "level": "L1-L2",
+   "tool": "SSH / shell",
+   "context": "Prod and staging terminals look identical; destructive command on the wrong host.",
+   "error_text": "rm -rf on the primary instead of the replica (GitLab 2017)",
+   "frequency_signal": "GitLab 2017 postmortem; Amazon S3 2017 operator typo.",
+   "root_causes": [
+    "Same prompt colour everywhere",
+    "Tired engineer, many tabs"
+   ],
+   "diagnosis": [
+    "hostname; whoami before every destructive command"
+   ],
+   "fix": [
+    "Red prod prompts; two-person rule for destructive ops"
+   ],
+   "prevention": "Coloured prompts, read-only defaults.",
+   "sources": [
+    {
+     "title": "GitLab 2017 postmortem",
+     "url": "https://about.gitlab.com/blog/2017/02/10/postmortem-of-database-outage-of-january-31/",
+     "type": "postmortem",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Hand-edited server drifts from Git",
+   "area": "Changes that go wrong",
+   "level": "L2-L3",
+   "tool": "Ansible / Terraform",
+   "context": "A quick fix on the server is overwritten by the next automation run, or drift hides real state.",
+   "error_text": "terraform plan shows changes nobody made | Ansible run reverts the hotfix",
+   "frequency_signal": "Top terraform-provider-aws issues by comments; ops classic.",
+   "root_causes": [
+    "Emergency edits never committed"
+   ],
+   "diagnosis": [
+    "ansible-playbook site.yml --check --diff",
+    "terraform plan"
+   ],
+   "fix": [
+    "Commit the hotfix to Git, re-run automation"
+   ],
+   "prevention": "Drift detection job nightly.",
+   "sources": [
+    {
+     "title": "terraform-provider-aws issues by comments",
+     "url": "https://github.com/hashicorp/terraform-provider-aws/issues?q=is%3Aissue+sort%3Acomments-desc",
+     "type": "issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Every request arrives by DM",
+   "area": "Toil & interruptions",
+   "level": "L1-L2",
+   "tool": "Process",
+   "context": "Requests by chat DM; nothing tracked; constant context switching.",
+   "error_text": "12 'quick questions' before lunch",
+   "frequency_signal": "Ask HN 2025 on DevOps support ticket lifecycle.",
+   "root_causes": [
+    "No intake door",
+    "No interrupt rotation"
+   ],
+   "diagnosis": [
+    "Count interruptions for a week"
+   ],
+   "fix": [
+    "One channel + ticket form; interrupt shield rotation"
+   ],
+   "prevention": "Publish a service catalog.",
+   "sources": [
+    {
+     "title": "Ask HN: What does your DevOps support ticket lifecycle look like?",
+     "url": "https://news.ycombinator.com/item?id=42731128",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Dev blames infra, infra blames code",
+   "area": "Working with developers",
+   "level": "L1-L3",
+   "tool": "Process / observability",
+   "context": "Ping-pong between teams; evidence missing.",
+   "error_text": "\"the server is slow\" vs \"the code is slow\"",
+   "frequency_signal": "Constant r/devops theme.",
+   "root_causes": [
+    "No shared dashboards",
+    "No request IDs"
+   ],
+   "diagnosis": [
+    "Traefik access log timings vs app timings"
+   ],
+   "fix": [
+    "Bring evidence; split the latency by layer"
+   ],
+   "prevention": "Shared dashboards per service.",
+   "sources": [
+    {
+     "title": "Brendan Gregg: USE method",
+     "url": "https://www.brendangregg.com/usemethod.html",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Asked to do something unsafe to make it work",
+   "area": "Working with developers",
+   "level": "L1-L2",
+   "tool": "Security",
+   "context": "\"just chmod 777\", \"disable TLS verify\", \"give me root\", \"turn off the firewall\".",
+   "error_text": "curl -k everywhere | chmod -R 777 /var/www",
+   "frequency_signal": "Classic Stack Overflow anti-answers.",
+   "root_causes": [
+    "Time pressure",
+    "Fix the error message rather than the cause"
+   ],
+   "diagnosis": [
+    "What is the real error?"
+   ],
+   "fix": [
+    "Offer the safe fix with the same effort"
+   ],
+   "prevention": "Secure defaults in templates.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: chmod 777 alternative",
+     "url": "https://stackoverflow.com/search?q=chmod+777+alternative+permissions",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Only one person knows how it works",
+   "area": "Documentation",
+   "level": "L2-L3",
+   "tool": "Process",
+   "context": "Bus factor of one; their vacation is an outage risk.",
+   "error_text": "\"ask Ravi, he set that up\"",
+   "frequency_signal": "r/sysadmin classic.",
+   "root_causes": [
+    "No docs, no pairing"
+   ],
+   "diagnosis": [
+    "List systems with a single expert"
+   ],
+   "fix": [
+    "Pair, record, write runbook, rotate on-call"
+   ],
+   "prevention": "Docs as part of done.",
+   "sources": [
+    {
+     "title": "r/sysadmin search: bus factor documentation",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=bus+factor+documentation&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Trying to learn every tool at once",
+   "area": "Learning",
+   "level": "L0-L2",
+   "tool": "Learning",
+   "context": "Tool overwhelm and impostor feelings.",
+   "error_text": "\"I feel shallow and dumb\"",
+   "frequency_signal": "dev.to 'I Stopped Trying to Learn Every DevOps Tool' (152 reactions); Ask HN 'I feel so shallow and dumb' (534 points).",
+   "root_causes": [
+    "Roadmap lists 80 tools"
+   ],
+   "diagnosis": [
+    "What did your last 20 tickets need?"
+   ],
+   "fix": [
+    "Learn from tickets; build one platform"
+   ],
+   "prevention": "90-day ticket plan.",
+   "sources": [
+    {
+     "title": "dev.to: I Stopped Trying to Learn Every DevOps Tool",
+     "url": "https://dev.to/maame-codes/i-stopped-trying-to-learn-every-devops-tool-and-started-building-a-platform-instead-33i6",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Ask HN: I feel so shallow and dumb",
+     "url": "https://news.ycombinator.com/item?id=29281468",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Stuck for hours without asking for help",
+   "area": "Learning",
+   "level": "L0-L1",
+   "tool": "Learning",
+   "context": "Juniors grind silently; seniors time-box and escalate with evidence.",
+   "error_text": "4 hours on one error",
+   "frequency_signal": "Common junior struggle.",
+   "root_causes": [
+    "Fear of looking stupid"
+   ],
+   "diagnosis": [
+    "Time-box: 30 min alone, then ask with evidence"
+   ],
+   "fix": [
+    "Ask with what you tried"
+   ],
+   "prevention": "Team norm for asking.",
+   "sources": [
+    {
+     "title": "r/devops search: junior afraid to ask",
+     "url": "https://www.reddit.com/r/devops/search/?q=junior+afraid+to+ask+questions&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Your first big mistake in production",
+   "area": "Learning",
+   "level": "L0-L2",
+   "tool": "Process",
+   "context": "Everyone breaks prod once. Own it, communicate, fix, learn.",
+   "error_text": "\"I think I just deleted the wrong volume\"",
+   "frequency_signal": "Dan Luu config errors; GitLab 2017.",
+   "root_causes": [
+    "Missing guard rails"
+   ],
+   "diagnosis": [
+    "Stop, tell, stabilise"
+   ],
+   "fix": [
+    "Blameless postmortem"
+   ],
+   "prevention": "Guard rails over blame.",
+   "sources": [
+    {
+     "title": "Dan Luu: post-mortems",
+     "url": "https://github.com/danluu/post-mortems",
+     "type": "postmortem",
+     "verified": true
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "Google SRE book",
+   "what": "Free online book; chapters on toil (ch. 5), on-call (ch. 11), managing incidents (ch. 14), postmortem culture (ch. 15)",
+   "docs": "https://sre.google/sre-book/table-of-contents/",
+   "gotchas": "Google-scale numbers; adapt rotation sizes to small teams"
+  },
+  {
+   "tool": "DORA",
+   "what": "Research program on software delivery performance; capabilities pages on well-being, continuous delivery, change approval",
+   "docs": "https://dora.dev/capabilities/"
+  },
+  {
+   "tool": "Dan Luu post-mortems",
+   "what": "Curated list of public postmortems by category",
+   "docs": "https://github.com/danluu/post-mortems"
+  }
+ ],
+ "learning_signals": [
+  {
+   "signal": "Toil is normal in small doses; the problem is when it grows past half the week",
+   "source": "https://sre.google/sre-book/eliminating-toil/"
+  },
+  {
+   "signal": "Engineers who go on-call too rarely lose confidence; aim for at least once or twice a quarter",
+   "source": "https://sre.google/sre-book/being-on-call/"
+  },
+  {
+   "signal": "HN has a 2025 Ask HN on the DevOps support ticket lifecycle; people ask how others run ticket intake",
+   "source": "https://news.ycombinator.com/item?id=42731128"
+  },
+  {
+   "signal": "Healthy rotations see 1-2 pages per month to 1-2 per week; 5-7 a day is a red flag; dedicate one person per week to fixing the causes of pages",
+   "source": "https://news.ycombinator.com/item?id=21039191"
+  },
+  {
+   "signal": "Read one public postmortem a week: config errors dominate real outages",
+   "source": "https://github.com/danluu/post-mortems"
+  },
+  {
+   "signal": "Google uses postmortem reading clubs and Wheel of Misfortune re-enactments to train new on-call engineers",
+   "source": "https://sre.google/sre-book/postmortem-culture/"
+  },
+  {
+   "signal": "Learn tools through one platform you build, not a list of 80 tools",
+   "source": "https://dev.to/maame-codes/i-stopped-trying-to-learn-every-devops-tool-and-started-building-a-platform-instead-33i6"
+  },
+  {
+   "signal": "Learning in public: a student's DevOps diary series on dev.to",
+   "source": "https://dev.to/maame-codes/devops-from-scratch-a-students-diary-entry-00-5b71"
+  },
+  {
+   "signal": "Restore drills reveal broken backups",
+   "source": "https://dev.to/highflyer910/i-thought-my-backups-were-safe-until-i-tried-restoring-one-387i"
+  }
+ ]
+}

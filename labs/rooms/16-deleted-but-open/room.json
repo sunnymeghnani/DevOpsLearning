@@ -1,0 +1,81 @@
+{
+ "id": "l1-deleted-but-open",
+ "title": "Disk full, but du finds nothing",
+ "level": "L1",
+ "map_node": "disk-full",
+ "path": "junior",
+ "order": 16,
+ "minutes": 25,
+ "difficulty": "medium",
+ "source": {
+  "title": "Foreman-proxy: open FD of deleted log files - hdd out of space (Foreman Community)",
+  "url": "https://community.theforeman.org/t/foreman-proxy-open-fd-of-deleted-log-files-hdd-out-of-space/14481",
+  "note": "adapted"
+ },
+ "brief": "**ALERT 06:30 · web-01 · /var/log/metrics 92% full**\n\nThe metrics agent logs to its own volume, `/var/log/metrics` (48 MB here, so you can see it fill). Last night's log rotation ran, and the volume is still almost full.\n\n> \"`df` says 92%, but `du -sh /var/log/metrics` says 156K. I deleted the old logs, nothing changed. Is the filesystem broken?\"\n\nThe filesystem is fine: `df` and `du` count different things. Find what holds the space, free it without losing the agent, and fix the rotation so the next one doesn't do this again. Don't unmount the volume, and don't `rm` your way out.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Find the space du can't see",
+   "text": "`du` adds up the files it can find through directory names. `df` asks the filesystem how many blocks are in use. A file that was deleted while a process still has it open has no name any more, but its blocks stay in use until the last open descriptor closes.\n\nList open files that have no name left, see which process and unit hold them, and free the space safely. Done when the volume is below 50% and the agent still runs.",
+   "points": 50,
+   "hints": [
+    "`sudo lsof +L1` (or `sudo find /proc/*/fd -lname '*(deleted)'`) shows `agent.log.1 (deleted)` held by PID ... on fd 1. `ps -o pid,unit -p <PID>` names the unit.",
+    "Make the writer close it: `sudo systemctl restart metrics-agent` (its unit also has `reload`, which sends SIGHUP to reopen the log). Emergency option without a restart: `sudo truncate -s 0 /proc/<PID>/fd/1`. Then `df -h /var/log/metrics`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which lsof option lists open files whose link count is below 1 (deleted but still open)?",
+     "format": "the option, as you type it",
+     "answer_sha256": "5c25cdef8723f63a3e7d14edbe4c0ba3e277c626ff080be98e6bac08aa400717"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which systemd unit held the deleted file?",
+     "format": "unit name with .service",
+     "answer_sha256": "b26792df5fb26747e203254fb4c03f3e4516694a7bcc42203c0aacd95cfcf853"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the metrics volume is still mounted and below 50%; no deleted file over 1 MB is held open; the agent runs",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Make the next rotation safe",
+   "text": "Read `/etc/logrotate.d/metrics-agent`. logrotate renamed `agent.log` and gzip deleted the renamed file, but nobody told the agent, which kept writing to the old file through its open descriptor.\n\nFix the config in one of the two standard ways: copy the log and truncate it in place, or tell the agent to reopen its log after the rename. Preview it with logrotate's debug mode. The check forces a real rotation. Done when the agent writes to the new `agent.log` afterwards and no deleted file stays open.",
+   "points": 50,
+   "hints": [
+    "`sudo logrotate -d /etc/logrotate.d/metrics-agent` shows each step without changing anything. `systemctl cat metrics-agent` shows `ExecReload=/bin/kill -HUP $MAINPID`: the agent reopens its log on SIGHUP.",
+    "Add a `postrotate` block that runs `systemctl reload metrics-agent` (and `delaycompress`), or add `copytruncate`. Then `sudo logrotate -d ...`, and test with `sudo logrotate -f /etc/logrotate.d/metrics-agent; sudo lsof +L1`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which logrotate directive copies the log and then empties the original, so the writer's descriptor stays valid?",
+     "format": "directive",
+     "answer_sha256": "deade76feede1923d29ad94fc0faa92b35253969ab96690b443f6d4c1597f87e"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which logrotate option shows what it would do without rotating anything?",
+     "format": "the option, as you type it",
+     "answer_sha256": "50e09407a18bedd64baf0b99825a8178d7446731615b85452ea6b99573469dcc"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "logrotate -d passes; after a forced rotation the agent writes to the live agent.log and no deleted file stays open",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n`metrics-agent` opens `agent.log` once and writes through file descriptor 1. The rotation renamed it to `agent.log.1` (the descriptor follows the inode, not the name), created a new empty `agent.log`, and `compress` gzipped `agent.log.1` and deleted it. The agent kept writing to the deleted inode: 44 MB that `df` counts and `du` can't see, still growing.\n\n### Task 1\n```bash\ndf -h /var/log/metrics ; sudo du -sh /var/log/metrics     # 92% versus 156K\nsudo lsof +L1                                            # metrics-a <PID> root 1w ... agent.log.1 (deleted)\nps -o pid,unit,cmd -p <PID>                              # metrics-agent.service\nsudo systemctl reload metrics-agent                      # SIGHUP: the agent reopens agent.log\nsleep 2; df -h /var/log/metrics                          # 1%\n```\n*Why:* the blocks are freed when the **last** descriptor closes, so the writer has to close it: restart it, or ask it to reopen. `truncate -s 0 /proc/<PID>/fd/1` frees the space at once without a restart, but the agent keeps writing to the nameless file, so restart it later. `rm` of the remaining files changes nothing, because the space isn't in any file that still has a name.\n\n### Task 2\n```text\n/var/log/metrics/agent.log {\n    daily\n    rotate 3\n    compress\n    delaycompress\n    missingok\n    notifempty\n    create 0640 root adm\n    postrotate\n        systemctl reload metrics-agent >/dev/null 2>&1 || true\n    endscript\n}\n```\n```bash\nsudo logrotate -d /etc/logrotate.d/metrics-agent   # dry run: rotating, running postrotate script\nsudo logrotate -f /etc/logrotate.d/metrics-agent; sleep 2; sudo lsof +L1   # nothing\n```\n*Which fix:* `postrotate` + reload is clean when the program can reopen its log (nginx: `USR1`, rsyslog: `HUP`). `copytruncate` works for programs that can't, but lines written between the copy and the truncate are lost. Use it for logs where that gap doesn't matter.\n\n**Source (adapted):** [Foreman-proxy: open FD of deleted log files - hdd out of space](https://community.theforeman.org/t/foreman-proxy-open-fd-of-deleted-log-files-hdd-out-of-space/14481): `lsof +L1` showed the proxy holding several GB of deleted `proxy.log.1` files after rotation, and the disk filled. A restart freed the space each time. The lasting fix repaired the proxy's reopen-on-signal handler; `copytruncate` was later proposed as the alternative."
+}

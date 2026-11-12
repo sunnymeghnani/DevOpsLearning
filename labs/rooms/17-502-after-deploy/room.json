@@ -1,0 +1,81 @@
+{
+ "id": "l1-502-after-deploy",
+ "title": "502 Bad Gateway after a \"successful\" deploy",
+ "level": "L1",
+ "map_node": "reverse-proxy",
+ "path": "junior",
+ "order": 17,
+ "minutes": 30,
+ "difficulty": "medium",
+ "source": {
+  "title": "502 bad gateway after last update (Ghost Forum)",
+  "url": "https://forum.ghost.org/t/502-bad-gateway-after-last-update/19294",
+  "note": "adapted"
+ },
+ "brief": "**#deploys 14:02 · api-01 · shop-api 2.4 rolled out, pipeline green**\n\n> \"Pipeline is green, `systemctl is-active shop-api` says active. Ship it!\"\n\n**14:04:** the shop's frontend reports **502 Bad Gateway** from `api.shop.example.com`. nginx on this box proxies to shop-api, a small Python service started by systemd.\n\nThe app is running, and nginx is running too. The fault is in how they meet. Use nginx's error log, `ss` and the app's own settings to find where the request goes and where the app actually listens. After that, the finance team has a second complaint about the monthly report. Keep the site's fail-fast timeout (ticket SRE-88) for everything else.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Find where the request goes",
+   "text": "A **502** means nginx couldn't get a usable answer from its upstream, here because the connection itself failed. `sudo tail /var/log/nginx/error.log` names the exact upstream address nginx tried. `sudo ss -ltn` shows what is really listening. `/etc/shop-api/env` and the release note in it explain why they differ.\n\nMake them meet: change the proxy, or change the app, but test with `nginx -t` before a reload. Done when `curl -H 'Host: api.shop.example.com' http://127.0.0.1/` answers 200 with shop-api's JSON.",
+   "points": 50,
+   "hints": [
+    "The error log says `connect() failed (111: Connection refused) while connecting to upstream, ... upstream: \"http://127.0.0.1:2368/\"`, and `ss -ltn` shows `127.0.0.1:2369`. Test the backend directly: `curl -s http://127.0.0.1:2369/`.",
+    "In `/etc/nginx/sites-available/shop-api` change the upstream to `server 127.0.0.1:2369;`, then `sudo nginx -t && sudo systemctl reload nginx`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which port does shop-api 2.4 actually listen on?",
+     "format": "number",
+     "answer_sha256": "1ee4e10c0c7e1bd5ff9cd70d1f3c03521abf21ea7ee45aa92deab16f87af4dbb"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which error text, after \"111:\", does nginx log for this 502?",
+     "format": "two words",
+     "answer_sha256": "25a84382140b11ac6f9e02f767c8af75143f2739b8fcb7130e5c77206b2bd53e"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "nginx -t passes; nginx and shop-api run and start at boot; / answers 200 with shop-api's JSON",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "The report that times out",
+   "text": "Now try `curl -s -o /dev/null -w '%{http_code} %{time_total}\\n' -H 'Host: api.shop.example.com' http://127.0.0.1/reports/monthly`. A different 5xx, after about 3 seconds. The app is up; it just needs about 5 seconds for this report.\n\nRaise the limit for the report location only. The 3-second limit protects the rest of the API from hung requests, and a monitoring probe, `/api/stall`, checks that it still applies. Done when the report answers 200 and `/api/stall` still fails fast.",
+   "points": 50,
+   "hints": [
+    "The error log says `upstream timed out (110: Connection timed out) while reading response header`. `sudo nginx -T | grep -n timeout` shows the server-wide `proxy_read_timeout 3s;`.",
+    "Add a `location /reports/ { proxy_pass http://shop_api; proxy_set_header Host $host; proxy_read_timeout 30s; }` above `location /`, then `sudo nginx -t && sudo systemctl reload nginx`. Don't change the server-wide 3s."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which status code does nginx return when the upstream accepts the connection but answers too slowly?",
+     "format": "3 digits",
+     "answer_sha256": "ba689abd93c9c6a7d08b5b5c04dd27f6d69755ebe9a87fb969e73dfc11660e38"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which nginx directive sets how long nginx waits for the upstream's response?",
+     "format": "directive name",
+     "answer_sha256": "9d409f8e8ada36c6e2e5232fb7ce8b16534765487900fbcd0db6001a8779aaad"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "/reports/monthly answers 200; /api/stall still gets a fast 504; no proxy_read_timeout above 300 s",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. shop-api 2.4 changed its default port from 2368 to 2369 (`/etc/shop-api/env`). The unit was active, so the pipeline's \"is it running?\" check passed, but nginx still sent requests to `127.0.0.1:2368`, where nothing listens: `connect() failed (111: Connection refused)` → **502**.\n2. The server block sets `proxy_read_timeout 3s` for every location. `/reports/monthly` needs about 5 s, so nginx gave up first: `upstream timed out (110: Connection timed out)` → **504**.\n\n### Task 1\n```bash\ncurl -s -o /dev/null -w '%{http_code}\\n' -H 'Host: api.shop.example.com' http://127.0.0.1/   # 502\nsudo tail -2 /var/log/nginx/error.log      # (111: Connection refused) ... upstream: \"http://127.0.0.1:2368/\"\nsudo ss -ltn                               # 127.0.0.1:2369\ncat /etc/shop-api/env                      # PORT=2369\ncurl -s http://127.0.0.1:2369/             # the app answers directly\nsudo sed -i 's/127.0.0.1:2368/127.0.0.1:2369/' /etc/nginx/sites-available/shop-api\nsudo nginx -t && sudo systemctl reload nginx\n```\n*Read the 5xx:* **502** means the connection failed or the upstream sent garbage (wrong port, app down, app bound to another address). **504** means it connected but the answer took longer than `proxy_read_timeout`. The same split applies to Traefik, Dokploy and Coolify: a \"port mismatch\" or an app listening on `127.0.0.1` inside its container both give 502.\n\n### Task 2\n```nginx\n    location /reports/ {\n        proxy_pass http://shop_api;\n        proxy_set_header Host $host;\n        proxy_read_timeout 30s;\n    }\n```\n```bash\nsudo nginx -t && sudo systemctl reload nginx\ncurl -s -w ' %{http_code} %{time_total}\\n' -H 'Host: api.shop.example.com' http://127.0.0.1/reports/monthly   # 200, ~5 s\ncurl -s -o /dev/null -w '%{http_code} %{time_total}\\n' -H 'Host: api.shop.example.com' http://127.0.0.1/api/stall   # 504, ~3 s\n```\n*Why per location:* directives in a `location` override the server-level value only there. Pick a limit a little above the slowest real request, not hours. The real fix for a slow report is to make it asynchronous (start a job, poll for the result).\n\n**Source (adapted):** [502 bad gateway after last update (Ghost Forum)](https://forum.ghost.org/t/502-bad-gateway-after-last-update/19294): after an update, nginx logged `connect() failed (111: Connection refused)` for `127.0.0.1:2368`. `netstat -plant` showed Ghost on 2369, and correcting the port in the nginx configs fixed it. The 504 timeout task is added."
+}

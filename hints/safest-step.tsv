@@ -1,0 +1,16 @@
+file	heading	rung	text
+25-playbook-site-down.md	Stabilise before root cause	2	Shift, drain or shed first; root cause can wait until users are served. Note the old values so the move can be undone.
+25-playbook-site-down.md	7. Proxy error scenarios: 502, 503, 504	1	Read the proxy's log line for one failing request before restarting anything. A deploy just before it? Rung 4: roll back.
+23-playbook-slow-system.md	Save a snapshot before you dig	1	Looking is free; a restart erases what you came to see.
+52-devops-day-to-day.md	5.2 Deploy broke production	4	Roll back first, debug later. Stop if the release changed the data format or schema: then it is rung 8.
+52-devops-day-to-day.md	10.1 A routine config change takes production down	4	Put the previous file back and reload. Fix forward only once the rollback is ruled out.
+52-devops-day-to-day.md	10.2 Ran the command on the wrong server	1	Stop typing. Read what the command changed before trying to undo it, and tell the lead now.
+42-problems-network-dns-tls-vpn.md	1.1 netplan apply locks you out	5	One host, console open, netplan try so it reverts by itself.
+42-problems-network-dns-tls-vpn.md	7.1 DNS changed, old answers won't go away	5	Change one record; it takes effect only as fast as the old TTL allows. Next time lower the TTL a full old TTL ahead.
+42-problems-network-dns-tls-vpn.md	7.4 Pi-hole or AdGuard: port 53 busy, clients bypass	1	Name the owner of port 53 first. Do not stop the host's resolver before it has another one.
+50-problems-cloud-iac-proxmox.md	7.2 Web UI dead after an IP, hostname or NIC change	1	At the console, compare the live interface names with the config before editing anything.
+44-problems-docker-swarm-registry.md	8.5 Rolling update stuck or no rollback	4	docker service rollback, then find out why the new task was unhealthy.
+30-learn-docker.md	daemon.json keys that matter on-prem	6	A daemon restart touches every container on the host. On a Swarm node dockerd refuses live-restore, so nothing softens it: take a window.
+21-case-apache-443-dokploy.md	9. Phase 8 — Cutover with minimal downtime	6	Prepare the routes on the side; the window holds only the switch.
+38-learn-databases-ops.md	Failover, fencing and Patroni	7	The lead decides. Check replication lag and the backup first; one member at a time.
+26-playbook-containers-k8s.md	10. Kubernetes: nodes, storage and control plane	2	Cordon and drain one node before you change it; check PodDisruptionBudgets first.

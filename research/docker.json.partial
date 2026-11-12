@@ -1,0 +1,202 @@
+{
+  "domain": "docker",
+  "problems": [
+    {
+      "title": "Docker 29 upgrade breaks Traefik/Portainer/Dokploy: 'client version 1.24 is too old'",
+      "area": "Docker Engine / API",
+      "tool": "Docker Engine 29, Traefik, Portainer",
+      "level": "L1",
+      "error_text": "Error response from daemon: client version 1.24 is too old. Minimum supported API version is 1.44 | Portainer: Failed loading environment. The environment named local is unavailable",
+      "context": "apt upgrade to docker-ce 29.x (from 2025-11-10) on hosts where Traefik < v3.6.1 (dokploy-traefik), Portainer < 2.33.5 LTS/2.36.0 STS or other socket clients run; routing dies, apps keep running.",
+      "frequency_signal": "2nd most-viewed forums.docker.com topic of the past year (~41k views); Portainer #12925 has 439 comments; also traefik #12270, Coolify, Appwrite.",
+      "root_causes": ["Engine 29 only accepts API 1.44+ (Docker 25+).", "Docker packages not pinned.", "Socket clients embed their own old Docker client."],
+      "diagnosis": ["docker version   # minimum API version", "docker logs --tail 100 dokploy-traefik 2>&1 | grep -i 'too old'", "zgrep -h docker-ce /var/log/apt/history.log*"],
+      "fix": ["Upgrade clients: Traefik >= v3.6.1, Portainer >= 2.33.5 LTS / 2.36.0 STS (Dokploy: use its own Traefik update path).", "Temporary: {\"min-api-version\": \"1.24\"} in daemon.json, restart, verify with docker version, remove later.", "Last resort: install 28.5.2 and sudo apt-mark hold docker-ce docker-ce-cli containerd.io"],
+      "prevention": "Pin Docker packages, upgrade on staging first, list socket clients (docker ps --filter volume=/var/run/docker.sock) before major upgrades.",
+      "sources": [
+        {"title": "Docker forums: Docker 29 breaks Traefik", "url": "https://forums.docker.com/t/docker-29-increased-minimum-api-version-breaks-traefik-reverse-proxy/150384", "type": "forum", "verified": true},
+        {"title": "Portainer #12925", "url": "https://github.com/portainer/portainer/issues/12925", "type": "github-issue", "verified": true},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=docker+29+client+version+too+old+traefik&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Docker fills the root disk: overlay2, build cache and logs ('no space left on device')",
+      "area": "Docker Engine / storage",
+      "tool": "Docker Engine",
+      "level": "L1",
+      "error_text": "write /var/lib/docker/...: no space left on device | failed to register layer: ... no space left on device | Dokploy Postgres in recovery mode",
+      "context": "Build hosts, runners and Dokploy servers building locally; Ubuntu LVM installs often leave the root LV small.",
+      "frequency_signal": "forums.docker.com all-time: 'How to delete cache?' ~1.39M views, '/var/lib/docker/overlay' cleanup ~974k, '<none> images' ~734k, 'change image directory' ~734k; first item in Dokploy's instance troubleshooting.",
+      "root_causes": ["Unpruned BuildKit cache and old images per deploy.", "json-file logs never rotate by default.", "Apps writing to the container layer; named volumes skipped by prune.", "Docker 29 containerd store keeps compressed+uncompressed layers in a separate path."],
+      "diagnosis": ["docker system df -v", "sudo du -xh --max-depth=1 /var/lib/docker /var/lib/containerd 2>/dev/null | sort -h", "docker ps -a --size --format '{{.Names}} {{.Size}}'", "sudo vgs; sudo lvs"],
+      "fix": ["docker builder prune -f --filter until=72h; docker image prune -a -f --filter until=168h; docker container prune -f", "Log rotation: {\"log-driver\": \"local\"} or json-file with log-opts max-size 10m / max-file 3; recreate containers.", "Cap cache: {\"builder\": {\"gc\": {\"enabled\": true, \"defaultKeepStorage\": \"20GB\"}}}", "sudo lvextend -r -l +100%FREE /dev/ubuntu-vg/ubuntu-lv or move data-root to a bigger disk."],
+      "prevention": "Separate filesystem for Docker, 85% disk alert, weekly prune timer, log rotation in the daemon.json template.",
+      "sources": [
+        {"title": "forums.docker.com top (all time)", "url": "https://forums.docker.com/top?period=all", "type": "forum", "verified": true},
+        {"title": "Docker docs: Prune unused objects", "url": "https://docs.docker.com/engine/manage-resources/pruning/", "type": "docs", "verified": true},
+        {"title": "Docker docs: Configure logging drivers", "url": "https://docs.docker.com/engine/logging/configure/", "type": "docs", "verified": true},
+        {"title": "SO search", "url": "https://stackoverflow.com/search?q=docker+overlay2+%22no+space+left+on+device%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "CLI can't reach the daemon: 'Cannot connect to the Docker daemon' or 'permission denied ... docker.sock'",
+      "area": "Docker Engine / daemon access",
+      "tool": "Docker Engine",
+      "level": "L0",
+      "error_text": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running? | permission denied while trying to connect to the Docker daemon socket ... connect: permission denied",
+      "context": "Fresh installs, new users or service accounts (gitlab-runner shell executor), after reboots or daemon.json edits.",
+      "frequency_signal": "'Cannot connect to the Docker daemon' ~1.29M views on forums.docker.com; compose #4181 226 reactions; permission error is a top SO Docker question.",
+      "root_causes": ["dockerd failed to start or is disabled.", "DOCKER_HOST or docker context points elsewhere.", "User not in docker group or session predates it; ~/.docker owned by root."],
+      "diagnosis": ["systemctl status docker docker.socket containerd --no-pager", "journalctl -u docker -b -n 50 --no-pager", "env | grep -i docker_; docker context ls; id"],
+      "fix": ["sudo systemctl enable --now docker (fix the journal error first)", "unset DOCKER_HOST or docker context use default", "sudo usermod -aG docker $USER and re-login; sudo chown \"$USER\":\"$USER\" ~/.docker -R; never chmod 666 the socket"],
+      "prevention": "docker group = root: grant via config management only; alert on docker.service failures.",
+      "sources": [
+        {"title": "Docker docs: Troubleshoot the daemon", "url": "https://docs.docker.com/engine/daemon/troubleshoot/", "type": "docs", "verified": true},
+        {"title": "Docker docs: Linux post-install", "url": "https://docs.docker.com/engine/install/linux-postinstall/", "type": "docs", "verified": true},
+        {"title": "SO search", "url": "https://stackoverflow.com/search?q=%22permission+denied+while+trying+to+connect+to+the+Docker+daemon+socket%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Docker Hub 'toomanyrequests: You have reached your pull rate limit'",
+      "area": "Registries / Docker Hub",
+      "tool": "Docker Hub, mirrors, Harbor proxy cache",
+      "level": "L1",
+      "error_text": "toomanyrequests: You have reached your pull rate limit. You may increase the limit by authenticating and upgrading (HTTP 429)",
+      "context": "Runners, Kubernetes nodes or Dokploy builds behind one NAT IP pulling anonymously; DinD jobs with empty caches.",
+      "frequency_signal": "Long-running theme since 2020; limits revised in 2025; Harbor recommends 2.1.1+ proxy cache because of it.",
+      "root_causes": ["Anonymous limit per IPv4 or IPv6 /64 (docs Oct 2026: 100 pulls/6 h; Personal 200/6 h; paid unlimited).", "Ephemeral CI re-pulls base images.", "Mirror set for dockerd but not for BuildKit or containerd."],
+      "diagnosis": ["TOKEN=$(curl -s 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull' | jq -r .token)", "curl -s --head -H \"Authorization: Bearer $TOKEN\" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit", "docker info | grep -A3 -i 'registry mirrors'"],
+      "fix": ["docker login on every host/runner with an access token.", "Harbor proxy-cache project: harbor.example.internal/dockerhub-proxy/library/nginx:1.27", "{\"registry-mirrors\": [\"https://mirror.example.internal\"]} (Docker Hub only); containerd: /etc/containerd/certs.d/docker.io/hosts.toml with override_path = true; dind: command [\"--registry-mirror\", ...]"],
+      "prevention": "No anonymous CI pulls; mirror base images into Harbor; immutable tags with IfNotPresent.",
+      "sources": [
+        {"title": "Docker docs: Hub pull limits", "url": "https://docs.docker.com/docker-hub/usage/pulls/", "type": "docs", "verified": true},
+        {"title": "Docker docs: Registry mirror", "url": "https://docs.docker.com/docker-hub/image-library/mirror/", "type": "docs", "verified": true},
+        {"title": "Harbor docs: Proxy cache", "url": "https://goharbor.io/docs/2.13.0/administration/configure-proxy-cache/", "type": "docs", "verified": true},
+        {"title": "Reddit r/devops search", "url": "https://www.reddit.com/r/devops/search/?q=docker+hub+rate+limit+mirror&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Private registry TLS: 'x509: certificate signed by unknown authority' (Docker, containerd, BuildKit)",
+      "area": "Registries / TLS",
+      "tool": "Docker Engine, containerd, BuildKit, Harbor",
+      "level": "L2",
+      "error_text": "tls: failed to verify certificate: x509: certificate signed by unknown authority | x509: certificate relies on legacy Common Name field, use SANs instead | http: server gave HTTP response to HTTPS client",
+      "context": "Harbor on an internal CA; every client keeps its own trust store (Docker hosts, Swarm workers, k8s nodes, dind, buildx builders).",
+      "frequency_signal": "forums.docker.com 'Adding (self signed) certificates' ~134k views; moby #9118 (75 comments); buildx #1642 in buildx's most-reacted list.",
+      "root_causes": ["CA not where this client reads: /etc/docker/certs.d/HOST[:PORT]/ca.crt, containerd hosts.toml, OS store, buildkitd.toml.", "Docker treats .crt as CA, .cert as client cert.", "Missing intermediate or no SAN on Harbor's cert.", "docker-container builders ignore daemon.json and certs.d."],
+      "diagnosis": ["openssl s_client -connect harbor.example.internal:443 -servername harbor.example.internal -showcerts </dev/null", "ls -l /etc/docker/certs.d/harbor.example.internal/", "docker buildx ls"],
+      "fix": ["sudo mkdir -p /etc/docker/certs.d/harbor.example.internal && sudo cp example-ca.crt /etc/docker/certs.d/harbor.example.internal/ca.crt", "OS store: sudo cp example-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates; containerd: hosts.toml with ca = path", "buildkitd.toml [registry.\"harbor.example.internal\"] ca = [\"/etc/certs/example-ca.pem\"], then recreate: docker buildx create --driver docker-container --buildkitd-config /etc/buildkitd.toml --use", "Serve the full chain with SANs; insecure-registries only in labs."],
+      "prevention": "Distribute the CA with Ansible to all trust stores and monitor cert expiry.",
+      "sources": [
+        {"title": "Docker docs: Registry certificates", "url": "https://docs.docker.com/engine/security/certificates/", "type": "docs", "verified": true},
+        {"title": "Docker docs: BuildKit configuration", "url": "https://docs.docker.com/build/buildkit/configure/", "type": "docs", "verified": true},
+        {"title": "buildx #1642", "url": "https://github.com/docker/buildx/issues/1642", "type": "github-issue", "verified": true},
+        {"title": "SO search", "url": "https://stackoverflow.com/search?q=docker+private+registry+%22x509%3A+certificate+signed+by+unknown+authority%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Push/pull denied: 'requested access to the resource is denied', Harbor 'unauthorized', ECR 'no basic auth credentials'",
+      "area": "Registries / auth",
+      "tool": "Docker CLI, Harbor, Amazon ECR",
+      "level": "L1",
+      "error_text": "denied: requested access to the resource is denied | unauthorized: unauthorized to access repository: team-a/app, action: push | no basic auth credentials",
+      "context": "First CI push to Harbor or ECR, new projects or robots, sudo/non-sudo mixups.",
+      "frequency_signal": "forums.docker.com: 'requested access to the resource is denied' ~504k views; 'ECR no basic auth credentials' ~390k views.",
+      "root_causes": ["Tag lacks registry/project, so push goes to docker.io.", "Harbor project missing or robot lacks push.", "Credentials keyed by exact host string; sudo uses another config.json.", "ECR tokens last 12 h; repo must exist."],
+      "diagnosis": ["docker image ls --format '{{.Repository}}:{{.Tag}}'", "jq '.auths | keys' ~/.docker/config.json", "sudo tail -n 50 /var/log/harbor/core.log"],
+      "fix": ["docker tag app:1.4.2 harbor.example.internal/team-a/app:1.4.2 && docker push harbor.example.internal/team-a/app:1.4.2", "echo \"$HARBOR_TOKEN\" | docker login harbor.example.internal -u 'robot$team-a+ci' --password-stdin", "aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin ACCOUNT_ID.dkr.ecr.eu-central-1.amazonaws.com"],
+      "prevention": "REGISTRY/PROJECT/APP:GIT_SHA naming in CI templates; one least-privilege robot per pipeline.",
+      "sources": [
+        {"title": "forums.docker.com top (all time)", "url": "https://forums.docker.com/top?period=all", "type": "forum", "verified": true},
+        {"title": "SO search", "url": "https://stackoverflow.com/search?q=%22denied%3A+requested+access+to+the+resource+is+denied%22", "type": "search", "verified": false},
+        {"title": "SO search (ECR)", "url": "https://stackoverflow.com/search?q=ecr+%22no+basic+auth+credentials%22", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "'localhost' in a container is the container: 'Empty reply from server' or can't reach a host service",
+      "area": "Docker networking",
+      "tool": "Docker Engine",
+      "level": "L1",
+      "error_text": "curl: (52) Empty reply from server | connect ECONNREFUSED 127.0.0.1:5432 | Could not resolve host: host.docker.internal",
+      "context": "Apps binding 127.0.0.1, containers using a DB on the host, Docker Desktop guides applied to Ubuntu.",
+      "frequency_signal": "forums.docker.com: 'Accessing host machine from within docker container' ~671k views; 'network_mode: host not working' ~424k.",
+      "root_causes": ["App listens on 127.0.0.1 inside its namespace.", "host.docker.internal exists by default only on Docker Desktop.", "Host service bound to 127.0.0.1 or UFW drops docker0/br-* traffic.", "network_mode: host ignores ports:."],
+      "diagnosis": ["docker run --rm --net container:CONTAINER nicolaka/netshoot ss -ltnp", "docker exec CONTAINER getent hosts host.docker.internal", "sudo ss -ltnp 'sport = :5432'; sudo ufw status verbose"],
+      "fix": ["Bind the app to 0.0.0.0 (gunicorn -b 0.0.0.0:8000).", "--add-host host.docker.internal=host-gateway or extra_hosts: [\"host.docker.internal:host-gateway\"]", "sudo ufw allow in on docker0 to any port 5432 proto tcp"],
+      "prevention": "Configurable listen address defaulting to 0.0.0.0; run dependencies as containers on a shared network.",
+      "sources": [
+        {"title": "Docker docs: docker run (--add-host)", "url": "https://docs.docker.com/reference/cli/docker/container/run/", "type": "docs", "verified": true},
+        {"title": "forums.docker.com top (all time)", "url": "https://forums.docker.com/top?period=all", "type": "forum", "verified": true},
+        {"title": "Reddit r/docker search", "url": "https://www.reddit.com/r/docker/search/?q=host.docker.internal+linux&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Containers can't reach each other by name ('ENOTFOUND', 'external network could not be found')",
+      "area": "Docker networking / DNS",
+      "tool": "Docker Engine, Compose, Dokploy",
+      "level": "L1",
+      "error_text": "getaddrinfo for mysql failed: Name or service not known | getaddrinfo ENOTFOUND dokploy-postgres | network dokploy-network declared as external, but could not be found",
+      "context": "Default bridge, app and DB in separate Compose projects or Dokploy apps, joining dokploy-network for Traefik.",
+      "frequency_signal": "This year's forums.docker.com top list ('php_network_getaddresses error'); Dokploy documents ENOTFOUND dokploy-postgres.",
+      "root_causes": ["Default bridge has no embedded DNS.", "Each Compose project has its own default network.", "External network missing, or overlay not --attachable."],
+      "diagnosis": ["docker inspect -f '{{json .NetworkSettings.Networks}}' CONTAINER | jq 'keys'", "docker run --rm --network NET nicolaka/netshoot dig +short SERVICE", "docker network inspect dokploy-network -f '{{.Driver}} {{.Attachable}}'"],
+      "fix": ["Put both on one user-defined network and use service names.", "Compose: networks: [default, dokploy-network] plus networks: dokploy-network: external: true", "docker network create -d overlay --attachable shared-net"],
+      "prevention": "Explicit networks in every Compose file; keep databases off the proxy network.",
+      "sources": [
+        {"title": "Dokploy: Instance troubleshooting", "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance", "type": "docs", "verified": true},
+        {"title": "forums.docker.com top (past year)", "url": "https://forums.docker.com/top?period=yearly", "type": "forum", "verified": true},
+        {"title": "SO search", "url": "https://stackoverflow.com/search?q=docker+compose+service+name+not+resolved+different+projects+network", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Published ports bypass UFW (and 'iptables: No chain/target/match' after firewall reloads)",
+      "area": "Docker networking / firewall",
+      "tool": "Docker Engine, UFW, iptables",
+      "level": "L2",
+      "error_text": "No error: 5432 reachable from outside while ufw allows only 22 | driver failed programming external connectivity ... iptables: No chain/target/match by that name",
+      "context": "UFW-only Ubuntu servers with Compose files publishing \"5432:5432\".",
+      "frequency_signal": "Perennial Server Fault / Reddit self-hosting complaint; explained in Docker's packet-filtering docs.",
+      "root_causes": ["DNAT in the nat table sends packets through FORWARD, not UFW's INPUT.", "ports binds all addresses by default.", "Flushing iptables deletes Docker chains; Docker 28 restructured rules and needs ipset."],
+      "diagnosis": ["docker ps --format '{{.Names}} {{.Ports}}'", "sudo iptables -S DOCKER-USER", "nc -vz SERVER_IP 5432   # from another host"],
+      "fix": ["Remove ports: for services behind Traefik; bind others to 127.0.0.1:5432:5432.", "sudo iptables -I DOCKER-USER -i ens18 ! -s 192.0.2.0/24 -j DROP (persist it).", "Chains flushed: sudo systemctl restart docker; don't set \"iptables\": false."],
+      "prevention": "Regular port audits against an allow-list; only the proxy publishes 80/443.",
+      "sources": [
+        {"title": "Docker docs: Packet filtering and firewalls", "url": "https://docs.docker.com/engine/network/packet-filtering-firewalls/", "type": "docs", "verified": true},
+        {"title": "Docker Engine 28 release notes", "url": "https://docs.docker.com/engine/release-notes/28/", "type": "docs", "verified": true},
+        {"title": "SF search", "url": "https://serverfault.com/search?q=docker+ufw+published+ports+bypass", "type": "search", "verified": false},
+        {"title": "Reddit r/selfhosted search", "url": "https://www.reddit.com/r/selfhosted/search/?q=docker+ufw+bypass&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    },
+    {
+      "title": "Docker subnets collide with LAN/VPN, or 'could not find an available, non-overlapping IPv4 address pool'",
+      "area": "Docker networking / IP planning",
+      "tool": "Docker Engine, Compose, Swarm",
+      "level": "L2",
+      "error_text": "could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network | Pool overlaps with other one on this address space",
+      "context": "Office or VPN ranges in 172.16.0.0/12 or 192.168.0.0/16; many small Compose projects.",
+      "frequency_signal": "forums.docker.com topics 139459 and 69686; docker/for-linux #599.",
+      "root_causes": ["Default pools 172.17-172.31 and 192.168.0.0/16 shadow LAN routes.", "Every project creates a network and exhausts pools.", "New pools don't move existing networks."],
+      "diagnosis": ["ip route; ip route get 172.18.5.10", "docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}' $(docker network ls -q)"],
+      "fix": ["{\"bip\": \"10.200.0.1/24\", \"default-address-pools\": [{\"base\": \"10.201.0.0/16\", \"size\": 24}]} then restart Docker and recreate networks.", "Swarm only at init: docker swarm init --default-addr-pool 10.20.0.0/16 --default-addr-pool-mask-length 26 (before installing Dokploy)."],
+      "prevention": "Reserve a Docker range in the IP plan and ship daemon.json before the first container.",
+      "sources": [
+        {"title": "Docker forums: non-overlapping IPv4 pool", "url": "https://forums.docker.com/t/error-could-not-find-an-available-non-overlapping-ipv4-address-pool-among-the-defaults-to-assign-to-the-network/139459", "type": "forum", "verified": true},
+        {"title": "Docker docs: Swarm networking", "url": "https://docs.docker.com/engine/swarm/networking/", "type": "docs", "verified": true},
+        {"title": "Reddit r/sysadmin search", "url": "https://www.reddit.com/r/sysadmin/search/?q=docker+subnet+conflict+vpn&restrict_sr=1", "type": "search", "verified": false}
+      ]
+    }
+/*NEXT_PROBLEMS*/
+  ],
+  "tool_notes": [
+    {"tool": "Docker Engine (Moby)", "what": "dockerd plus CLI that run OCI containers; base of Compose, Swarm, Dokploy, Portainer.", "architecture": "CLI -> versioned API on /var/run/docker.sock -> dockerd -> containerd -> runc. overlay2 under /var/lib/docker or the containerd image store; bridge/overlay networking with iptables/nftables (DOCKER, DOCKER-USER), embedded DNS 127.0.0.11; json-file or local logging.", "current_version_notes": "29.x current (29.0.0 on 2025-11-10; 29.8.2 on 2026-09-30). 29: min API 1.44, containerd store default on fresh installs, experimental nftables, cgroup v1 deprecated. 28: networking hardening, ipset required, schema-1 pulls removed.", "gotchas": ["docker group = root", "published ports bypass UFW", "json-file never rotates by default", "registry-mirrors is Hub-only", "unpinned upgrades break socket clients"], "official_docs": "https://docs.docker.com/engine/"},
+    {"tool": "BuildKit / buildx", "what": "Docker's build engine and its CLI plugin.", "architecture": "Builders with drivers: docker (uses daemon config), docker-container (own buildkitd.toml, cache export, multi-platform), kubernetes, remote; content-addressed cache; inline/registry/local cache backends.", "current_version_notes": "buildx 0.10+ adds provenance attestations (unknown/unknown index entries); registry cache with the docker driver needs the containerd store.", "gotchas": ["builders ignore daemon.json/certs.d", "--progress=plain to see RUN output", "secrets via --secret, not ARG", "multi-platform --load needs containerd store"], "official_docs": "https://docs.docker.com/build/"},
+    {"tool": "Docker Compose v2", "what": "docker compose plugin running multi-container apps from the Compose Specification.", "architecture": "Project owns PROJECT_default network, volumes and containers labelled com.docker.compose.*; config hash decides recreation; builds via BuildKit.", "current_version_notes": "v1 (docker-compose, Python) is EOL; v2 ignores version: and names containers with hyphens.", "gotchas": [".env is for interpolation, env_file for containers", "literal $ must be $$", "down -v deletes volumes", "up doesn't rebuild or pull by default", "stack deploy ignores build/depends_on"], "official_docs": "https://docs.docker.com/compose/"},
+    {"tool": "Docker Swarm mode", "what": "Orchestrator built into Docker Engine; Dokploy runs on it.", "architecture": "Raft managers (odd number, tolerate (N-1)/2 failures) and workers; ports 2377/tcp, 7946/tcp+udp, 4789/udp; ingress routing mesh with service VIPs; embedded DNS; secrets in the encrypted Raft log.", "current_version_notes": "Maintained, low feature velocity; moby #25526 (client IP) open since 2016; default-addr-pool and data-path-port only at init.", "gotchas": ["--with-registry-auth", "Traefik needs deploy.labels and a port", "secrets/configs immutable", "mode: host keeps client IP"], "official_docs": "https://docs.docker.com/engine/swarm/"},
+    {"tool": "Portainer CE", "what": "Web UI for Docker, Swarm and Kubernetes environments.", "architecture": "Server container (portainer_data volume) using the socket, Agent (9001) or Edge Agent; stacks in /data/compose/ID; UI 9443/9000.", "current_version_notes": "LTS/STS channels; Docker 29 support in 2.33.5 LTS / 2.36.0 STS; Docker 26 fix in 2.20.3; 2.27.0 changed .env interpolation.", "gotchas": ["5-minute initial admin window", "socket mount = root", "UI vars reach containers via env_file: stack.env"], "official_docs": "https://docs.portainer.io/"},
+    {"tool": "Harbor", "what": "CNCF registry with projects, RBAC, robot accounts, replication, proxy cache, Trivy scanning, retention.", "architecture": "harbor.yml -> ./prepare -> docker compose: nginx, portal, core (token service), registry, jobservice, PostgreSQL, Redis, trivy-adapter, harbor-log (127.0.0.1:1514); data in /data.", "current_version_notes": "Docs 2.13-2.15; upgrades only from N-2 minors; external PostgreSQL >= 12 since 2.9; GC non-blocking with a 2-hour window.", "gotchas": ["robot$ names", "external_url behind proxies", "harbor-log boot dependency", "GC needed to free space", "library/ path in proxy cache"], "official_docs": "https://goharbor.io/docs/"},
+    {"tool": "Docker Hub and registry mirrors", "what": "Default public registry and pull-through caches in front of it.", "architecture": "auth.docker.io tokens, registry-1.docker.io with ratelimit headers; dockerd registry-mirrors (Hub only), containerd hosts.toml, buildkitd.toml mirrors; Distribution proxy or Harbor proxy cache.", "current_version_notes": "Docs Oct 2026: 100 pulls/6 h anonymous per IPv4 or /64, 200/6 h Personal, paid unlimited.", "gotchas": ["NAT shares the anonymous budget", "credentialed mirrors expose private images", "daemon mirror doesn't cover BuildKit/containerd"], "official_docs": "https://docs.docker.com/docker-hub/usage/pulls/"},
+    {"tool": "GitLab CI Docker-in-Docker", "what": "docker:dind service used to build and push images from GitLab jobs.", "architecture": "Privileged runner; job talks to tcp://docker:2376 with TLS certs in the shared /certs/client volume; dind has its own storage, CA trust and mirrors.", "current_version_notes": "TLS on by default since 19.03; old dind fails on cgroup v2; pin docker and dind to your Engine major.", "gotchas": ["needs privileged", "alias: docker when pulling dind via a mirror path", "CA must be trusted inside dind", "empty cache every job"], "official_docs": "https://docs.gitlab.com/ci/docker/using_docker_build/"}
+  ],
+  "learning_signals": [],
+  "coverage_notes": ""
+}

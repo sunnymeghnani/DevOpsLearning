@@ -1,0 +1,75 @@
+{
+  "id": "nrelabs-2018-etcd-liveness-probe",
+  "title": "etcd, killed by its own health check",
+  "level": "L3",
+  "track": "kubernetes",
+  "topics": ["kubeadm-cluster", "k8s-troubleshooting", "cka-exam"],
+  "minutes": 8,
+  "role": "You run a free online lab platform on a single-master kubeadm cluster: one cloud VM, with etcd running as a static pod.",
+  "source": {
+    "label": "Matt Oswalt: December 4 NRE Labs outage post-mortem (2018)",
+    "url": "https://oswalt.dev/2018/12/december-4-nre-labs-outage-post-mortem/",
+    "org": "NRE Labs",
+    "date": "2018-12-04",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Tuesday morning: lessons won't load. On the master, `kubectl` says `The connection to the server 203.0.113.10:6443 was refused`.",
+  "steps": [
+    {
+      "situation": "The API server doesn't answer. What first?",
+      "choices": [
+        {"text": "Look at all containers on the master, including exited ones, and the kubelet log", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "With the API down, `kubectl` can't tell you anything. The container runtime and the kubelet can."},
+        {"text": "Restart the kubelet", "verdict": "risky", "effect": {"service": 10, "time": 5, "evidence": -10, "trust": 0}, "why": "It did bring `kubectl` back for a while in the real outage. Then it broke again, and you know no more than before."},
+        {"text": "Rebuild the cluster from Terraform", "verdict": "bad", "effect": {"service": -15, "time": -20, "evidence": -15, "trust": -5}, "why": "Destroying the evidence before you know the cause. The real rebuild took about 30 minutes and the fault came straight back."}
+      ]
+    },
+    {
+      "situation": "A teammate restarted the kubelet, `kubectl` worked, and they tweeted that the outage was fixed. Ten minutes later lessons fail again.",
+      "evidence": "$ kubectl -n kube-system get pods\nNAME                       READY  STATUS   RESTARTS\netcd-master                1/1    Running  183\nkube-apiserver-master      1/1    Running  183\nkube-controller-manager    1/1    Running  91",
+      "evidence_cmd": "kubectl -n kube-system get pods",
+      "choices": [
+        {"text": "Post one honest update: still broken, investigating, next update in 30 minutes", "verdict": "best", "effect": {"service": 0, "time": 0, "evidence": 5, "trust": 20}, "why": "Correcting a premature \"resolved\" quickly keeps users' trust. A status or maintenance page saves you answering each one."},
+        {"text": "Say nothing until it's really fixed", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -15}, "why": "Users who read \"fixed\" and see failures assume you don't know."},
+        {"text": "Look only at STATUS: everything is Running", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -15, "trust": 0}, "why": "The restart counts are the story: 183 restarts of etcd and the API server."}
+      ]
+    },
+    {
+      "situation": "Why does etcd keep restarting?",
+      "evidence": "$ sudo docker ps -a --filter name=k8s_etcd --format '{{.Status}}' | head -3\nUp About a minute\nExited (0) 2 minutes ago\nExited (0) 4 minutes ago\n$ sudo journalctl -u kubelet | grep -i etcd | tail -1\n... Liveness probe failed ... container etcd ... will be restarted",
+      "evidence_cmd": "docker ps -a --filter name=k8s_etcd",
+      "choices": [
+        {"text": "Each etcd lives under two minutes and exits cleanly: check what is killing it", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "A clean exit after a fixed time is a SIGTERM from outside, not a crash. The kubelet log says it's acting on a failed liveness probe."},
+        {"text": "Hunt for slow disk or network on the VM", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 5, "trust": 0}, "why": "Reasonable for etcd in general, but nothing here points at I/O, and the regular two-minute rhythm points elsewhere."},
+        {"text": "Fix the worker that runs an older Kubernetes version first", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 0}, "why": "A real side finding that day, worth fixing later. It doesn't explain the master's etcd dying."}
+      ]
+    },
+    {
+      "situation": "The probe in the static pod manifest runs a test read against etcd.",
+      "evidence": "$ grep -A9 livenessProbe /etc/kubernetes/manifests/etcd.yaml\n    livenessProbe:\n      exec:\n        command: [\"/bin/sh\", \"-ec\", \"ETCDCTL_API=3 etcdctl ... get foo\"]\n      failureThreshold: 8\n      initialDelaySeconds: 15\n      timeoutSeconds: 15",
+      "evidence_cmd": "grep -A9 livenessProbe /etc/kubernetes/manifests/etcd.yaml",
+      "choices": [
+        {"text": "Copy the manifest outside the manifests folder, then remove or relax the probe in place", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 5, "trust": 5}, "why": "The kubelet watches that folder and restarts etcd with the new spec. Eight failures of 15 seconds is about two minutes, the exact lifetime you saw. The backup must live elsewhere, or the kubelet runs it too."},
+        {"text": "`kubectl edit pod etcd-master` to drop the probe", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 0}, "why": "That's a mirror pod. Static pods are defined by the file on disk; edits through the API don't stick."},
+        {"text": "Wipe etcd's data directory so it starts clean", "verdict": "bad", "effect": {"service": -30, "time": -15, "evidence": -10, "trust": -10}, "why": "etcd was healthy. You'd delete the whole cluster state to fix a probe."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 4 December 2018 NRE Labs went down. It ran on a single-master kubeadm cluster on one GCE VM, with etcd as a static pod, and `kubectl` got connection refused on port 6443. etcd and kube-apiserver had each restarted 183 times and the controller manager 91 times, which a check for Running status had missed. Restarting the kubelet helped briefly, and a fix was announced on Twitter too early. A worker on v1.11.3, against v1.12.x elsewhere, turned out to be a playbook error, and a full `terraform destroy` and rebuild of about 30 minutes brought the same failure back. `docker ps -a` then showed each etcd serving for 1.5 to 2 minutes before a SIGTERM: the kubelet was restarting it because the liveness probe (`etcdctl get foo`, timeout 15 s, failureThreshold 8) kept failing. Removing the probe from the manifest fixed it. Why the probe failed stayed open, since the same command succeeded by hand. The post's lessons: monitor a single master, keep a maintenance page, and check the basics before drastic action.",
+    "lessons": ["Read restart counts and container lifetimes, not just STATUS.", "A regular kill interval points at a probe or a timer, not a crash.", "Static pods live in /etc/kubernetes/manifests; keep backups outside it.", "Don't rebuild or announce \"fixed\" before you know the cause."],
+    "commands": ["kubectl -n kube-system get pods", "docker ps -a --filter name=k8s_etcd", "crictl ps -a --name etcd", "journalctl -u kubelet --since -30min", "grep -A9 livenessProbe /etc/kubernetes/manifests/etcd.yaml"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "46-problems-kubernetes.md", "heading": "3.1 API server refused on 6443 after a reboot"},
+      {"file": "31-learn-kubernetes.md", "heading": "Probes: liveness, readiness, startup"},
+      {"file": "31-learn-kubernetes.md", "heading": "Static pods and kubectl debug"}
+    ],
+    "sites": [
+      {"label": "iximiuz: recover a broken static control-plane pod", "url": "https://labs.iximiuz.com/challenges/recover-broken-apiserver-static-pod-b8e1a53b"},
+      {"label": "iximiuz: take and restore an etcd snapshot", "url": "https://labs.iximiuz.com/challenges/take-and-restore-etcd-snapshot-on-a-kubernetes-cluster-7ae31fbc"},
+      {"label": "SadServers: Lisbon, etcd SSL certificate troubles", "url": "https://sadservers.com/scenario/lisbon"}
+    ]
+  }
+}

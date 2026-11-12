@@ -1,0 +1,81 @@
+{
+ "id": "l1-port-53-taken",
+ "title": "Port 53 is already taken",
+ "level": "L1",
+ "map_node": "sockets-ports",
+ "path": "junior",
+ "order": 14,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "Installation breaks Ubuntu's systemd-resolved (pi-hole/pi-hole issue #4816)",
+  "url": "https://github.com/pi-hole/pi-hole/issues/4816",
+  "note": "adapted"
+ },
+ "brief": "**TICKET NET-207 · dns-01 · \"dnsmasq won't start\"**\n\n> \"I installed dnsmasq so the app servers can resolve `db.example.com` and friends. `systemctl start dnsmasq` fails every time. Port 53 looks free to me?\"\n\nOn Ubuntu, systemd-resolved runs a **stub listener** on `127.0.0.53:53`, and dnsmasq wants the same port. This lab machine can't run resolved itself (a container limit), so `stub-resolver.service` plays that part: a small DNS stub on `127.0.0.53:53`.\n\nThe monitoring agent on this box queries the stub, so **don't stop or disable it**. Make dnsmasq answer on `127.0.0.1` next to it, then serve every internal name the network team asked for. Leave `/etc/resolv.conf` alone.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Who has port 53?",
+   "text": "Read dnsmasq's own error first: `journalctl -u dnsmasq`. Then list the UDP and TCP sockets on port 53 with their processes: `sudo ss -lunp` and `sudo ss -ltnp`.\n\nThe stub holds one address, `127.0.0.53`. dnsmasq doesn't ask for that address; by default it asks for the **wildcard** `0.0.0.0:53`, which overlaps every address on the box. Make dnsmasq listen on `127.0.0.1` only and bind just that address. Done when dnsmasq answers `dig @127.0.0.1 db.example.com` and the stub still answers on `127.0.0.53`.",
+   "points": 50,
+   "hints": [
+    "`failed to create listening socket for port 53: Address already in use`. `dnsmasq --help | grep -E 'listen-address|bind-interfaces'` lists both options (this minimal lab has no man pages; on a full server `man dnsmasq` explains them). With `listen-address` alone, dnsmasq still binds the wildcard and filters afterwards.",
+    "Create `/etc/dnsmasq.d/listen.conf` with two lines, `listen-address=127.0.0.1` and `bind-interfaces`, then `sudo systemctl restart dnsmasq` and `sudo ss -lunp 'sport = :53'`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which address and port did the stub hold?",
+     "format": "IP:port",
+     "answer_sha256": "38f5b055f52904177d9b73cb2d592d697cb1f8c36f57d1e2634858c384ae117f"
+    },
+    {
+     "id": "q2",
+     "prompt": "On a real Ubuntu server, which resolved.conf setting (set to no in a drop-in) turns the stub listener off?",
+     "format": "setting name",
+     "answer_sha256": "5a112bc0d8952ea71f2cdf7c85aa16020e28609f6057fec7a3352a2dc0ecd45b"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the stub still answers on 127.0.0.53; dnsmasq runs on 127.0.0.1:53 (UDP and TCP), nothing on the wildcard; db.example.com resolves",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Serve every internal name",
+   "text": "`db.example.com` works, but the app also needs `cache.example.com` and `queue.example.com`. The network team sent them as a hosts-format file, `/etc/dnsmasq.hosts`, and nothing tells dnsmasq to read it.\n\nLoad that file with the right dnsmasq option, check the syntax with dnsmasq's own test mode (pointed at the same config directory the service reads), and restart. Make sure dnsmasq starts at boot. Done when all three names answer from `127.0.0.1` over UDP and TCP.",
+   "points": 50,
+   "hints": [
+    "dnsmasq reads `/etc/hosts` by default, and extra hosts files only when told to: `dnsmasq --help | grep -i hosts`.",
+    "`echo 'addn-hosts=/etc/dnsmasq.hosts' | sudo tee -a /etc/dnsmasq.d/internal.conf`, then `sudo dnsmasq --test --conf-dir=/etc/dnsmasq.d,.dpkg-dist,.dpkg-old,.dpkg-new && sudo systemctl restart dnsmasq && sudo systemctl enable dnsmasq`, and `dig +short @127.0.0.1 cache.example.com`. A bare `dnsmasq --test` reads only `/etc/dnsmasq.conf` and says OK even when a file in `/etc/dnsmasq.d` is broken: Ubuntu's unit adds that directory (`CONFIG_DIR` in `/etc/default/dnsmasq`), so test with it."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which dnsmasq option loads an extra hosts-format file?",
+     "format": "option name, without = or a value",
+     "answer_sha256": "cc8faf7553c743007f76f35fb6ac365b8889824d3c9e21cef02295f99b49dadc"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which command checks dnsmasq's configuration syntax without starting it?",
+     "format": "command with option, without sudo",
+     "answer_sha256": "f7e83c46ad756e67f427884bc4f3054c63a3ef21d2ace605c347e9afde191fd4"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "dnsmasq --test passes; dnsmasq and the stub start at boot; db, cache and queue.example.com answer over UDP and TCP",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\nA socket is an address plus a port. The stub held `127.0.0.53:53`. Ubuntu's dnsmasq binds the wildcard `0.0.0.0:53` and then filters requests by interface, so its bind overlapped the stub's address and failed: `failed to create listening socket for port 53: Address already in use`. On a real server the holder is systemd-resolved, and `ss -lunp` shows `systemd-resolve`. Separately, `/etc/dnsmasq.hosts` was never loaded.\n\n### Task 1\n```bash\njournalctl -u dnsmasq -n 5          # failed to create listening socket for port 53: Address already in use\nsudo ss -lunp 'sport = :53'         # 127.0.0.53:53 users:((\"stub.py\",...))\nprintf 'listen-address=127.0.0.1\\nbind-interfaces\\n' | sudo tee /etc/dnsmasq.d/listen.conf\nsudo systemctl restart dnsmasq\nsudo ss -lunp 'sport = :53'         # 127.0.0.1:53 and 127.0.0.53:53, no 0.0.0.0\ndig +short @127.0.0.1 db.example.com    # 192.0.2.10\n```\n*Why:* `bind-interfaces` makes dnsmasq bind only the addresses it serves, so two DNS servers can share port 53 on different addresses. This was the fix suggested in the issue as the safer one.\n\n**The other fix, on a real Ubuntu server:** turn resolved's stub off and let dnsmasq be the local resolver:\n```bash\nsudo mkdir -p /etc/systemd/resolved.conf.d\nprintf '[Resolve]\\nDNSStubListener=no\\n' | sudo tee /etc/systemd/resolved.conf.d/no-stub.conf\nsudo systemctl restart systemd-resolved\n```\nThen `/etc/resolv.conf` must stop pointing at `127.0.0.53` (it is a symlink to `stub-resolv.conf`), or the host's own lookups break. That is exactly what issue #4816 reports: the installer set `DNSStubListener=no` but left the symlink, and the host lost DNS. Point it at `/run/systemd/resolve/resolv.conf` or at dnsmasq. Docker manages `/etc/resolv.conf` in this lab, which is why the room uses the bind fix.\n\n### Task 2\n```bash\necho 'addn-hosts=/etc/dnsmasq.hosts' | sudo tee -a /etc/dnsmasq.d/internal.conf\nsudo dnsmasq --test --conf-dir=/etc/dnsmasq.d,.dpkg-dist,.dpkg-old,.dpkg-new   # dnsmasq: syntax check OK.\nsudo systemctl restart dnsmasq && sudo systemctl enable dnsmasq\nfor n in db cache queue; do dig +short @127.0.0.1 $n.example.com; done\ndig +short +tcp @127.0.0.1 cache.example.com\n```\n*Test what the service reads:* a bare `dnsmasq --test` reads only `/etc/dnsmasq.conf`, where `conf-dir` is commented out on Ubuntu. The unit adds `/etc/dnsmasq.d` itself (`CONFIG_DIR` in `/etc/default/dnsmasq`), so a broken drop-in passes the bare test and still fails the restart.\n\n**Source (adapted):** [Installation breaks Ubuntu's systemd-resolved (pi-hole/pi-hole #4816)](https://github.com/pi-hole/pi-hole/issues/4816): Pi-hole's dnsmasq could not bind port 53 while resolved's stub held it (`Address already in use`). The installer's `DNSStubListener=no` broke host DNS because `/etc/resolv.conf` still pointed at the stub. Commenters suggested keeping the stub and adding `bind-interfaces` instead."
+}

@@ -1,0 +1,2463 @@
+{
+ "domain": "observability",
+ "problems": [
+  {
+   "title": "Prometheus target DOWN: 'connection refused' or 'context deadline exceeded' when Prometheus runs in Docker",
+   "area": "metrics-scraping",
+   "level": "L1",
+   "tool": "Prometheus, node_exporter, Docker, UFW",
+   "context": "Prometheus runs as a container (Compose or a Dokploy app) and scrapes node_exporter on the Ubuntu host (:9100), Docker daemon metrics (:9323) or exporters on other servers. Status > Targets shows DOWN.",
+   "error_text": "Get \"http://localhost:9100/metrics\": dial tcp 127.0.0.1:9100: connect: connection refused | Get \"http://172.17.0.1:9100/metrics\": context deadline exceeded | server returned HTTP status 401 Unauthorized",
+   "frequency_signal": "Perennial first-week problem: a prometheus/prometheus GitHub discussion, a dev.to write-up and a Cloudron forum thread all describe the same UFW-on-the-Docker-bridge trap; 'context deadline exceeded' is one of the most searched Prometheus target errors (see search links).",
+   "root_causes": [
+    "Inside a container, localhost is the container itself, not the host.",
+    "UFW (default deny incoming) drops packets arriving from Docker bridges (docker0, br-xxxx, docker_gwbridge for Swarm/Dokploy services) to host ports. Docker's NAT bypasses UFW only for published container ports, not for services listening on the host. A drop shows up as a timeout.",
+    "The exporter listens on 127.0.0.1 only (--web.listen-address=127.0.0.1:9100, or \"metrics-addr\": \"127.0.0.1:9323\").",
+    "The exporter is slower than scrape_timeout (default 10s): huge /metrics, slow textfile script, or a hung NFS mount.",
+    "Wrong scheme/path/credentials give HTTP 400/401/404 instead."
+   ],
+   "diagnosis": [
+    "Open http://PROMETHEUS_HOST:9090/targets and read the Error column ('refused' = nothing listening, 'deadline exceeded' = dropped or slow).",
+    "docker exec prometheus wget -qO- -T 5 http://TARGET:9100/metrics | head -5",
+    "sudo ss -ltnp 'sport = :9100'",
+    "docker network inspect NETWORK --format '{{range .IPAM.Config}}{{.Subnet}} gw {{.Gateway}}{{end}}'",
+    "sudo journalctl -k --since '10 min ago' | grep 'UFW BLOCK' | grep 'DPT=9100'",
+    "sudo tcpdump -ni any tcp port 9100   # SYN without SYN-ACK = firewall drop"
+   ],
+   "fix": [
+    "Add extra_hosts: [\"host.docker.internal:host-gateway\"] to the Prometheus service and scrape host.docker.internal:9100, or run node_exporter on the same Docker network and scrape it by service name.",
+    "sudo ufw allow from 172.18.0.0/16 to any port 9100 proto tcp comment 'prometheus -> node_exporter'   # use the subnet docker network inspect printed",
+    "Slow targets: scrape_interval: 30s with scrape_timeout: 25s on that job (timeout must not exceed interval).",
+    "HTTPS/protected targets: scheme: https, tls_config: {ca_file: /etc/prometheus/internal-ca.crt}, basic_auth or authorization.",
+    "docker exec prometheus promtool check config /etc/prometheus/prometheus.yml && curl -X POST http://localhost:9090/-/reload"
+   ],
+   "prevention": "Alert on up == 0 for 5m and on scrape_duration_seconds near the timeout. Keep commented UFW rules in Git. Never publish exporter or Prometheus ports with -p (published ports bypass UFW); keep them on internal Docker networks or behind Traefik with auth.",
+   "sources": [
+    {
+     "title": "prometheus/prometheus discussion #9678: cannot scrape Docker metrics from a Prometheus container on a custom network",
+     "url": "https://github.com/prometheus/prometheus/discussions/9678",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "dev.to: The Docker networking gotcha nobody warns you about when building a self-hosted monitoring stack",
+     "url": "https://dev.to/muhammadkamrankabeeross/the-docker-networking-gotcha-nobody-warns-you-about-when-building-a-self-hosted-monitoring-stack-54c5",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Cloudron forum: Prometheus can't reach node exporter (blocked traffic)",
+     "url": "https://forum.cloudron.io/topic/13280/prometheus-can-t-reach-node-exporter-blocked-traffic",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: prometheus docker node_exporter context deadline exceeded",
+     "url": "https://stackoverflow.com/search?q=prometheus+docker+node_exporter+%22context+deadline+exceeded%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/PrometheusMonitoring search: ufw docker node_exporter",
+     "url": "https://www.reddit.com/r/PrometheusMonitoring/search/?q=ufw+docker+node_exporter&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Prometheus will not start, or config edits are ignored ('permission denied', 'lock DB directory', reload does nothing)",
+   "area": "metrics-server",
+   "level": "L1",
+   "tool": "Prometheus",
+   "context": "Fresh Prometheus container with a bind-mounted data directory, or an existing one after editing prometheus.yml or rule files, in Compose or a Dokploy (Swarm) stack.",
+   "error_text": "err=\"open /prometheus/queries.active: permission denied\" | opening storage failed: lock DB directory: resource temporarily unavailable | Error loading config ... yaml: unmarshal errors | Lifecycle API is not enabled.",
+   "frequency_signal": "#5976 ('open /prometheus/queries.active: permission denied') and #3441 ('Prometheus docker container shouldn't run as user nobody') are on the first page of Prometheus issues sorted by reactions.",
+   "root_causes": [
+    "The image runs as nobody (UID 65534); a root-owned host directory is not writable.",
+    "Two Prometheus processes on one data dir: an old container still running, or a Swarm rolling update with order start-first starting the new task before the old one stops.",
+    "YAML mistakes: tabs, wrong indentation, keys under the wrong parent.",
+    "POST /-/reload needs --web.enable-lifecycle; otherwise send SIGHUP or restart.",
+    "Single-file bind mount: vim or sed -i writes a new inode, the container keeps the old file, so reloads load old content."
+   ],
+   "diagnosis": [
+    "docker logs --tail 50 prometheus",
+    "ls -ln /srv/prometheus/data   # owner must be 65534 or the user: you set",
+    "docker ps -a --filter volume=prometheus-data ; docker service ps STACK_prometheus --no-trunc",
+    "docker run --rm -v \"$PWD\":/cfg --entrypoint promtool prom/prometheus check config /cfg/prometheus.yml",
+    "docker exec prometheus cat /etc/prometheus/prometheus.yml | diff - prometheus.yml",
+    "PromQL: prometheus_config_last_reload_successful == 0"
+   ],
+   "fix": [
+    "sudo chown -R 65534:65534 /srv/prometheus/data (or use a named volume).",
+    "Stop the duplicate instance; for Swarm/Dokploy stateful services set deploy.update_config.order: stop-first.",
+    "Run promtool check config and promtool check rules before every reload.",
+    "Start with --web.enable-lifecycle and reload with curl -X POST http://localhost:9090/-/reload, or docker kill --signal=HUP prometheus.",
+    "Mount the config directory (./prometheus:/etc/prometheus:ro), not a single file, or restart after editing."
+   ],
+   "prevention": "Keep prometheus.yml and rules in Git and run promtool check config / promtool check rules in a GitLab CI job; alert on prometheus_config_last_reload_successful == 0.",
+   "sources": [
+    {
+     "title": "Prometheus GitHub issues sorted by reactions (#5976 queries.active permission denied, #3441 user nobody)",
+     "url": "https://github.com/prometheus/prometheus/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: queries.active permission denied prometheus",
+     "url": "https://stackoverflow.com/search?q=%22queries.active%22+permission+denied+prometheus",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: prometheus lock DB directory",
+     "url": "https://stackoverflow.com/search?q=prometheus+%22lock+DB+directory%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Prometheus fills the disk, retention looks ignored, or it will not start after a crash (WAL or block corruption)",
+   "area": "metrics-storage",
+   "level": "L2",
+   "tool": "Prometheus",
+   "context": "Single Prometheus on a VM or Docker volume, months after install, or after the disk filled up.",
+   "error_text": "write /prometheus/wal/00000123: no space left on device | opening storage failed: block dir: \"/prometheus/01J...\": open /prometheus/01J.../meta.json: no such file or directory | Encountered WAL read error, attempting repair",
+   "frequency_signal": "Storage sizing is a recurring theme in top-reacted Prometheus issues (#6934 memory spikes during WAL replay, #1381 per-series retention); the storage docs carry explicit NFS and compaction-headroom warnings.",
+   "root_causes": [
+    "Retention defaults to 15d when no retention flag is set; disks are sized by guess.",
+    "retention.size counts WAL and head chunks but only deletes blocks, and compaction temporarily needs space for old and new blocks.",
+    "TSDB on NFS/EFS or other non-POSIX storage is unsupported and can corrupt.",
+    "A crash or full disk during compaction leaves a block dir without meta.json or a damaged WAL segment."
+   ],
+   "diagnosis": [
+    "df -h /srv/prometheus && sudo du -sh /srv/prometheus/data/wal /srv/prometheus/data/chunks_head",
+    "curl -s http://localhost:9090/api/v1/status/flags | grep retention",
+    "curl -s http://localhost:9090/api/v1/status/tsdb | jq '.data.headStats'",
+    "PromQL: prometheus_tsdb_storage_blocks_bytes, increase(prometheus_tsdb_compactions_failed_total[1h]), prometheus_tsdb_wal_corruptions_total"
+   ],
+   "fix": [
+    "--storage.tsdb.retention.time=30d --storage.tsdb.retention.size=40GB (size at most 80-85% of the volume).",
+    "Size with the docs formula: retention_time_seconds * ingested_samples_per_second * bytes_per_sample (1-2 bytes/sample) plus WAL/compaction headroom.",
+    "Corrupt block: stop Prometheus, back up, move only the block dir named in the error out of the data dir, start. Corrupt WAL: move wal/ aside (loses the newest ~2h).",
+    "Use a local ext4/xfs disk, never NFS/EFS/CIFS; for long-term data remote_write to Thanos, Mimir or VictoriaMetrics."
+   ],
+   "prevention": "predict_linear(node_filesystem_avail_bytes{mountpoint=\"/srv/prometheus\"}[6h], 24*3600) < 0, plus alerts on failed compactions and WAL corruptions.",
+   "sources": [
+    {
+     "title": "Prometheus docs: Storage (retention, sizing formula, NFS warning, corruption recovery)",
+     "url": "https://prometheus.io/docs/prometheus/latest/storage/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Prometheus GitHub issues sorted by reactions (#6934, #1381)",
+     "url": "https://github.com/prometheus/prometheus/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: prometheus opening storage failed",
+     "url": "https://stackoverflow.com/search?q=prometheus+%22opening+storage+failed%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Prometheus memory keeps growing or it is OOM-killed: high-cardinality series and churn",
+   "area": "metrics-storage",
+   "level": "L3-L4",
+   "tool": "Prometheus",
+   "context": "Prometheus that was fine for months starts using several GB, restarts slowly, or dies with exit 137 after new exporters, apps or labels were added.",
+   "error_text": "OOMKilled: true / exit code 137 | query processing would load too many samples into memory in query execution | target error: sample limit exceeded | prometheus_tsdb_head_series climbing daily",
+   "frequency_signal": "#5469 'Document memory planning guidelines' and #6934 'Memory usage spikes during WAL replay' are top-reacted Prometheus issues; the official naming guide warns that every label combination is a new series.",
+   "root_causes": [
+    "Unbounded label values: user IDs, raw URL paths, request IDs, container IDs, full Docker label sets.",
+    "Churn: each Swarm task or Kubernetes pod restart creates new series.",
+    "Histograms with many buckets times many label values (e.g. Traefik with router labels on).",
+    "WAL replay at restart and heavy long-range dashboard queries."
+   ],
+   "diagnosis": [
+    "Open http://localhost:9090/tsdb-status (top metrics by series, labels with most values).",
+    "PromQL (expensive, run once): topk(10, count by (__name__)({__name__=~\".+\"}))",
+    "PromQL: prometheus_tsdb_head_series and rate(prometheus_tsdb_head_series_created_total[1h])",
+    "docker run --rm -v prometheus-data:/prometheus --entrypoint promtool prom/prometheus tsdb analyze /prometheus",
+    "docker inspect -f '{{.State.OOMKilled}} {{.State.ExitCode}}' prometheus"
+   ],
+   "fix": [
+    "Drop at ingestion:\nmetric_relabel_configs:\n  - source_labels: [__name__]\n    regex: 'go_gc_.*|container_tasks_state'\n    action: drop\n  - regex: 'container_label_.*'\n    action: labeldrop",
+    "Fail fast per job: sample_limit: 20000 and label_limit: 30.",
+    "Instrument with route templates (/users/:id), keep IDs in logs/traces; keep Traefik addRoutersLabels false; cAdvisor --store_container_labels=false.",
+    "Only after reducing series add memory and recording rules for heavy queries."
+   ],
+   "prevention": "Graph head series and churn per job; alert when head series jump more than ~30% in a day; check the series count of every new exporter in staging.",
+   "sources": [
+    {
+     "title": "Prometheus docs: Metric and label naming (cardinality caution)",
+     "url": "https://prometheus.io/docs/practices/naming/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Prometheus GitHub issues sorted by reactions (#5469, #6934)",
+     "url": "https://github.com/prometheus/prometheus/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/PrometheusMonitoring search: cardinality OOM",
+     "url": "https://www.reddit.com/r/PrometheusMonitoring/search/?q=cardinality+OOM&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Relabeling does nothing or drops every target (relabel_configs vs metric_relabel_configs)",
+   "area": "metrics-scraping",
+   "level": "L2",
+   "tool": "Prometheus",
+   "context": "Adding service discovery (file_sd, docker, dockerswarm, kubernetes) or the blackbox exporter and trying to shape labels.",
+   "error_text": "No error: targets vanish (0/0 up), every blackbox target shows instance=\"127.0.0.1:9115\", or an added label is missing.",
+   "frequency_signal": "Staple Stack Overflow topic; the blackbox_exporter README and the Docker Swarm guide exist largely to show correct relabel patterns.",
+   "root_causes": [
+    "relabel_configs runs before the scrape on target labels (__meta_*, __address__); metric_relabel_configs runs after the scrape on every sample and cannot see __meta_*.",
+    "Labels starting with __ are dropped after target relabeling unless copied.",
+    "Regexes are fully anchored; multiple source_labels are joined with ';'.",
+    "action: keep drops everything that does not match; conflicting target labels become exported_<name> unless honor_labels: true."
+   ],
+   "diagnosis": [
+    "Status > Service discovery (/service-discovery): compare Discovered labels with Target labels and see dropped targets.",
+    "curl -s 'http://localhost:9090/api/v1/targets?state=dropped' | jq '.data.droppedTargets | length'",
+    "curl -s 'http://localhost:9090/api/v1/targets?state=active' | jq '.data.activeTargets[] | {scrapeUrl, labels}'"
+   ],
+   "fix": [
+    "Blackbox pattern:\nrelabel_configs:\n  - source_labels: [__address__]\n    target_label: __param_target\n  - source_labels: [__param_target]\n    target_label: instance\n  - target_label: __address__\n    replacement: blackbox:9115",
+    "Copy metadata into real labels:\n  - action: labelmap\n    regex: __meta_docker_container_label_com_docker_compose_(service|project)",
+    "Filter targets only in relabel_configs; drop metrics only in metric_relabel_configs; change one rule at a time and re-check /service-discovery."
+   ],
+   "prevention": "Comment each relabel rule with its intent; after any SD change check the dropped-targets count and up per job.",
+   "sources": [
+    {
+     "title": "prometheus/blackbox_exporter README (multi-target relabel pattern)",
+     "url": "https://github.com/prometheus/blackbox_exporter",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Prometheus guide: Docker Swarm service discovery (relabel examples)",
+     "url": "https://prometheus.io/docs/guides/dockerswarm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: relabel_configs metric_relabel_configs difference",
+     "url": "https://stackoverflow.com/search?q=relabel_configs+metric_relabel_configs+difference",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "PromQL errors and misleading graphs: many-to-many matching, duplicate series, rate() windows",
+   "area": "querying",
+   "level": "L2",
+   "tool": "Prometheus, Grafana",
+   "context": "Building dashboards and alert rules: joining node_uname_info for hostnames, computing per-second rates, percentages.",
+   "error_text": "many-to-many matching not allowed: matching labels must be unique on one side | found duplicate series for the match group {...} on the right hand-side of the operation | vector cannot contain metrics with the same labelset",
+   "frequency_signal": "'Extract labels values from prometheus metrics' is the most-viewed Prometheus topic on community.grafana.com (~206k views); rate()/increase() extrapolation (#3746, #3806) and 'Joining different labels' (#2204) are top-reacted Prometheus issues.",
+   "root_causes": [
+    "Binary operators match on all labels; joins need on()/ignoring() plus group_left/group_right.",
+    "The same target scraped twice (two jobs or two file_sd files) creates duplicates.",
+    "rate() needs two samples in the window; windows under ~4x scrape interval give gaps.",
+    "rate() on gauges, rate(sum()) instead of sum(rate()), and increase() returning non-integers because it extrapolates."
+   ],
+   "diagnosis": [
+    "Run each side of the expression alone and compare label sets.",
+    "PromQL: count by (instance, job) (up) > 1   # duplicate targets",
+    "Check the job's scrape_interval in /config before picking the rate window."
+   ],
+   "fix": [
+    "rate(node_network_receive_bytes_total[5m]) * on(instance) group_left(nodename) node_uname_info",
+    "sum by (job) (rate(http_requests_total[5m]))   # sum after rate",
+    "In Grafana use rate(x[$__rate_interval]).",
+    "Remove duplicate jobs; move heavy expressions to recording rules and test them with promtool test rules."
+   ],
+   "prevention": "Keep tested PromQL (recording rules plus promtool unit tests) in Git.",
+   "sources": [
+    {
+     "title": "community.grafana.com top topics (Extract labels values from prometheus metrics, ~206k views)",
+     "url": "https://community.grafana.com/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Prometheus GitHub issues sorted by reactions (#3746, #3806, #2204)",
+     "url": "https://github.com/prometheus/prometheus/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: many-to-many matching not allowed",
+     "url": "https://stackoverflow.com/search?q=%22many-to-many+matching+not+allowed%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Upgrading Prometheus 2.x to 3.x breaks scrapes, dashboards or alert delivery",
+   "area": "upgrades",
+   "level": "L3",
+   "tool": "Prometheus",
+   "context": "Image tag bumped (often via :latest) from v2 to v3.",
+   "error_text": "non-compliant scrape target sending blank Content-Type and no fallback_scrape_protocol specified for target | received unsupported Content-Type \"text/html\" and no fallback_scrape_protocol specified for target | panels filtering le=\"1\" suddenly empty",
+   "frequency_signal": "The official migration guide lists about ten breaking changes; strict Content-Type and le/quantile normalisation silently break home-grown exporters and dashboards.",
+   "root_causes": [
+    "v3 validates scrape Content-Type strictly (v2 fell back to text).",
+    "Alertmanager API v1 removed (needs Alertmanager 0.16+ and api_version: v2).",
+    "le and quantile values normalised to floats (le=\"1\" becomes le=\"1.0\").",
+    "Range selectors are left-open; '.' in regex matches newline; remote_write enable_http2 defaults to false; --enable-feature=agent became --agent; holt_winters renamed."
+   ],
+   "diagnosis": [
+    "Run v3 beside v2 (other port and data dir) against the same targets and compare /targets errors.",
+    "grep -rn 'le=\"' dashboards/ rules/ ; grep -rn holt_winters dashboards/ rules/",
+    "grep -n api_version prometheus.yml"
+   ],
+   "fix": [
+    "Per job for non-compliant exporters: fallback_scrape_protocol: PrometheusText0.0.4",
+    "api_version: v2 for Alertmanager; change le=\"1\" to le=\"1.0\" in queries and alerts.",
+    "--agent instead of --enable-feature=agent; --web.enable-remote-write-receiver; double_exponential_smoothing with --enable-feature=promql-experimental-functions.",
+    "Widen subqueries (foo[1m:1m] -> foo[2m:1m]); metric_name_validation_scheme: legacy if needed; enable_http2: true where the receiver needs it.",
+    "Upgrade through 2.55: only 2.55+ can read a v3 TSDB, so it is your rollback floor."
+   ],
+   "prevention": "Pin prom/prometheus:v3.x.y (never latest), upgrade a staging instance first, attach the migration guide to the change request.",
+   "sources": [
+    {
+     "title": "Prometheus docs: Prometheus 3.0 migration guide",
+     "url": "https://prometheus.io/docs/prometheus/latest/migration/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: fallback_scrape_protocol",
+     "url": "https://stackoverflow.com/search?q=fallback_scrape_protocol",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/PrometheusMonitoring search: prometheus 3 upgrade",
+     "url": "https://www.reddit.com/r/PrometheusMonitoring/search/?q=prometheus+3+upgrade&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "remote_write falls behind (429/400) and 'out-of-order' or 'duplicate sample' errors",
+   "area": "metrics-long-term-storage",
+   "level": "L4",
+   "tool": "Prometheus, Mimir/Thanos/VictoriaMetrics",
+   "context": "Prometheus pairs shipping to a central long-term store, or recording rules and exporters with explicit timestamps.",
+   "error_text": "msg=\"Failed to send batch, retrying\" err=\"server returned HTTP status 429 Too Many Requests\" | server returned HTTP status 400 Bad Request: out of order sample | Skipping resharding, last successful send was beyond threshold | Error on ingesting out-of-order samples | Error on ingesting samples with different value but same timestamp",
+   "frequency_signal": "kube-prometheus-stack #1177 (out-of-order result from rule evaluation) and #5483 (out-of-order samples only when scraping cAdvisor) are among the chart's most-reacted issues.",
+   "root_causes": [
+    "Receiver throttles the tenant or is slow, so shards back up and the WAL grows.",
+    "HA replicas send identical series without a replica label or the receiver does not deduplicate.",
+    "Exporters with explicit timestamps (cAdvisor, federation, pushgateway), duplicate jobs or rule groups producing the same series.",
+    "Clock skew (outbound NTP blocked on-prem)."
+   ],
+   "diagnosis": [
+    "PromQL lag: prometheus_remote_storage_highest_timestamp_in_seconds - ignoring(remote_name, url) group_right prometheus_remote_storage_queue_highest_sent_timestamp_seconds",
+    "PromQL: rate(prometheus_remote_storage_samples_failed_total[5m]), prometheus_remote_storage_shards_desired",
+    "PromQL: rate(prometheus_target_scrapes_sample_out_of_order_total[5m]), rate(prometheus_target_scrapes_sample_duplicate_timestamp_total[5m])",
+    "timedatectl ; chronyc tracking"
+   ],
+   "fix": [
+    "remote_write:\n  - url: https://mimir.example.internal/api/v1/push\n    queue_config:\n      capacity: 10000\n      max_shards: 50\n      max_samples_per_send: 2000",
+    "HA pairs: distinct external_labels (Mimir defaults: cluster and __replica__; Thanos: a replica label passed to --query.replica-label) and dedupe on the receiver.",
+    "honor_timestamps: false on misbehaving exporters; remove duplicate jobs/rule groups; drop high-cardinality series with write_relabel_configs.",
+    "Legitimate late data: storage.tsdb.out_of_order_time_window (e.g. 30m) on the receiving TSDB; fix NTP."
+   ],
+   "prevention": "Alert on remote-write lag over a few minutes and on any failed samples; meta-monitor the receiver.",
+   "sources": [
+    {
+     "title": "Prometheus docs: Storage (out-of-order window, remote storage)",
+     "url": "https://prometheus.io/docs/prometheus/latest/storage/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "prometheus-community/helm-charts issues sorted by reactions (#1177, #5483)",
+     "url": "https://github.com/prometheus-community/helm-charts/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: Error on ingesting out-of-order samples",
+     "url": "https://stackoverflow.com/search?q=%22Error+on+ingesting+out-of-order+samples%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "node_exporter shows the container's disks, misses systemd units, or fires false 'disk full' alerts",
+   "area": "host-metrics",
+   "level": "L1",
+   "tool": "node_exporter",
+   "context": "Ubuntu hosts monitored for disk above 85% and failed systemd units (the ops-ladder L4 drill), node_exporter running in Docker or from the Ubuntu package.",
+   "error_text": "Root filesystem size equals the container overlay | DiskFull firing on mountpoint=\"/snap/...\" at 100% | node_systemd_unit_state missing | alerts on /run/user/1000 tmpfs",
+   "frequency_signal": "'Does not work so great inside a docker container' (#66, 47 comments) and 'Systemd service metrics missing' (#1082, 42 comments) are among node_exporter's most-commented issues.",
+   "root_causes": [
+    "Running in Docker without host PID/network and the host root mounted, so it reports the container's view.",
+    "The systemd (and processes) collector is disabled by default.",
+    "Snap squashfs images are always 100% used; tmpfs/overlay/nsfs mounts appear unless filtered (older distro packages exclude fewer types).",
+    "Hung NFS mounts make the filesystem collector time out."
+   ],
+   "diagnosis": [
+    "curl -s localhost:9100/metrics | grep '^node_filesystem_avail_bytes' | head",
+    "findmnt -t squashfs,tmpfs,overlay | head",
+    "ps -o args= -C node_exporter",
+    "curl -s localhost:9100/metrics | grep -c node_systemd_unit_state",
+    "curl -s localhost:9100/metrics | grep node_scrape_collector_duration_seconds | sort -k2 -g | tail -3"
+   ],
+   "fix": [
+    "Prefer the binary as a systemd service. In Docker: docker run -d --net=host --pid=host -v \"/:/host:ro,rslave\" quay.io/prometheus/node-exporter:vX.Y.Z --path.rootfs=/host",
+    "--collector.systemd --collector.systemd.unit-include='(docker|containerd|ssh|apache2).service'",
+    "- alert: DiskAbove85Percent\n  expr: (1 - node_filesystem_avail_bytes{fstype!~\"tmpfs|squashfs|overlay|ramfs\",mountpoint!~\"/snap/.*|/run.*\"} / node_filesystem_size_bytes) * 100 > 85\n  for: 10m\n- alert: SystemdUnitFailed\n  expr: node_systemd_unit_state{state=\"failed\"} == 1\n  for: 5m",
+    "Or exclude at the source with --collector.filesystem.fs-types-exclude / --collector.filesystem.mount-points-exclude; add predict_linear(node_filesystem_avail_bytes{fstype=\"ext4\"}[6h], 4*3600) < 0."
+   ],
+   "prevention": "One shared host-alert rule file in Git; test it by filling a test VM's disk and killing a unit (ops-ladder drill).",
+   "sources": [
+    {
+     "title": "prometheus/node_exporter README (Docker flags, disabled-by-default collectors)",
+     "url": "https://github.com/prometheus/node_exporter",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "node_exporter issues sorted by comments (#66 docker, #1082 systemd)",
+     "url": "https://github.com/prometheus/node_exporter/issues?q=is%3Aissue+sort%3Acomments-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/PrometheusMonitoring search: node_exporter snap squashfs",
+     "url": "https://www.reddit.com/r/PrometheusMonitoring/search/?q=node_exporter+snap+squashfs&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "cAdvisor stops reporting after a Docker upgrade ('client version 1.41 is too old') or eats CPU",
+   "area": "container-metrics",
+   "level": "L2",
+   "tool": "cAdvisor, Docker Engine 29",
+   "context": "Ubuntu Docker hosts auto-upgraded to Docker Engine 29 (Nov 2025) while cAdvisor was pinned to an older release; or cAdvisor on a busy host scraped every 5s.",
+   "error_text": "client version 1.41 is too old. Minimum supported API version is 1.44, please upgrade your client to a newer version | container dashboards empty or only cgroup ids without name= | cadvisor at 5-15% CPU",
+   "frequency_signal": "cAdvisor #3749 'Failure to get data in Prometheus on latest Docker' (Nov 2025) is among its most-reacted issues; #2523 'relatively high CPU usage' has 50+ reactions.",
+   "root_causes": [
+    "Docker Engine 29.0 requires API v1.44+; cAdvisor v0.49.1 used API 1.41 and was rejected.",
+    "Docker 29 also makes the containerd image store the default on fresh installs, which may hide filesystem stats from older cAdvisor builds.",
+    "Default housekeeping plus all metric families on hosts with many containers.",
+    "Every Docker label exported as a Prometheus label."
+   ],
+   "diagnosis": [
+    "docker version --format 'server {{.Server.Version}} api {{.Server.APIVersion}} min {{.Server.MinAPIVersion}}'",
+    "docker logs --tail 50 cadvisor 2>&1 | grep -i version",
+    "curl -s localhost:8080/metrics | grep -c 'container_last_seen{.*name='",
+    "docker stats --no-stream cadvisor"
+   ],
+   "fix": [
+    "Upgrade cAdvisor to a release that supports Docker 29's API (check its releases page); hold the engine meanwhile: sudo apt-mark hold docker-ce docker-ce-cli containerd.io",
+    "--docker_only=true --housekeeping_interval=30s --disable_metrics=disk,tcp,udp,percpu,sched,process --store_container_labels=false",
+    "Scrape every 15-30s, not 5s (the #2523 reporter roughly halved CPU this way)."
+   ],
+   "prevention": "Read Docker engine release notes before upgrading monitoring hosts; pin cAdvisor and Docker versions; alert on absent(container_last_seen{job=\"cadvisor\"}).",
+   "sources": [
+    {
+     "title": "google/cadvisor #3749: Failure to get data in Prometheus on latest Docker (Docker 29 API)",
+     "url": "https://github.com/google/cadvisor/issues/3749",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Docker Engine 29 release notes (minimum API v1.44, containerd image store default)",
+     "url": "https://docs.docker.com/engine/release-notes/29/",
+     "type": "release-notes",
+     "verified": true
+    },
+    {
+     "title": "google/cadvisor #2523: (relatively) high CPU usage for the cadvisor container",
+     "url": "https://github.com/google/cadvisor/issues/2523",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/docker search: cadvisor client version too old",
+     "url": "https://www.reddit.com/r/docker/search/?q=cadvisor+%22client+version%22+too+old&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "blackbox_exporter probe_success is 0 although the site works (IPv6 preference, ICMP permissions, private CA)",
+   "area": "synthetic-monitoring",
+   "level": "L2",
+   "tool": "blackbox_exporter",
+   "context": "Probing internal sites (Harbor, GitLab, Grafana behind Traefik) and pinging hosts from a blackbox container.",
+   "error_text": "probe_success 0 | debug: connect: network is unreachable (IPv6 address) | x509: certificate signed by unknown authority | ICMP: socket: operation not permitted",
+   "frequency_signal": "Classic SO/Reddit question; the README documents debug=true and ICMP permissions because they come up constantly.",
+   "root_causes": [
+    "The prober prefers IPv6 (preferred_ip_protocol: ip6); hosts with AAAA records but no IPv6 route fail.",
+    "Private CA not trusted by the exporter.",
+    "ICMP needs CAP_NET_RAW, root or net.ipv4.ping_group_range.",
+    "Missing relabel pattern, or the app answers 302/401 while the module expects 2xx."
+   ],
+   "diagnosis": [
+    "curl -s 'http://localhost:9115/probe?target=https://harbor.example.internal&module=http_2xx&debug=true'",
+    "docker exec blackbox cat /etc/resolv.conf",
+    "curl -v --cacert internal-ca.crt https://harbor.example.internal/ -o /dev/null",
+    "PromQL: probe_success == 0, probe_http_status_code, probe_ip_protocol"
+   ],
+   "fix": [
+    "modules:\n  http_internal:\n    prober: http\n    timeout: 10s\n    http:\n      preferred_ip_protocol: ip4\n      valid_status_codes: [200, 301, 302, 401]\n      tls_config:\n        ca_file: /etc/blackbox/internal-ca.crt\n  icmp:\n    prober: icmp\n    icmp:\n      preferred_ip_protocol: ip4",
+    "ICMP in Docker: cap_add: [NET_RAW]; or setcap cap_net_raw+ep blackbox_exporter; or sysctl net.ipv4.ping_group_range='0 2147483647'.",
+    "Certificate expiry alert: probe_ssl_earliest_cert_expiry - time() < 14 * 86400"
+   ],
+   "prevention": "Test each new module with debug=true; alert with for: 2m and probe from two places.",
+   "sources": [
+    {
+     "title": "prometheus/blackbox_exporter README (debug=true, ICMP permissions, relabel pattern)",
+     "url": "https://github.com/prometheus/blackbox_exporter",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: blackbox exporter probe_success 0",
+     "url": "https://stackoverflow.com/search?q=blackbox+exporter+probe_success+0",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/PrometheusMonitoring search: blackbox exporter icmp docker",
+     "url": "https://www.reddit.com/r/PrometheusMonitoring/search/?q=blackbox+exporter+icmp+docker&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Monitoring Dokploy (Docker Swarm) services and Traefik: no targets discovered, or targets that time out",
+   "area": "service-discovery",
+   "level": "L3",
+   "tool": "Prometheus dockerswarm_sd, Traefik v3, Dokploy",
+   "context": "Dokploy apps are Swarm services on dokploy-network behind Traefik; you want per-app metrics and Traefik request metrics without hard-coding IPs.",
+   "error_text": "dockerswarm_sd finds 0 targets | targets on 10.0.x.x fail with context deadline exceeded | Traefik /metrics returns 404",
+   "frequency_signal": "Swarm discovery was a long-standing top request (#1766) before it shipped in Prometheus 2.20; Dokploy users hit it as soon as they want per-app metrics.",
+   "root_causes": [
+    "dockerswarm_sd_configs needs a manager node's Docker socket.",
+    "A task yields one target per attached network, including ingress, which Prometheus cannot reach; without a __meta_dockerswarm_network_name filter half the targets time out.",
+    "The app's metrics port differs from the port Swarm reports.",
+    "Traefik serves metrics on the 'traefik' entrypoint by default; if metrics or that entrypoint are not enabled, /metrics is missing."
+   ],
+   "diagnosis": [
+    "docker node ls ; docker service ps STACK_prometheus",
+    "docker service inspect SERVICE --format '{{json .Spec.Labels}}'",
+    "Prometheus /service-discovery: check __meta_dockerswarm_network_name per target.",
+    "docker exec $(docker ps -qf name=prometheus) wget -qO- -T 5 http://TASK_IP:PORT/metrics | head -3"
+   ],
+   "fix": [
+    "scrape_configs:\n  - job_name: swarm-tasks\n    dockerswarm_sd_configs:\n      - host: unix:///var/run/docker.sock\n        role: tasks\n    relabel_configs:\n      - source_labels: [__meta_dockerswarm_task_desired_state]\n        regex: running\n        action: keep\n      - source_labels: [__meta_dockerswarm_service_label_prometheus_job]\n        regex: .+\n        action: keep\n      - source_labels: [__meta_dockerswarm_network_name]\n        regex: dokploy-network\n        action: keep\n      - source_labels: [__address__, __meta_dockerswarm_service_label_prometheus_port]\n        regex: '([^:]+)(?::[0-9]+)?;([0-9]+)'\n        target_label: __address__\n        replacement: $1:$2\n      - source_labels: [__meta_dockerswarm_service_label_prometheus_job]\n        target_label: job\n      - source_labels: [__meta_dockerswarm_service_name]\n        target_label: service",
+    "Run Prometheus on a manager (placement constraint node.role == manager) with /var/run/docker.sock mounted read-only; the socket is root-equivalent, so consider a socket proxy and keep Prometheus off public networks.",
+    "Label each app service prometheus-job=APP and prometheus-port=PORT in its compose file.",
+    "Traefik: --metrics.prometheus=true --entrypoints.metrics.address=:8082 --metrics.prometheus.entrypoint=metrics, scrape traefik:8082 over dokploy-network, never publish 8082.",
+    "Docker daemon metrics: \"metrics-addr\": \"0.0.0.0:9323\" in /etc/docker/daemon.json (the Prometheus guide also sets \"experimental\": true), restart Docker, allow 9323 in UFW only from the monitoring subnet."
+   ],
+   "prevention": "Make the two labels part of every Dokploy app template; never use task IDs or container names as labels.",
+   "sources": [
+    {
+     "title": "Prometheus guide: Monitoring Docker Swarm (dockerswarm_sd_configs, daemon metrics)",
+     "url": "https://prometheus.io/docs/guides/dockerswarm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Traefik v3 reference: metrics (Prometheus defaults, entrypoint, OTLP)",
+     "url": "https://doc.traefik.io/traefik/reference/install-configuration/observability/metrics/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/selfhosted search: dokploy prometheus grafana",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=dokploy+prometheus+grafana&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/Traefik search: prometheus metrics entrypoint",
+     "url": "https://www.reddit.com/r/Traefik/search/?q=prometheus+metrics+entrypoint&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "kube-prometheus-stack on kubeadm: control-plane targets down, ServiceMonitors ignored, CRD upgrade fails",
+   "area": "kubernetes-monitoring",
+   "level": "L3",
+   "tool": "kube-prometheus-stack, Prometheus Operator, kubeadm",
+   "context": "Fresh Helm install on a kubeadm homelab or CKA-style cluster, or a major chart upgrade.",
+   "error_text": "KubeControllerManagerDown / KubeSchedulerDown / etcd target: dial tcp NODE_IP:10257: connect: connection refused | ServiceMonitor exists but no target appears | metadata.annotations: Too long: must have at most 262144 bytes",
+   "frequency_signal": "helm-charts #1500 (CRD annotations too long, 91 comments) and #1041 (admission webhooks during upgrade, 65 comments) top the chart's issues; #1236 and kube-prometheus #718 document the kubeadm bind-address problem.",
+   "root_causes": [
+    "kubeadm binds kube-controller-manager (10257) and kube-scheduler (10259) to 127.0.0.1 and etcd metrics to 127.0.0.1:2381; kube-proxy metrics default to 127.0.0.1:10249.",
+    "With serviceMonitorSelectorNilUsesHelmValues true (default), only ServiceMonitors labelled release=<helm release> are selected.",
+    "Helm installs CRDs once and never upgrades them; client-side apply of big CRDs exceeds the 256 KiB annotation limit."
+   ],
+   "diagnosis": [
+    "sudo ss -ltnp | grep -E ':(10257|10259|2381|10249) '   # on a control-plane node",
+    "kubectl -n monitoring get prometheus -o jsonpath='{.items[*].spec.serviceMonitorSelector}'",
+    "kubectl get servicemonitors -A --show-labels",
+    "kubectl -n monitoring port-forward svc/PROM_SVC 9090 then open /targets"
+   ],
+   "fix": [
+    "In /etc/kubernetes/manifests/kube-controller-manager.yaml and kube-scheduler.yaml set --bind-address=0.0.0.0; in etcd.yaml --listen-metrics-urls=http://127.0.0.1:2381,http://NODE_IP:2381; kube-proxy ConfigMap metricsBindAddress: 0.0.0.0:10249. Persist them in the kubeadm ClusterConfiguration extraArgs so upgrades keep them, and firewall the ports.",
+    "prometheus:\n  prometheusSpec:\n    serviceMonitorSelectorNilUsesHelmValues: false\n    podMonitorSelectorNilUsesHelmValues: false\n    ruleSelectorNilUsesHelmValues: false",
+    "Before a major upgrade: helm pull prometheus-community/kube-prometheus-stack --version X.Y.Z --untar && kubectl apply --server-side --force-conflicts -f kube-prometheus-stack/charts/crds/crds/"
+   ],
+   "prevention": "Read the chart upgrade notes for each major version; in ArgoCD use ServerSideApply for CRDs; keep an expected-targets list and alert on TargetDown.",
+   "sources": [
+    {
+     "title": "helm-charts #1236: cannot scrape etcd, scheduler and controller-manager",
+     "url": "https://github.com/prometheus-community/helm-charts/issues/1236",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "kube-prometheus #718: KubeControllerManagerDown and KubeSchedulerDown on kubeadm",
+     "url": "https://github.com/prometheus-operator/kube-prometheus/issues/718",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "helm-charts #1513: serviceMonitorSelector with specific label",
+     "url": "https://github.com/prometheus-community/helm-charts/issues/1513",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "helm-charts issues sorted by reactions (#1500 CRD too long, #1041 webhooks)",
+     "url": "https://github.com/prometheus-community/helm-charts/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Alerts fire in Prometheus but no notification arrives (routing, SMTP, private CA, Teams retirement, gossip)",
+   "area": "alerting",
+   "level": "L2",
+   "tool": "Alertmanager, Prometheus",
+   "context": "Rules show Firing in Prometheus /alerts, yet nothing reaches email, Slack, Teams or Telegram; Alertmanager in Docker or Kubernetes.",
+   "error_text": "msg=\"Notify for alerts failed\" ... notify retry canceled after 4 attempts: ... dial tcp 198.51.100.25:587: i/o timeout | 535 5.7.8 Username and Password not accepted | x509: certificate signed by unknown authority | Prometheus: msg=\"Error sending alert\" ... lookup alertmanager on 127.0.0.11:53: no such host | Failed to get final advertise address: No private IP address found, and explicit IP not provided",
+   "frequency_signal": "Among the most common Alertmanager questions; Microsoft's Teams connector retirement produced alertmanager #3920 (55 comments).",
+   "root_causes": [
+    "No alerting: block in prometheus.yml or an unresolvable address; the rule is still Pending because of for:.",
+    "The route tree sends the alert elsewhere: label typo, missing continue: true, strict matchers.",
+    "SMTP: egress 25/587 blocked (on-prem firewalls; AWS restricts port 25), smtp_require_tls defaults to true, Gmail needs an app password; internal relays/webhooks use the private CA.",
+    "Teams Office 365 connector URLs were retired; Workflows webhooks need msteamsv2_configs.",
+    "Gossip clustering cannot pick an advertise address in some container networks; a silence or inhibition mutes the alert."
+   ],
+   "diagnosis": [
+    "curl -s http://localhost:9090/api/v1/alertmanagers | jq '.data.activeAlertmanagers'",
+    "docker exec alertmanager amtool check-config /etc/alertmanager/alertmanager.yml",
+    "docker exec alertmanager amtool config routes test --config.file=/etc/alertmanager/alertmanager.yml severity=critical alertname=NodeDown",
+    "docker exec alertmanager amtool --alertmanager.url=http://localhost:9093 silence query",
+    "openssl s_client -starttls smtp -connect smtp.example.com:587 -servername smtp.example.com </dev/null",
+    "docker exec alertmanager amtool --alertmanager.url=http://localhost:9093 alert add TestAlert severity=critical --annotation=summary=test"
+   ],
+   "fix": [
+    "alerting:\n  alertmanagers:\n    - static_configs:\n        - targets: ['alertmanager:9093']\nrule_files:\n  - /etc/prometheus/rules/*.yml",
+    "receivers:\n  - name: ops-email\n    email_configs:\n      - to: ops@example.com\n        from: alertmanager@example.com\n        smarthost: smtp.example.com:587\n        auth_username: alertmanager@example.com\n        auth_password_file: /etc/alertmanager/smtp_password\n        require_tls: true\n        tls_config:\n          ca_file: /etc/alertmanager/internal-ca.crt",
+    "Teams: create a Workflows webhook and use msteamsv2_configs: [{webhook_url: ...}]; keep the old receiver until the new one is proven.",
+    "Single instance: --cluster.listen-address= (empty) disables gossip; HA: --cluster.advertise-address=IP:9094.",
+    "Expire stray silences: amtool silence expire ID."
+   ],
+   "prevention": "Route an always-firing Watchdog alert to an external dead man's switch; run amtool config routes test in CI.",
+   "sources": [
+    {
+     "title": "Alertmanager configuration docs (routes, email_config, msteamsv2_configs)",
+     "url": "https://prometheus.io/docs/alerting/latest/configuration/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "alertmanager #3920: Microsoft deprecating Teams webhooks, Workflows uses incompatible schema",
+     "url": "https://github.com/prometheus/alertmanager/issues/3920",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: alertmanager notify retry canceled",
+     "url": "https://stackoverflow.com/search?q=alertmanager+%22notify+retry+canceled%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/PrometheusMonitoring search: alertmanager email not sending",
+     "url": "https://www.reddit.com/r/PrometheusMonitoring/search/?q=alertmanager+email+not+sending&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Alertmanager timing confusion: first alert late, 'resolved' 5 minutes later, repeats every 4 hours, flapping",
+   "area": "alerting",
+   "level": "L2",
+   "tool": "Alertmanager, Prometheus rules",
+   "context": "Team complains notifications are slow, duplicated or flap between firing and resolved.",
+   "error_text": "No error: notification minutes after the problem, resolved message ~5 min late, the same alert re-sent every 4h, firing/resolved pairs every few minutes.",
+   "frequency_signal": "Perennial question on SO and r/PrometheusMonitoring; the configuration docs spell out the three timers because they are misread so often.",
+   "root_causes": [
+    "Defaults: group_wait 30s (first notification of a new group), group_interval 5m (changes to a group, including resolutions), repeat_interval 4h (unchanged group re-sent).",
+    "Rule for: keeps alerts Pending; scrape and evaluation intervals add delay.",
+    "Thresholds on noisy raw series flap."
+   ],
+   "diagnosis": [
+    "Compare Prometheus /alerts 'active since', the Alertmanager UI start time and the notification timestamp.",
+    "PromQL: ALERTS{alertname=\"X\"} and ALERTS_FOR_STATE{alertname=\"X\"}",
+    "amtool config routes show --config.file=alertmanager.yml"
+   ],
+   "fix": [
+    "route:\n  receiver: default\n  group_by: ['alertname', 'instance']\n  routes:\n    - matchers: ['severity=\"critical\"']\n      receiver: oncall\n      group_wait: 10s\n      group_interval: 1m\n      repeat_interval: 1h",
+    "Smooth flapping: for: 5m plus keep_firing_for: 10m (Prometheus 2.42+), or alert on avg_over_time(...[10m]).",
+    "Keep repeat_interval a multiple of group_interval."
+   ],
+   "prevention": "Write the expected notification timeline into each runbook so nobody 'fixes' normal delays.",
+   "sources": [
+    {
+     "title": "Alertmanager configuration docs (group_wait, group_interval, repeat_interval defaults)",
+     "url": "https://prometheus.io/docs/alerting/latest/configuration/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: group_wait group_interval repeat_interval",
+     "url": "https://stackoverflow.com/search?q=alertmanager+group_wait+group_interval+repeat_interval",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Alert storms and over-muting: grouping, inhibition, silences and the always-firing Watchdog",
+   "area": "alerting",
+   "level": "L3-L4",
+   "tool": "Alertmanager, Grafana alerting",
+   "context": "One host or datasource fails and dozens of alerts page the team, or inhibition/silences hide too much or too little.",
+   "error_text": "Dozens of notifications for one outage | inhibition never mutes (or mutes everything) | silence created but notifications continue | 'Watchdog' always firing",
+   "frequency_signal": "alertmanager #2995 'Documentation for inhibit rules is not clear', #226 'Send resolved notification for silenced alerts' (71 comments) and #1860 'acknowledge a firing alert' show how often teams fight these features.",
+   "root_causes": [
+    "group_by too fine, or group_by: ['...'] which disables aggregation.",
+    "No inhibition for cascades (host down -> every service on it).",
+    "equal: if all listed labels are missing on both alerts the rule still applies (docs caveat); if formats differ (instance host:9100 vs https://host) it never matches.",
+    "Silence matchers are anchored and case-sensitive; Grafana DatasourceNoData/DatasourceError alerts carry different labels, so existing silences and routes miss them.",
+    "Watchdog is a dead man's switch that is meant to fire forever."
+   ],
+   "diagnosis": [
+    "amtool --alertmanager.url=http://localhost:9093 alert query -o extended",
+    "amtool --alertmanager.url=http://localhost:9093 silence query -o extended",
+    "Alertmanager UI: show Inhibited / Silenced alerts",
+    "PromQL: ALERTS{alertstate=\"firing\"} to compare source and target label sets"
+   ],
+   "fix": [
+    "inhibit_rules:\n  - source_matchers: [alertname=\"NodeDown\"]\n    target_matchers: [alertname!=\"NodeDown\"]\n    equal: [host]",
+    "Add a shared host label to every job with relabeling so inhibition can match across exporters.",
+    "group_by: ['alertname', 'cluster', 'service']",
+    "Route Watchdog to a heartbeat receiver (repeat_interval: 1m) instead of silencing it.",
+    "Page on symptoms (error rate, latency, probe failures); send cause alerts (CPU, disk) to chat only."
+   ],
+   "prevention": "Monthly alert review: delete alerts nobody acted on; every alert has severity, owner and runbook_url.",
+   "sources": [
+    {
+     "title": "Alertmanager configuration docs (inhibit_rules equal caveat, group_by '...')",
+     "url": "https://prometheus.io/docs/alerting/latest/configuration/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Alertmanager issues sorted by reactions (#2995, #226, #1860)",
+     "url": "https://github.com/prometheus/alertmanager/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Grafana docs: No Data and Error states (DatasourceNoData/DatasourceError labels)",
+     "url": "https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/nodata-and-error-states/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/devops search: alert fatigue",
+     "url": "https://www.reddit.com/r/devops/search/?q=alert+fatigue&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Notification templates print '<no value>' or break messages (Alertmanager and Grafana alerting)",
+   "area": "alerting",
+   "level": "L2-L3",
+   "tool": "Alertmanager, Grafana alerting",
+   "context": "Custom Slack, Telegram, email or Teams messages copied from blogs.",
+   "error_text": "Message shows <no value> | Telegram: Bad Request: can't parse entities | empty Slack title | Grafana contact point test fails with a template error",
+   "frequency_signal": "'How To Use Alert Message Templates in Grafana' (144 replies, ~86k views) and 'Documentation of Alert Templating in Serious Need of Improvement!' (121 replies) are top community.grafana.com topics; alertmanager #2923 tracks Telegram parse errors.",
+   "root_causes": [
+    "Two template layers: rule annotations use {{ $labels.instance }} and {{ $value }}; Alertmanager templates use .CommonLabels and range .Alerts.",
+    "Go templates print <no value> for a label only some alerts have.",
+    "Grafana's template data (.Alerts, .Labels, .Annotations, .Values) differs from Alertmanager examples.",
+    "Telegram HTML/Markdown parse modes reject unescaped or truncated markup."
+   ],
+   "diagnosis": [
+    "amtool template render --template.glob='/etc/alertmanager/templates/*.tmpl' --template.text='{{ template \"custom.title\" . }}'",
+    "Grafana: Alerting > Contact points > Test, and the preview in Notification templates.",
+    "amtool alert query -o extended   # which labels the alert really has"
+   ],
+   "fix": [
+    "Keep human text in rule annotations (summary, description, runbook_url) and templates small:\n{{ define \"custom.title\" }}[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}{{ end }}\n{{ define \"custom.text\" }}{{ range .Alerts }}{{ .Annotations.summary }} ({{ .Labels.instance }})\n{{ end }}{{ end }}",
+    "Guard optional labels: {{ if .Labels.service }}service={{ .Labels.service }}{{ end }}",
+    "Telegram: parse_mode: '' or escape markup in annotations.",
+    "Grafana: start from a working example and change one field at a time."
+   ],
+   "prevention": "Templates in Git, rendered with amtool in CI; same annotation names across Prometheus and Grafana rules.",
+   "sources": [
+    {
+     "title": "community.grafana.com top topics (alert templating threads)",
+     "url": "https://community.grafana.com/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Alertmanager issues sorted by reactions (#2923 Telegram parse entities)",
+     "url": "https://github.com/prometheus/alertmanager/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: alertmanager template range .Alerts",
+     "url": "https://stackoverflow.com/search?q=alertmanager+template+range+.Alerts",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Grafana first run in Docker: 'GF_PATHS_DATA is not writable' and lost or ignored admin password",
+   "area": "dashboards",
+   "level": "L0",
+   "tool": "Grafana",
+   "context": "New Grafana container with a bind-mounted data dir; or nobody remembers the admin password; or GF_SECURITY_ADMIN_PASSWORD was changed and nothing happened.",
+   "error_text": "GF_PATHS_DATA='/var/lib/grafana' is not writable. | mkdir: can't create directory '/var/lib/grafana/plugins': Permission denied | Invalid username or password",
+   "frequency_signal": "'Admin password reset' is the most-viewed topic on community.grafana.com (~233k views); 'New Docker Install with persistent storage, Permission problem' has ~121k views.",
+   "root_causes": [
+    "The image runs as UID 472 (group 0); a host dir owned by root or your user is not writable.",
+    "admin_password / GF_SECURITY_ADMIN_PASSWORD is applied only on first start; later the database holds the password.",
+    "Repeated failed logins trigger brute-force protection for a few minutes."
+   ],
+   "diagnosis": [
+    "docker logs grafana 2>&1 | head -20",
+    "ls -ln /srv/grafana",
+    "docker exec grafana id"
+   ],
+   "fix": [
+    "sudo chown -R 472:0 /srv/grafana (or use a named volume, or run with user: matching the owner).",
+    "docker exec -it grafana grafana cli admin reset-admin-password 'NEW_PASSWORD'   # older images: grafana-cli admin reset-admin-password --homepath /usr/share/grafana NEW_PASSWORD",
+    "Package installs: sudo grafana cli --homepath /usr/share/grafana admin reset-admin-password 'NEW_PASSWORD'"
+   ],
+   "prevention": "Named volumes; personal admin accounts or SSO; keep the bootstrap password in a secret store.",
+   "sources": [
+    {
+     "title": "Grafana community: New Docker Install with persistent storage, Permission problem",
+     "url": "https://community.grafana.com/t/new-docker-install-with-persistent-storage-permission-problem/10896",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Grafana community: Admin password reset",
+     "url": "https://community.grafana.com/t/admin-password-reset/19455",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Grafana docs: Grafana server CLI",
+     "url": "https://grafana.com/docs/grafana/latest/administration/cli/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Grafana configuration docs (admin_password set once on first run)",
+     "url": "https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Grafana behind a reverse proxy: 'Origin not allowed', 'failed to load its application files', live websocket errors",
+   "area": "dashboards",
+   "level": "L1",
+   "tool": "Grafana, Nginx/Apache/Traefik",
+   "context": "Grafana published through Apache (the reader's legacy proxy), Nginx or Traefik/Dokploy, on a subdomain or a sub-path.",
+   "error_text": "Origin not allowed | If you're seeing this Grafana has failed to load its application files | websocket errors on /api/live/ws | redirect to http://localhost:3000",
+   "frequency_signal": "'After update to 8.3.5: Origin not allowed behind proxy' (~46k views) plus a ~39k-view sibling thread; 'How to set up Grafana HTTPS' (~150k views); Grafana #45261 for IIS.",
+   "root_causes": [
+    "Proxy does not forward the original Host header, so Grafana's origin check (since 8.3.5) rejects requests; Apache needs ProxyPreserveHost On.",
+    "root_url / serve_from_sub_path do not match the public URL or the proxy strips the sub-path.",
+    "Upgrade/Connection headers missing for /api/live/.",
+    "TLS terminated at the proxy while root_url still says http."
+   ],
+   "diagnosis": [
+    "Browser devtools > Network: failing request and response.",
+    "curl -sI -H 'Host: grafana.example.com' http://127.0.0.1:3000/login",
+    "docker exec grafana env | grep GF_SERVER",
+    "docker logs grafana 2>&1 | grep -i origin"
+   ],
+   "fix": [
+    "Nginx: proxy_set_header Host $host; plus a location /api/live/ with proxy_http_version 1.1, Upgrade and Connection headers.",
+    "Apache: ProxyPreserveHost on, ProxyPass / http://GRAFANA:3000/, ProxyPassReverse / http://GRAFANA:3000/ (plus websocket proxying for /api/live/).",
+    "GF_SERVER_ROOT_URL=https://grafana.example.com/ ; sub-path: GF_SERVER_ROOT_URL=https://example.com/grafana/ and GF_SERVER_SERVE_FROM_SUB_PATH=true, with no prefix stripping in the proxy.",
+    "Traefik/Dokploy: Host(`grafana.example.com`) router and loadbalancer.server.port=3000; Traefik keeps the Host header by default."
+   ],
+   "prevention": "Prefer a dedicated subdomain over a sub-path; keep proxy snippets in Git; terminate TLS in one place.",
+   "sources": [
+    {
+     "title": "Grafana tutorial: Run Grafana behind a reverse proxy (Nginx, Apache, Traefik)",
+     "url": "https://grafana.com/tutorials/run-grafana-behind-a-proxy/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Grafana community: After update to 8.3.5 'Origin not allowed' behind proxy",
+     "url": "https://community.grafana.com/t/after-update-to-8-3-5-origin-not-allowed-behind-proxy/60598",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "grafana/grafana #45261: origin not allowed with IIS reverse proxy",
+     "url": "https://github.com/grafana/grafana/issues/45261",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: grafana origin not allowed",
+     "url": "https://stackoverflow.com/search?q=grafana+%22origin+not+allowed%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Grafana datasource test fails: 'connection refused', 'Bad Gateway', 'no org id' or no Loki labels",
+   "area": "dashboards",
+   "level": "L1",
+   "tool": "Grafana, Prometheus, Loki, Docker networks",
+   "context": "Adding Prometheus/Loki/Elasticsearch datasources in a Grafana container (Compose or Dokploy).",
+   "error_text": "Post \"http://localhost:9090/api/v1/query\": dial tcp 127.0.0.1:9090: connect: connection refused | dial tcp: lookup prometheus on 127.0.0.11:53: no such host | Bad Gateway | no org id | Data source connected, but no labels were received (wording varies by version)",
+   "frequency_signal": "Daily question on r/grafana and Stack Overflow (search links); the same container-localhost root cause as Prometheus target problems.",
+   "root_causes": [
+    "The Grafana backend proxies queries, so the URL is resolved from inside the Grafana container: localhost is wrong.",
+    "Grafana and the backend are on different Docker networks (separate Compose projects unless both join dokploy-network or a shared network).",
+    "Loki with auth_enabled: true needs an X-Scope-OrgID header ('no org id').",
+    "Loki is reachable but nothing ships logs yet, so there are no labels; HTTPS backends need the private CA."
+   ],
+   "diagnosis": [
+    "docker exec grafana wget -qO- http://prometheus:9090/-/ready",
+    "docker network inspect dokploy-network --format '{{range .Containers}}{{.Name}} {{end}}'",
+    "curl -s http://LOKI:3100/ready ; curl -s http://LOKI:3100/loki/api/v1/labels"
+   ],
+   "fix": [
+    "Use service names on a shared network (http://prometheus:9090, http://loki:3100) and attach both containers to it.",
+    "Multi-tenant Loki: add HTTP header X-Scope-OrgID: TENANT in the datasource.",
+    "HTTPS backends: enable 'With CA Cert' and paste the internal CA.",
+    "Provision datasources with fixed uids:\napiVersion: 1\ndatasources:\n  - name: Prometheus\n    uid: prometheus\n    type: prometheus\n    access: proxy\n    url: http://prometheus:9090\n    isDefault: true"
+   ],
+   "prevention": "Provision datasources from YAML in Git; probe each datasource health endpoint with blackbox or Uptime Kuma.",
+   "sources": [
+    {
+     "title": "prometheus/prometheus discussion #9678 (container networking to host services)",
+     "url": "https://github.com/prometheus/prometheus/discussions/9678",
+     "type": "github-discussion",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: grafana docker dial tcp 127.0.0.1:9090 connection refused",
+     "url": "https://stackoverflow.com/search?q=grafana+docker+%22dial+tcp+127.0.0.1%3A9090%22+connection+refused",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/grafana search: no labels were received",
+     "url": "https://www.reddit.com/r/grafana/search/?q=%22no+labels+were+received%22&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Grafana panels show 'No data', gaps or zero confusion",
+   "area": "dashboards",
+   "level": "L0-L1",
+   "tool": "Grafana, PromQL, LogQL",
+   "context": "New dashboards or imported community dashboards on your own Prometheus/Loki.",
+   "error_text": "Panel shows No data | stat shows No data instead of 0 | time series with gaps | values change when zooming",
+   "frequency_signal": "'How to get NO DATA to 0 when there is no data value' (~87k views) and 'How can i turn no data to zero in Loki' (~14k views) on community.grafana.com; Grafana #4470 'Hide empty / no data panels' (146 comments).",
+   "root_causes": [
+    "The query returns no series: counter never incremented, label typo, wrong datasource, job renamed.",
+    "rate() window shorter than two scrapes, or $__interval below the scrape interval.",
+    "Loki count_over_time returns nothing when no lines matched.",
+    "Imported dashboards expect labels (job, instance names) your setup does not have."
+   ],
+   "diagnosis": [
+    "Panel > Inspect > Query / Data to see the exact query and response.",
+    "Run the query in Explore; check up{job=\"...\"}.",
+    "Datasource settings: Scrape interval matches Prometheus (e.g. 15s)."
+   ],
+   "fix": [
+    "sum(rate(http_requests_total[$__rate_interval])) or vector(0)",
+    "sum(count_over_time({job=\"app\"} |= \"error\" [5m])) or vector(0)",
+    "Cosmetic only: Standard options > No value = 0.",
+    "Adjust imported dashboard variables to your label names."
+   ],
+   "prevention": "Do not alert on panels that can be empty; use absent() alerts for missing data.",
+   "sources": [
+    {
+     "title": "community.grafana.com top topics (No data to 0 threads)",
+     "url": "https://community.grafana.com/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "grafana/grafana issues sorted by comments (#4470 Hide empty / no data panels)",
+     "url": "https://github.com/grafana/grafana/issues?q=is%3Aissue+sort%3Acomments-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: grafana no data instead of 0 prometheus",
+     "url": "https://stackoverflow.com/search?q=grafana+%22no+data%22+instead+of+0+prometheus",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Grafana provisioning: 'Datasource ${DS_PROMETHEUS} was not found', 'Cannot save provisioned dashboard', sidecar dashboards missing",
+   "area": "dashboards-as-code",
+   "level": "L2",
+   "tool": "Grafana, kube-prometheus-stack sidecar",
+   "context": "Dashboards kept as JSON files in Git and provisioned by file, Ansible, Helm or ConfigMaps.",
+   "error_text": "Failed to upgrade legacy queries Datasource ${DS_PROMETHEUS} was not found | Cannot save provisioned dashboard | The dashboard has been changed by someone else",
+   "frequency_signal": "Grafana #10786 'Support dashboard variables in dashboard provisioning', #36040, a community thread on import with datasource variables, plus 'How to upload dashboards as .json files to kubernetes via helm' (~60k views) and 'The Dashboards has been changed by someone else' (~42k).",
+   "root_causes": [
+    "JSON exported 'for sharing externally' contains __inputs placeholders that only the UI import resolves.",
+    "Provisioned dashboards are read-only unless allowUiUpdates is true, and UI edits are overwritten.",
+    "Datasource UIDs differ between environments; duplicate dashboard UIDs across files.",
+    "Sidecar label (grafana_dashboard: \"1\") or namespace mismatch on Kubernetes."
+   ],
+   "diagnosis": [
+    "docker logs grafana 2>&1 | grep -i provisioning",
+    "grep -rn 'DS_PROMETHEUS' /etc/grafana/provisioning/dashboards/",
+    "curl -s -u admin:PASS http://localhost:3000/api/datasources | jq '.[] | {name, uid}'",
+    "kubectl -n monitoring logs deploy/GRAFANA_DEPLOY -c grafana-sc-dashboard --tail=50 ; kubectl get cm -A -l grafana_dashboard=1"
+   ],
+   "fix": [
+    "Replace ${DS_PROMETHEUS} with {\"type\": \"prometheus\", \"uid\": \"prometheus\"} and provision the datasource with that fixed uid.",
+    "apiVersion: 1\nproviders:\n  - name: default\n    folder: Infra\n    type: file\n    allowUiUpdates: false\n    options:\n      path: /var/lib/grafana/dashboards\n      foldersFromFilesStructure: true",
+    "Workflow: edit in UI, export without 'share externally', commit, let provisioning load it.",
+    "Kubernetes: label ConfigMaps grafana_dashboard: \"1\" and set the sidecar searchNamespace."
+   ],
+   "prevention": "Git is the source of truth; CI checks JSON validity and unique dashboard UIDs.",
+   "sources": [
+    {
+     "title": "grafana/grafana #10786: Support dashboard variables in dashboard provisioning",
+     "url": "https://github.com/grafana/grafana/issues/10786",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "grafana/grafana #36040: JSON export does not include default datasource, import fails",
+     "url": "https://github.com/grafana/grafana/issues/36040",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Grafana community: Dashboard import with datasource variable",
+     "url": "https://community.grafana.com/t/dashboard-import-with-datasource-variable/4896",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: grafana provisioning DS_PROMETHEUS not found",
+     "url": "https://stackoverflow.com/search?q=grafana+provisioning+DS_PROMETHEUS+not+found",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Grafana alerting: DatasourceNoData/DatasourceError floods, 'Template variables are not supported in alert queries', 'wide series' errors",
+   "area": "alerting",
+   "level": "L2",
+   "tool": "Grafana alerting",
+   "context": "Alert rules built in Grafana (unified alerting) on Prometheus, Loki or SQL datasources.",
+   "error_text": "Template variables are not supported in alert queries | Failed to evaluate queries and expressions: input data must be a wide series but got type long | alerts named DatasourceNoData / DatasourceError",
+   "frequency_signal": "'Template variables are not supported in alert queries' (~123k views), 'input data must be a wide series but got type long' (~36k), alert export/import (~53k) on community.grafana.com; Grafana #6557 (142 comments).",
+   "root_causes": [
+    "Alert rules cannot use dashboard variables.",
+    "SQL datasources return long-format frames that need a Reduce expression or time-series format.",
+    "No Data / Error states create separate alert instances with different labels, so silences and routes for the original alert miss them.",
+    "Legacy dashboard alerting was removed in Grafana 11; copied old examples no longer apply."
+   ],
+   "diagnosis": [
+    "Rule editor > Preview; Alerting > rule > State history.",
+    "Check the rule's 'Configure no data and error handling' section.",
+    "Run the same query in Explore with the rule's time range."
+   ],
+   "fix": [
+    "Write explicit queries/regex matchers in rules; multi-dimensional rules give one instance per series.",
+    "SQL: add a Reduce expression or return a time column so the frame is wide.",
+    "Set No Data to Keep Last State or Normal where an empty result is expected; route DatasourceError by datasource_uid to the platform team.",
+    "Export rules (Alerting > Export) and provision them from files."
+   ],
+   "prevention": "One source of truth per alert (Prometheus rules for infra, Grafana rules for cross-datasource); keep pending periods.",
+   "sources": [
+    {
+     "title": "Grafana docs: No Data and Error states",
+     "url": "https://grafana.com/docs/grafana/latest/alerting/fundamentals/alert-rule-evaluation/nodata-and-error-states/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "community.grafana.com top topics (alerting threads)",
+     "url": "https://community.grafana.com/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/grafana search: DatasourceNoData",
+     "url": "https://www.reddit.com/r/grafana/search/?q=DatasourceNoData&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Grafana 'database is locked' (SQLite) and running Grafana with more than one replica",
+   "area": "dashboards",
+   "level": "L3-L4",
+   "tool": "Grafana",
+   "context": "Grafana with the default SQLite DB under many users and alert rules, on NFS, or scaled to 2+ replicas in Swarm/Kubernetes.",
+   "error_text": "\"failed to look up user based on cookie\" logger=context error=\"database is locked\" | slow UI, failed alert state saves",
+   "frequency_signal": "grafana/grafana #16638 'Grafana Logs \"database is locked\"' is open with ~123 comments.",
+   "root_causes": [
+    "SQLite allows one writer; alerting and sessions write constantly.",
+    "grafana.db on NFS/CIFS.",
+    "Two Grafana replicas sharing one SQLite file."
+   ],
+   "diagnosis": [
+    "docker logs grafana 2>&1 | grep -c 'database is locked'",
+    "findmnt -T /var/lib/grafana   # network filesystem?",
+    "docker service ls   # replicas > 1?"
+   ],
+   "fix": [
+    "SQLite mitigations: GF_DATABASE_WAL=true, GF_DATABASE_QUERY_RETRIES=3 (transaction_retries defaults to 5); keep one replica on local disk.",
+    "HA: move to PostgreSQL or MySQL (GF_DATABASE_TYPE=postgres, GF_DATABASE_HOST=postgres:5432 ...) and set [unified_alerting] ha_peers.",
+    "Back up first: sqlite3 grafana.db \".backup '/backup/grafana.db'\""
+   ],
+   "prevention": "Dashboards and alerts as code so the DB is disposable; scheduled DB backups.",
+   "sources": [
+    {
+     "title": "grafana/grafana #16638: Grafana Logs 'database is locked'",
+     "url": "https://github.com/grafana/grafana/issues/16638",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Grafana configuration docs ([database] wal, query_retries, transaction_retries)",
+     "url": "https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: grafana database is locked",
+     "url": "https://stackoverflow.com/search?q=grafana+%22database+is+locked%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "After upgrading to Grafana 12, old panels and datasources fail: 'Panel plugin not found' (AngularJS removed)",
+   "area": "upgrades",
+   "level": "L2",
+   "tool": "Grafana",
+   "context": "Long-lived dashboards (often imported years ago) using Angular community plugins, upgraded from 10/11 to 12.",
+   "error_text": "Panel plugin not found: PLUGIN_ID | Error loading: PLUGIN_ID | datasource missing from the list",
+   "frequency_signal": "Grafana blog posts and an EPIC (#95822) on Angular removal; community thread urging the Flowcharting plugin migration.",
+   "root_causes": [
+    "AngularJS was deprecated in Grafana 9, disabled by default in 11 and removed in 12; angular_support_enabled no longer has any effect.",
+    "Core Angular panels auto-migrate, but third-party Angular plugins simply fail to load."
+   ],
+   "diagnosis": [
+    "Before upgrading, check the plugin catalog and dashboards on 11.x for Angular deprecation notices.",
+    "docker exec grafana grafana cli plugins ls"
+   ],
+   "fix": [
+    "Replace with core panels (Time series, Pie chart, Geomap, Canvas) or React versions of the plugins.",
+    "Test the upgrade on a copy of grafana.db in staging; pin the image major version in compose."
+   ],
+   "prevention": "Dashboards as code, upgrade notes in the change request, staging first.",
+   "sources": [
+    {
+     "title": "Grafana blog: AngularJS support will be removed in Grafana 12",
+     "url": "https://grafana.com/blog/angularjs-support-will-be-removed-in-grafana-12-what-you-need-to-know/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Grafana docs: What's new in Grafana v12.0",
+     "url": "https://grafana.com/docs/grafana/latest/whatsnew/whats-new-in-v12-0/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "grafana/grafana #95822: EPIC Remove Angular by Grafana 12",
+     "url": "https://github.com/grafana/grafana/issues/95822",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Loki Docker logging driver makes containers hang when Loki is down",
+   "area": "logging",
+   "level": "L2",
+   "tool": "Loki docker driver plugin",
+   "context": "daemon.json sets \"log-driver\": \"loki\" for every container on a Docker/Dokploy host; Loki restarts or becomes unreachable.",
+   "error_text": "docker stop hangs, docker logs stops updating, containers cannot be killed while Loki is unreachable",
+   "frequency_signal": "grafana/loki #2361 is among Loki's most-reacted issues and is still open.",
+   "root_causes": [
+    "The driver blocks container output when it cannot deliver to Loki and keeps retrying.",
+    "Application availability becomes coupled to the logging backend."
+   ],
+   "diagnosis": [
+    "docker plugin ls ; docker info --format '{{.LoggingDriver}}'",
+    "journalctl -u docker --since '10 min ago' | grep -i loki",
+    "curl -s http://LOKI:3100/ready"
+   ],
+   "fix": [
+    "Short term: \"log-opts\": {\"mode\": \"non-blocking\", \"max-buffer-size\": \"4m\", \"loki-retries\": \"2\", \"loki-timeout\": \"2s\"}",
+    "Better: keep json-file with rotation ({\"log-driver\": \"json-file\", \"log-opts\": {\"max-size\": \"10m\", \"max-file\": \"3\"}}) and ship logs with Alloy (discovery.docker + loki.source.docker)."
+   ],
+   "prevention": "Never make app availability depend on the log backend; test by stopping Loki on purpose.",
+   "sources": [
+    {
+     "title": "grafana/loki #2361: if Loki is not reachable and loki-docker-driver is active, containers stop and cannot be killed",
+     "url": "https://github.com/grafana/loki/issues/2361",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Loki issues sorted by reactions",
+     "url": "https://github.com/grafana/loki/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/docker search: loki logging driver hang",
+     "url": "https://www.reddit.com/r/docker/search/?q=loki+logging+driver+hang&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Loki rejects pushes: 429 rate/stream limits, 'entry too far behind', 'timestamp too old'",
+   "area": "logging",
+   "level": "L2",
+   "tool": "Loki, Alloy/Promtail",
+   "context": "Shipping Docker, Swarm or Kubernetes logs; first start of an agent on old log files; noisy debug logging.",
+   "error_text": "429 Too Many Requests: Ingestion rate limit exceeded for user fake (limit: 4194304 bytes/sec) | Per stream rate limit exceeded | Maximum active stream limit exceeded, reduce the number of active streams (reduce labels or reduce label values) | entry too far behind | timestamp too old",
+   "frequency_signal": "Loki's docs dedicate a page to these validation reasons (rate_limited, per_stream_rate_limit, stream_limit, too_far_behind, greater_than_max_sample_age, too_far_in_future); 'High cardinality labels' (#91) and 'Allow out of order log submission' (#1544) are top-reacted Loki issues.",
+   "root_causes": [
+    "High-cardinality labels (container_id, Swarm task names, pod names, request_id, user) create too many streams.",
+    "Too much volume for the tenant limits (per_stream_rate_limit defaults to 3MB, burst 15MB).",
+    "Agents shipping old files on first start (reject_old_samples is on by default), or clock skew.",
+    "Re-reading files after losing the positions file."
+   ],
+   "diagnosis": [
+    "PromQL on Loki's metrics: sum by (reason) (rate(loki_discarded_samples_total[5m]))",
+    "logcli series --analyze-labels '{job=~\".+\"}'",
+    "curl -s http://loki:3100/config | grep -A30 limits_config",
+    "docker logs alloy --tail 50"
+   ],
+   "fix": [
+    "Keep a handful of bounded labels (service, host, env, level); move IDs to the log line or structured metadata.",
+    "Drop debug lines at the agent (Alloy stage.drop) before raising limits.",
+    "limits_config:\n  ingestion_rate_mb: 8\n  ingestion_burst_size_mb: 16\n  per_stream_rate_limit: 5MB\n  per_stream_rate_limit_burst: 20MB\n  max_global_streams_per_user: 10000\n  reject_old_samples: true\n  reject_old_samples_max_age: 168h",
+    "Backfills: raise reject_old_samples_max_age temporarily; fix NTP for 'too far in future'."
+   ],
+   "prevention": "Label design review before onboarding a service; dashboard and alert on discarded samples by reason.",
+   "sources": [
+    {
+     "title": "Loki docs: Request validation and rate-limit errors",
+     "url": "https://grafana.com/docs/loki/latest/operations/request-validation-rate-limits/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Loki issues sorted by reactions (#91, #1544)",
+     "url": "https://github.com/grafana/loki/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: loki ingestion rate limit exceeded",
+     "url": "https://stackoverflow.com/search?q=loki+%22ingestion+rate+limit+exceeded%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Loki queries fail: 'too many outstanding requests', 'maximum of series (500) reached', entry and time-range limits, timeouts",
+   "area": "logging",
+   "level": "L2-L3",
+   "tool": "Loki, Grafana",
+   "context": "Dashboards with many Loki panels, long time ranges, or metric queries grouped by high-cardinality labels.",
+   "error_text": "too many outstanding requests | maximum of series (500) reached for a single query | max entries limit per query exceeded, limit > max_entries_limit (5001 > 5000) | the query time range exceeds the limit | 504 Gateway Timeout",
+   "frequency_signal": "grafana/loki #5123 ('too many outstanding requests' after 2.4.2) and #3045 ('maximum of series (500)') are top-reacted Loki issues.",
+   "root_causes": [
+    "Per-tenant queue limits in the query frontend/scheduler too small for dashboards firing many parallel queries (a 2.4.2 regression made it common).",
+    "sum by (...) over high-cardinality labels exceeds max_query_series (500).",
+    "Line limits (max_entries_limit_per_query 5000), max query length (721h).",
+    "Proxy or Grafana datasource timeouts shorter than the query."
+   ],
+   "diagnosis": [
+    "Grafana Query inspector > Stats for bytes processed and time.",
+    "logcli query --stats '{service=\"app\"} |= \"error\"'",
+    "docker logs loki 2>&1 | grep -iE 'outstanding|timeout' | tail"
+   ],
+   "fix": [
+    "Commonly used settings:\nquery_scheduler:\n  max_outstanding_requests_per_tenant: 4096\nfrontend:\n  max_outstanding_per_tenant: 4096\nlimits_config:\n  split_queries_by_interval: 1h\n  max_query_series: 1000\n  query_timeout: 5m\nserver:\n  http_server_read_timeout: 5m\n  http_server_write_timeout: 5m",
+    "Rewrite queries: narrow stream selectors first, line filters before parsers, topk, shorter ranges.",
+    "Raise the Grafana datasource timeout and the proxy timeouts; move heavy metric queries to ruler recording rules."
+   ],
+   "prevention": "Budget panels per dashboard; recording rules for dashboards everyone opens.",
+   "sources": [
+    {
+     "title": "grafana/loki #5123: too many outstanding requests after upgrade to 2.4.2",
+     "url": "https://github.com/grafana/loki/issues/5123",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "grafana/loki #3045: maximum of series (500) reached for a single query",
+     "url": "https://github.com/grafana/loki/issues/3045",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/grafana search: loki too many outstanding requests",
+     "url": "https://www.reddit.com/r/grafana/search/?q=loki+%22too+many+outstanding+requests%22&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Loki disk keeps growing although retention_period is set, or Loki crash-loops after the disk filled (WAL)",
+   "area": "logging",
+   "level": "L2",
+   "tool": "Loki",
+   "context": "Single-binary Loki on filesystem storage in Docker/Dokploy.",
+   "error_text": "Disk usage climbs forever | no space left on device | Loki restarts endlessly replaying the WAL | config error asking for compactor delete_request_store when retention is enabled (3.x)",
+   "frequency_signal": "The retention docs state that without retention enabled 'logs sent to Loki live forever'; 'WAL corruption leads to endless restarts' (#12583) is on Loki's most-reacted list.",
+   "root_causes": [
+    "Retention is applied only by the compactor and is disabled by default.",
+    "Loki 3.x requires delete_request_store when retention is on; retention needs a 24h index period with tsdb or boltdb-shipper.",
+    "Compactor target not running (scalable/microservices modes).",
+    "WAL and chunks on a small root disk."
+   ],
+   "diagnosis": [
+    "curl -s http://loki:3100/config | grep -A12 '^compactor'",
+    "curl -s http://loki:3100/services",
+    "sudo du -sh /srv/loki/chunks /srv/loki/wal /srv/loki/tsdb-*",
+    "docker logs loki 2>&1 | grep -i compactor | tail"
+   ],
+   "fix": [
+    "compactor:\n  working_directory: /loki/compactor\n  compaction_interval: 10m\n  retention_enabled: true\n  retention_delete_delay: 2h\n  delete_request_store: filesystem\nlimits_config:\n  retention_period: 744h",
+    "WAL crash loop: free disk first; as a last resort move the WAL directory aside (unflushed logs are lost).",
+    "Production: object storage (MinIO/S3) and a dedicated volume."
+   ],
+   "prevention": "Disk alerts on the Loki volume; retention set on day one.",
+   "sources": [
+    {
+     "title": "Loki docs: Log retention (compactor)",
+     "url": "https://grafana.com/docs/loki/latest/operations/storage/retention/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Loki docs: Upgrade guide (delete_request_store required)",
+     "url": "https://grafana.com/docs/loki/latest/setup/upgrade/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Loki issues sorted by reactions (#12583 WAL corruption)",
+     "url": "https://github.com/grafana/loki/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: loki retention not working compactor",
+     "url": "https://stackoverflow.com/search?q=loki+retention+not+working+compactor",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Loki 3.x upgrade errors: 'schema v13 is required to store Structured Metadata', 'tsdb index type is required', no shell in the image",
+   "area": "upgrades",
+   "level": "L3",
+   "tool": "Loki",
+   "context": "Upgrading a 2.x config (boltdb-shipper, schema v11/v12) to 3.x, or debugging a 3.5.8+ container.",
+   "error_text": "schema v13 is required to store Structured Metadata | tsdb index type is required | labels dropped after upgrade | docker exec loki sh: executable file not found",
+   "frequency_signal": "Spelled out in the Loki upgrade guide; 'failed to get token ranges for ingester err=\"zone not set\"' (#13414) is another upgrade issue on the most-reacted list.",
+   "root_causes": [
+    "Structured metadata and OTLP ingestion are on by default and need schema v13 + tsdb.",
+    "3.0 defaults: max 15 label names per series, 256KB max line size; shared_store removed.",
+    "From 3.5.8 the images have no BusyBox shell."
+   ],
+   "diagnosis": [
+    "docker run --rm -v \"$PWD\":/config grafana/loki:3.x.y -config.file=/config/loki-config.yaml -verify-config=true",
+    "curl -s http://loki:3100/config | grep -A20 schema_config"
+   ],
+   "fix": [
+    "Add a new schema period with a future UTC date; never edit old periods:\nschema_config:\n  configs:\n    - from: 2024-01-01\n      store: boltdb-shipper\n      object_store: filesystem\n      schema: v12\n      index: {prefix: index_, period: 24h}\n    - from: 2026-10-10\n      store: tsdb\n      object_store: filesystem\n      schema: v13\n      index: {prefix: index_, period: 24h}",
+    "Until that date passes: limits_config.allow_structured_metadata: false.",
+    "Debug with docker run --rm -it --net container:loki nicolaka/netshoot instead of a shell in the image."
+   ],
+   "prevention": "Run -verify-config in CI; pin versions; read the upgrade guide before each minor upgrade.",
+   "sources": [
+    {
+     "title": "Loki docs: Upgrade guide (3.0 schema/tsdb, 3.5.8 BusyBox removal, 3.6.0 AWS SDK v2)",
+     "url": "https://grafana.com/docs/loki/latest/setup/upgrade/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Loki issues sorted by reactions (#13414 zone not set)",
+     "url": "https://github.com/grafana/loki/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/grafana search: loki 3.0 schema v13",
+     "url": "https://www.reddit.com/r/grafana/search/?q=loki+3.0+schema+v13&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Promtail is end-of-life: migrating to Grafana Alloy, and 'no logs show up' from Docker or journald",
+   "area": "logging",
+   "level": "L1-L2",
+   "tool": "Grafana Alloy, Promtail, Grafana Agent",
+   "context": "Existing Promtail or Grafana Agent configs on Ubuntu/Docker hosts; Explore shows no labels after switching to Alloy.",
+   "error_text": "Promtail EOL since 2 March 2026 | Grafana Agent EOL since 1 November 2025 | Alloy: permission denied on /var/run/docker.sock or /var/log/journal | Alloy UI not reachable on :12345 | logs re-sent and rejected as too old after migration",
+   "frequency_signal": "Official EOL notices for Promtail and Grafana Agent; every Loki user on Promtail must migrate.",
+   "root_causes": [
+    "Promtail and Grafana Agent no longer receive fixes; Alloy is the supported successor.",
+    "Converted configs store positions in a different place, so files can be re-read.",
+    "Alloy lacks read access to docker.sock, /var/log/journal or /etc/machine-id.",
+    "The Alloy UI binds 127.0.0.1:12345 by default, invisible from outside the container.",
+    "Container names as labels in Swarm churn with every task."
+   ],
+   "diagnosis": [
+    "Alloy UI http://HOST:12345: component graph and health.",
+    "docker logs alloy --tail 50",
+    "ls -l /var/run/docker.sock ; journalctl --header | head -3",
+    "curl -s http://loki:3100/loki/api/v1/labels"
+   ],
+   "fix": [
+    "alloy convert --source-format=promtail --report=report.txt --output=config.alloy promtail.yaml   # or bridge with: alloy run --config.format=promtail promtail.yaml",
+    "discovery.docker \"linux\" { host = \"unix:///var/run/docker.sock\" }\ndiscovery.relabel \"docker\" {\n  targets = []\n  rule {\n    source_labels = [\"__meta_docker_container_label_com_docker_swarm_service_name\"]\n    target_label  = \"service\"\n  }\n}\nloki.source.docker \"default\" {\n  host          = \"unix:///var/run/docker.sock\"\n  targets       = discovery.docker.linux.targets\n  relabel_rules = discovery.relabel.docker.rules\n  forward_to    = [loki.write.local.receiver]\n}\nloki.write \"local\" {\n  endpoint { url = \"http://loki:3100/loki/api/v1/push\" }\n}",
+    "Compose: mount /var/run/docker.sock:ro, /var/log/journal:ro and /etc/machine-id:ro; command: run --server.http.listen-addr=0.0.0.0:12345 --storage.path=/var/lib/alloy/data /etc/alloy/config.alloy (storage path on a volume).",
+    "Migrate Promtail CLI flags and env vars by hand; they are not converted."
+   ],
+   "prevention": "Keep Alloy's storage path persistent; roll out host by host and watch Loki discarded samples.",
+   "sources": [
+    {
+     "title": "Loki docs: Promtail (EOL 2 March 2026)",
+     "url": "https://grafana.com/docs/loki/latest/send-data/promtail/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Alloy docs: Migrate from Promtail (alloy convert, caveats)",
+     "url": "https://grafana.com/docs/alloy/latest/set-up/migrate/from-promtail/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Alloy docs: loki.source.docker",
+     "url": "https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Grafana Agent docs (EOL notice)",
+     "url": "https://grafana.com/docs/agent/latest/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Tempo: traces never show up or are rejected ('trace not found', 'pusher failed to consume trace data')",
+   "area": "tracing",
+   "level": "L3",
+   "tool": "Grafana Tempo, OpenTelemetry SDK/Alloy",
+   "context": "Apps instrumented with OpenTelemetry send OTLP to Tempo in Docker or Kubernetes; Grafana Explore finds nothing.",
+   "error_text": "trace not found | pusher failed to consume trace data | Too many jobs in the queue | response larger than the max | app exporter: connection refused to tempo:4317",
+   "frequency_signal": "Tempo's troubleshooting docs cover each of these; trace-to-logs setup is a recurring r/grafana topic.",
+   "root_causes": [
+    "OTLP receivers not enabled or bound to localhost inside the container.",
+    "Protocol/port mix-up: gRPC is 4317, HTTP/protobuf is 4318 (path /v1/traces).",
+    "Per-trace and ingestion limits drop spans (discard reasons such as rate limits, trace too large, live traces exceeded).",
+    "Head sampling drops traces; recent traces still in ingesters; querier queue or response size limits."
+   ],
+   "diagnosis": [
+    "curl -s http://TEMPO:3200/ready",
+    "curl -s http://TEMPO:3200/metrics | grep -E 'tempo_distributor_spans_received_total|tempo_discarded_spans_total'",
+    "docker run --rm --net container:tempo nicolaka/netshoot ss -ltn | grep -E '4317|4318'",
+    "Check the app's OTEL_EXPORTER_OTLP_ENDPOINT and OTEL_EXPORTER_OTLP_PROTOCOL."
+   ],
+   "fix": [
+    "distributor:\n  receivers:\n    otlp:\n      protocols:\n        grpc:\n          endpoint: \"0.0.0.0:4317\"\n        http:\n          endpoint: \"0.0.0.0:4318\"",
+    "Apps: OTEL_EXPORTER_OTLP_ENDPOINT=http://tempo:4318 with OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf (or grpc to 4317).",
+    "Raise ingestion and per-trace limits in overrides only after checking discarded spans (the overrides format differs between Tempo versions).",
+    "Put Alloy or an OpenTelemetry Collector in front for batching, retries and tail sampling."
+   ],
+   "prevention": "Alert on discarded spans; add trace IDs to logs so Loki and Tempo link both ways.",
+   "sources": [
+    {
+     "title": "Tempo docs: Troubleshooting",
+     "url": "https://grafana.com/docs/tempo/latest/troubleshooting/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/grafana search: tempo trace not found",
+     "url": "https://www.reddit.com/r/grafana/search/?q=tempo+trace+not+found&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search: opentelemetry tempo 4317 connection refused",
+     "url": "https://stackoverflow.com/search?q=opentelemetry+tempo+4317+connection+refused",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Zabbix agent unreachable: 'cannot connect to [[IP]:10050]', 'Received empty response ... access permissions', active checks 'host not found'",
+   "area": "infrastructure-monitoring",
+   "level": "L1",
+   "tool": "Zabbix agent/agent2, Zabbix server",
+   "context": "Adding Ubuntu hosts to Zabbix, often with Zabbix server running in Docker.",
+   "error_text": "Get value from agent failed: cannot connect to [[192.0.2.20]:10050]: [111] Connection refused | [113] No route to host | Received empty response from Zabbix Agent at [192.0.2.20]. Assuming that agent dropped connection because of access permissions. | ZBX_TCP_READ() failed: [104] Connection reset by peer | agent log: cannot send list of active checks ... host [web01] not found",
+   "frequency_signal": "Dozens of Zabbix forum threads with these exact titles (several visible in search results); a blog of Zabbix common errors lists them first.",
+   "root_causes": [
+    "Agent stopped or listening only on localhost; UFW blocks 10050 on the agent or 10051 on the server.",
+    "Server= in the agent config does not include the real source IP: a Zabbix server in Docker connects from the Docker bridge/NAT address.",
+    "Hostname= in the agent config differs from the host name in the frontend (case-sensitive) for active checks.",
+    "PSK/TLS configured on one side only, or version mismatches."
+   ],
+   "diagnosis": [
+    "zabbix_get -s 192.0.2.20 -k agent.ping   # from the server side",
+    "sudo ss -ltnp | grep 10050",
+    "sudo grep -E '^(Server|ServerActive|Hostname|ListenIP)=' /etc/zabbix/zabbix_agent2.conf",
+    "sudo tail -f /var/log/zabbix/zabbix_agent2.log",
+    "sudo tcpdump -ni any tcp port 10050   # shows the real source IP"
+   ],
+   "fix": [
+    "Server=192.0.2.10,172.16.0.0/12 (IP, CIDR or DNS names allowed); ServerActive=192.0.2.10; Hostname=web01 matching the frontend; then sudo systemctl restart zabbix-agent2.",
+    "sudo ufw allow from 192.0.2.10 to any port 10050 proto tcp",
+    "Docker agent image: set ZBX_HOSTNAME and ZBX_SERVER_HOST."
+   ],
+   "prevention": "Template the agent config with Ansible; use auto-registration with HostMetadata.",
+   "sources": [
+    {
+     "title": "Zabbix forum: Server - agent cannot communicate - Received empty response from Zabbix Agent",
+     "url": "https://www.zabbix.com/forum/zabbix-troubleshooting-and-problems/404690-server-agent-cannot-communicate-serverreceived-empty-response-from-zabbix-agent",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Zabbix forum: Cannot connect to [10.0.2.66]:10050 [Connection refused]",
+     "url": "https://www.zabbix.com/forum/zabbix-troubleshooting-and-problems/10105-cannot-connect-to-10-0-2-66-10050-connection-refused",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Zabbix Common Errors (blog)",
+     "url": "https://dobrinin.dev/posts/zabbix-common-errors/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: zabbix agent 10050 connection refused",
+     "url": "https://serverfault.com/search?q=zabbix+agent+10050+connection+refused",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Zabbix frontend banner: 'Zabbix server is not running: the information displayed may not be current'",
+   "area": "infrastructure-monitoring",
+   "level": "L1",
+   "tool": "Zabbix server, frontend, database",
+   "context": "Fresh install, after a reboot, upgrade or DB change; package or Docker install.",
+   "error_text": "Zabbix server is not running: the information displayed may not be current. | server log: database is down: reconnecting in 10 seconds | Access denied for user 'zabbix'@'localhost' | out of memory ... please increase CacheSize configuration parameter",
+   "frequency_signal": "One of the most common Zabbix questions on forums, SO and Server Fault (search links).",
+   "root_causes": [
+    "zabbix-server is not running: wrong DBPassword, DB down, DB schema not upgraded, CacheSize too small.",
+    "The frontend points at the wrong server host/port ($ZBX_SERVER in zabbix.conf.php, ZBX_SERVER_HOST in Docker) or a firewall blocks 10051 between web and server.",
+    "SELinux on RHEL-family hosts blocking the web server from connecting."
+   ],
+   "diagnosis": [
+    "systemctl status zabbix-server ; sudo tail -n 100 /var/log/zabbix/zabbix_server.log",
+    "sudo ss -ltnp | grep 10051",
+    "grep -E 'ZBX_SERVER' /etc/zabbix/web/zabbix.conf.php",
+    "docker logs --tail 100 zabbix-server"
+   ],
+   "fix": [
+    "Fix DBHost/DBName/DBUser/DBPassword in /etc/zabbix/zabbix_server.conf; sudo systemctl enable --now zabbix-server.",
+    "Raise CacheSize (e.g. 256M) if the log asks for it.",
+    "Point the frontend at the server and open 10051 between them."
+   ],
+   "prevention": "Monitor the Zabbix server with its own health template and an external probe; back up the DB before upgrades.",
+   "sources": [
+    {
+     "title": "Stack Overflow search: Zabbix server is not running",
+     "url": "https://stackoverflow.com/search?q=%22Zabbix+server+is+not+running%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Server Fault search: zabbix server is not running",
+     "url": "https://serverfault.com/search?q=%22zabbix+server+is+not+running%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/zabbix search: server is not running",
+     "url": "https://www.reddit.com/r/zabbix/search/?q=%22server+is+not+running%22&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Zabbix 'processes more than 75% busy', history cache full, housekeeper busy: the server cannot keep up",
+   "area": "infrastructure-monitoring",
+   "level": "L3",
+   "tool": "Zabbix server, MySQL/PostgreSQL",
+   "context": "Zabbix grown to hundreds of hosts or short item intervals; graphs show gaps and the queue grows.",
+   "error_text": "Zabbix poller processes more than 75% busy | Zabbix unreachable poller processes more than 75% busy | Zabbix history syncer processes more than 75% busy | More than 75% used in the history cache | Zabbix housekeeper processes more than 75% busy (newer versions word it 'Utilization of ... processes over 75%')",
+   "frequency_signal": "Many Zabbix forum threads with these titles (poller, unreachable poller, history syncer, housekeeper) appear in search results.",
+   "root_causes": [
+    "Too few pollers for many passive checks, or unreachable hosts tying pollers up until Timeout.",
+    "History syncers wait on a slow database (disk IO, no partitioning, untuned MySQL/PostgreSQL).",
+    "Housekeeper deleting millions of rows from big history tables (it is single-process and 100% busy while it runs).",
+    "CacheSize / HistoryCacheSize / ValueCacheSize too small; too-short intervals; many unsupported items."
+   ],
+   "diagnosis": [
+    "Zabbix server health dashboard; Administration > Queue.",
+    "zabbix_server -R diaginfo ; zabbix_server -R diaginfo=historycache",
+    "iostat -xz 1   # on the DB host",
+    "Database slow query log."
+   ],
+   "fix": [
+    "Tune zabbix_server.conf from the graphs: StartPollers, StartPollersUnreachable, StartDBSyncers, CacheSize, HistoryCacheSize, ValueCacheSize, Timeout; aim for 30-40% average busy, not 'as many as possible'.",
+    "Prefer active agent checks and Zabbix proxies for remote sites; Zabbix 7.0+ also has asynchronous agent/HTTP/SNMP pollers.",
+    "Partition history/trends tables or use TimescaleDB and disable housekeeping for those tables.",
+    "Lengthen item intervals and disable unsupported items."
+   ],
+   "prevention": "Capacity-plan by new values per second; start with TimescaleDB or partitioning on large installs.",
+   "sources": [
+    {
+     "title": "Zabbix forum: zabbix history syncer processes more than 75% busy",
+     "url": "https://www.zabbix.com/forum/zabbix-help/40202-zabbix-history-syncer-processes-more-than-75-busy",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Zabbix forum: Optimizing and troubleshooting 'Zabbix housekeeper processes more than 75% busy'",
+     "url": "https://www.zabbix.com/forum/zabbix-help/448045-optimizing-and-troubleshoting-zabbix-housekeeper-processes-more-than-75-busy",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Zabbix forum: Zabbix poller processes more than 75% busy",
+     "url": "https://www.zabbix.com/forum/zabbix-troubleshooting-and-problems/50469-zabbix-poller-processes-more-than-75-busy",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/zabbix search: history syncer busy",
+     "url": "https://www.reddit.com/r/zabbix/search/?q=history+syncer+busy&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Uptime Kuma reports sites down that are up: 'timeout of 48000ms exceeded', 'getaddrinfo EAI_AGAIN', 'ECONNREFUSED 127.0.0.1'",
+   "area": "uptime-monitoring",
+   "level": "L0-L1",
+   "tool": "Uptime Kuma",
+   "context": "Uptime Kuma in Docker/Dokploy on an on-prem Ubuntu host checking internal and public sites.",
+   "error_text": "timeout of 48000ms exceeded | getaddrinfo EAI_AGAIN example.com | connect ECONNREFUSED 127.0.0.1:8080 | unable to verify the first certificate",
+   "frequency_signal": "#275 'Lots of timeout of 48000ms exceeded during the day, but the site is still up?' is Uptime Kuma's most-commented bug (105 comments); #114 EAI_AGAIN has 33 comments.",
+   "root_causes": [
+    "The timeout is about 80% of the 60s interval; slow DNS in Docker, IPv6 issues, keep-alive problems, CPU starvation or a slow SQLite DB cause false downs.",
+    "Container DNS: Docker's embedded DNS forwards to a flaky upstream, or falls back to public resolvers that the on-prem firewall blocks.",
+    "localhost is the Uptime Kuma container; public names resolve to a public IP that the LAN cannot hairpin back to.",
+    "Internal CA (Harbor, GitLab) not trusted by Node.js."
+   ],
+   "diagnosis": [
+    "docker exec uptime-kuma cat /etc/resolv.conf",
+    "docker run --rm -it --net container:uptime-kuma nicolaka/netshoot dig app.example.com",
+    "docker run --rm -it --net container:uptime-kuma nicolaka/netshoot curl -sv -m 10 -o /dev/null https://app.example.com",
+    "docker stats --no-stream uptime-kuma"
+   ],
+   "fix": [
+    "Give Docker real resolvers: \"dns\": [\"192.0.2.53\"] in /etc/docker/daemon.json, restart Docker.",
+    "Use service names or host.docker.internal (extra_hosts host-gateway) instead of localhost; use split-horizon DNS or internal URLs to avoid NAT hairpin.",
+    "Trust the internal CA: mount it and set NODE_EXTRA_CA_CERTS=/app/data/internal-ca.pem.",
+    "Set 2-3 retries and a sensible timeout per monitor; reduce monitor count per instance; upgrade to 2.x."
+   ],
+   "prevention": "Notify only after retries; monitor critical sites from a second location too.",
+   "sources": [
+    {
+     "title": "louislam/uptime-kuma #275: Lots of 'timeout of 48000ms exceeded' during the day",
+     "url": "https://github.com/louislam/uptime-kuma/issues/275",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Uptime Kuma bug issues sorted by comments (#114 EAI_AGAIN, #1821 non-standard ports)",
+     "url": "https://github.com/louislam/uptime-kuma/issues?q=is%3Aissue+label%3Abug+sort%3Acomments-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/selfhosted search: uptime kuma timeout 48000ms",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=uptime+kuma+timeout+48000ms&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Uptime Kuma slow or erroring database (SQLITE_BUSY, 'Knex: Timeout acquiring a connection') and the v1 to v2 migration",
+   "area": "uptime-monitoring",
+   "level": "L2",
+   "tool": "Uptime Kuma",
+   "context": "Long-running instance with many monitors, data on NFS or a slow disk; upgrading from 1.x to 2.x.",
+   "error_text": "SQLITE_BUSY | KnexTimeoutError: Knex: Timeout acquiring a connection. The pool is probably full. | monitors slow down over time until restart | v2: SQLite Database migration failing",
+   "frequency_signal": "#2346 (Knex timeout, 47 comments), #2344 (monitors slow down over time, 51), #7338 (SQLITE_BUSY, 35), #6264 (v2.0.2 migration failing).",
+   "root_causes": [
+    "SQLite on NFS is unsupported (README) and slow disks block writes.",
+    "Large heartbeat history makes kuma.db huge.",
+    "Many monitors with short intervals.",
+    "v2 migration rewrites data and can take long; there is no official SQLite-to-MariaDB migration."
+   ],
+   "diagnosis": [
+    "docker exec uptime-kuma ls -lh /app/data",
+    "findmnt -T /var/lib/docker/volumes/uptime-kuma/_data",
+    "docker logs uptime-kuma 2>&1 | grep -Ei 'SQLITE_BUSY|Knex' | tail",
+    "Settings > Monitor History: database size and retention."
+   ],
+   "fix": [
+    "Keep /app/data on a local volume.",
+    "Lower history retention and use 'Shrink Database'; lengthen intervals.",
+    "Before v2: docker run --rm -v uptime-kuma:/data -v \"$PWD\":/backup alpine tar czf /backup/kuma-data.tgz -C /data . ; use image louislam/uptime-kuma:2; let the migration finish without restarts.",
+    "Large installs: start fresh on MariaDB with 2.x."
+   ],
+   "prevention": "Back up before every upgrade; pin the major tag.",
+   "sources": [
+    {
+     "title": "louislam/uptime-kuma README (NFS not supported, image tag 2)",
+     "url": "https://github.com/louislam/uptime-kuma",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Uptime Kuma wiki: Migration from v1 to v2",
+     "url": "https://github.com/louislam/uptime-kuma/wiki/Migration-From-v1-To-v2",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "louislam/uptime-kuma #6264: SQLite database migration failing (v2.0.2)",
+     "url": "https://github.com/louislam/uptime-kuma/issues/6264",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "heise: Uptime Kuma 2.0 now with MariaDB support",
+     "url": "https://www.heise.de/en/news/Uptime-Kuma-2-0-Monitoring-tool-now-with-MariaDB-support-10793657.html",
+     "type": "news",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Netdata in Docker shows container IDs instead of names, misses host metrics, or floods you with default alerts",
+   "area": "host-metrics",
+   "level": "L1",
+   "tool": "Netdata",
+   "context": "Netdata deployed as a container on Docker/Dokploy hosts for quick per-second dashboards.",
+   "error_text": "Charts named cgroup_<hash> or container IDs | host CPU/disk charts show the container's view | frequent warnings such as system.softnet_stat",
+   "frequency_signal": "#3972 'docker container names not resolved' (72 comments) and #1076 'Alarm system.softnet_stat is very strict' (71 comments) are among Netdata's most-commented issues.",
+   "root_causes": [
+    "docker.sock not mounted, or the netdata user cannot read it (docker group GID / PGID mismatch).",
+    "Missing pid: host, network_mode: host, host /proc, /sys, /etc/passwd, /etc/group and os-release mounts.",
+    "Default health alerts tuned for generic hosts."
+   ],
+   "diagnosis": [
+    "docker exec netdata ls -l /var/run/docker.sock ; stat -c '%g' /var/run/docker.sock",
+    "docker exec netdata id netdata",
+    "docker logs netdata 2>&1 | grep -i cgroup-name | tail"
+   ],
+   "fix": [
+    "Follow Netdata's Docker install: pid: host, network_mode: host, cap_add [SYS_PTRACE, SYS_ADMIN], security_opt apparmor:unconfined, mounts /:/host/root:ro,rslave, /proc:/host/proc:ro, /sys:/host/sys:ro, /etc/passwd, /etc/group, /etc/os-release, /var/run/docker.sock:ro.",
+    "Older images: set PGID to the docker group's GID.",
+    "Tune alerts: docker exec -it netdata /etc/netdata/edit-config health.d/FILE.conf, set to: silent or new thresholds, then docker exec netdata netdatacli reload-health."
+   ],
+   "prevention": "Decide which tool pages people; if Prometheus/Alertmanager does, silence Netdata notifications.",
+   "sources": [
+    {
+     "title": "netdata/netdata #3972: docker container names not resolved",
+     "url": "https://github.com/netdata/netdata/issues/3972",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Netdata community: How to debug container name resolution",
+     "url": "https://community.netdata.cloud/t/how-to-debug-container-name-resolution-for-the-netdata-agent/1399",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Netdata docs: Install Netdata with Docker",
+     "url": "https://learn.netdata.cloud/docs/netdata-agent/installation/docker",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Netdata issues sorted by comments (#1076 softnet alarm)",
+     "url": "https://github.com/netdata/netdata/issues?q=is%3Aissue+sort%3Acomments-desc",
+     "type": "github-issues-list",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Elasticsearch/OpenSearch (or Wazuh indexer) will not start: vm.max_map_count, bootstrap checks, 'master not discovered yet'",
+   "area": "search-cluster",
+   "level": "L1",
+   "tool": "Elasticsearch, OpenSearch, Wazuh indexer",
+   "context": "Docker or package install on Ubuntu; single node or a new multi-node cluster.",
+   "error_text": "bootstrap check failure [1] of [1]: max virtual memory areas vm.max_map_count [65530] is too low, increase to at least [262144] | master not discovered yet, this node has not previously joined a bootstrapped (v7+) cluster | memory locking requested for elasticsearch process but memory is not locked | container exit 78 or 137",
+   "frequency_signal": "On discuss.elastic.co top topics: 'Master not discovered yet...' (~102k views), 'Can't start elasticsearch with Ubuntu 16.04' (~94k); OpenSearch forum: 'Error when starting a single-node opensearch on docker' (~18k).",
+   "root_causes": [
+    "Ubuntu's default vm.max_map_count is 65530; it is a host kernel setting, not a container one.",
+    "Binding to a non-loopback address enables production bootstrap checks.",
+    "No discovery config (discovery.type=single-node, or seed_hosts + initial_master_nodes) or a data dir left from another cluster.",
+    "Heap larger than the container memory limit; data dir not writable by UID 1000; memlock ulimits missing."
+   ],
+   "diagnosis": [
+    "sysctl vm.max_map_count",
+    "docker logs --tail 50 es01",
+    "docker inspect -f '{{.State.ExitCode}} {{.State.OOMKilled}}' es01",
+    "ls -ln /srv/es/data"
+   ],
+   "fix": [
+    "echo 'vm.max_map_count=1048576' | sudo tee /etc/sysctl.d/99-elasticsearch.conf && sudo sysctl --system   # Elastic docs now recommend 1048576; OpenSearch/Wazuh ask for at least 262144",
+    "Single node: discovery.type=single-node. Cluster: discovery.seed_hosts=es01,es02,es03 and cluster.initial_master_nodes=es01,es02,es03 only for the first bootstrap.",
+    "ulimits: memlock: {soft: -1, hard: -1}; sudo chown -R 1000:0 /srv/es/data; ES_JAVA_OPTS=-Xms2g -Xmx2g (OpenSearch: OPENSEARCH_JAVA_OPTS) within the memory limit."
+   ],
+   "prevention": "Set sysctls with Ansible on every log/SIEM host; never reuse data dirs across clusters.",
+   "sources": [
+    {
+     "title": "Elastic docs: vm.max_map_count",
+     "url": "https://www.elastic.co/docs/deploy-manage/deploy/self-managed/vm-max-map-count",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "discuss.elastic.co top topics",
+     "url": "https://discuss.elastic.co/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "forum.opensearch.org top topics",
+     "url": "https://forum.opensearch.org/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: vm.max_map_count 65530 docker",
+     "url": "https://stackoverflow.com/search?q=%22vm.max_map_count%22+65530+docker",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Elastic 8 security and Kibana: 'received plaintext http traffic on an https channel', 'missing authentication credentials', 'Kibana server is not ready yet'",
+   "area": "search-cluster",
+   "level": "L1",
+   "tool": "Elasticsearch 8+, Kibana, OpenSearch, Logstash/Beats clients",
+   "context": "First ES 8 or OpenSearch 2.12+ install, or connecting Logstash, Fluent Bit, Grafana or Kibana to it.",
+   "error_text": "received plaintext http traffic on an https channel, closing connection Netty4HttpChannel | missing authentication credentials for REST request | Kibana server is not ready yet | unable to find valid certification path to requested target | OpenSearch: no custom admin password found, provide OPENSEARCH_INITIAL_ADMIN_PASSWORD",
+   "frequency_signal": "'Kibana server is not ready yet' (~257k views), 'Missing Authentication for REST request' (~125k), 'Error unable to find valid certification path' (~41k) on discuss.elastic.co; 'What are the correct default username and password for OpenSearch Dashboards?' (~43k) on forum.opensearch.org.",
+   "root_causes": [
+    "ES 8 enables TLS and authentication by default; clients still use http:// and no credentials.",
+    "Kibana 8 refuses the elastic superuser; it needs kibana_system or a service account token.",
+    "Kibana/ES version mismatch, ES unhealthy or the .kibana index blocked (often by a disk watermark).",
+    "Clients do not trust the cluster's CA; OpenSearch 2.12+ requires a strong initial admin password."
+   ],
+   "diagnosis": [
+    "curl --cacert http_ca.crt -u elastic https://localhost:9200/_cluster/health?pretty",
+    "docker logs kibana --tail 100 | grep -iE 'error|unable'",
+    "curl -s localhost:5601/api/status | jq '.status.overall'"
+   ],
+   "fix": [
+    "Use https and the CA: docker cp es01:/usr/share/elasticsearch/config/certs/http_ca.crt .",
+    "docker exec -it es01 /usr/share/elasticsearch/bin/elasticsearch-reset-password -u kibana_system   # then set it in kibana.yml, or use an enrollment token",
+    "Logstash/Beats/Fluent Bit/Grafana: configure the CA in each client (Logstash elasticsearch output ssl_certificate_authorities).",
+    "Match Kibana and ES versions exactly; OpenSearch: set OPENSEARCH_INITIAL_ADMIN_PASSWORD."
+   ],
+   "prevention": "Automate CA distribution (the same private-CA lesson as Harbor); pin versions in compose.",
+   "sources": [
+    {
+     "title": "discuss.elastic.co: received plaintext http traffic on an https channel",
+     "url": "https://discuss.elastic.co/t/i-got-received-plaintext-http-traffic-on-an-https-channel-closing-connection-netty4httpchannel/302973",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "discuss.elastic.co: Kibana server is not ready yet on elastic 8.0",
+     "url": "https://discuss.elastic.co/t/kibana-server-is-not-ready-yet-on-elastic-8-0/297418",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "discuss.elastic.co top topics",
+     "url": "https://discuss.elastic.co/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: Kibana server is not ready yet",
+     "url": "https://stackoverflow.com/search?q=%22Kibana+server+is+not+ready+yet%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Indices become read-only (flood-stage watermark) and cluster health is yellow or red (unassigned shards)",
+   "area": "search-cluster",
+   "level": "L2",
+   "tool": "Elasticsearch, OpenSearch, Wazuh indexer, Graylog backend",
+   "context": "Log/SIEM cluster running out of disk, or a single node with replicas configured.",
+   "error_text": "flood-stage watermark [95%] exceeded on [...], all indices on this node will be marked read-only | cluster_block_exception ... FORBIDDEN/12/index read-only / allow delete (api) | high disk watermark [90%] exceeded ... shards will be relocated | status yellow/red, unassigned_shards > 0",
+   "frequency_signal": "'FORBIDDEN/12/index read-only / allow delete (api)' (~59k views) on discuss.elastic.co; 'Elasticsearch service is running but the Cluster is Red' on the Graylog forum top list; Elastic has a dedicated troubleshooting page.",
+   "root_causes": [
+    "Watermarks: low 85% stops new allocations, high 90% relocates shards, flood stage 95% sets read-only-allow-delete on every index on the node.",
+    "Log indices without retention (ILM/ISM) fill the disk.",
+    "A replica is never assigned to the node holding its primary, so a single node with replicas stays yellow."
+   ],
+   "diagnosis": [
+    "GET _cluster/health",
+    "GET _cat/allocation?v",
+    "GET _cat/shards?v=true&h=index,shard,prirep,state,node,unassigned.reason&s=state",
+    "GET _cluster/allocation/explain"
+   ],
+   "fix": [
+    "Free or add disk (delete old indices, add a data disk); current versions remove the block automatically once usage drops below the high watermark (older ones: PUT */_settings {\"index.blocks.read_only_allow_delete\": null}).",
+    "Single node: PUT _all/_settings {\"index.number_of_replicas\": 0} and set 0 replicas in the index template.",
+    "POST _cluster/reroute?retry_failed=true after fixing the cause."
+   ],
+   "prevention": "ILM/ISM delete phases from day one; disk alert at 75%.",
+   "sources": [
+    {
+     "title": "Elastic docs: Fix watermark errors",
+     "url": "https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-watermark-errors",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Elastic docs: Red or yellow cluster health status",
+     "url": "https://www.elastic.co/docs/troubleshoot/elasticsearch/red-yellow-cluster-status",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "discuss.elastic.co top topics",
+     "url": "https://discuss.elastic.co/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search: elasticsearch yellow unassigned shards single node",
+     "url": "https://serverfault.com/search?q=elasticsearch+yellow+unassigned+shards+single+node",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Cluster capacity limits: '[1000]/[1000] maximum shards open' (Wazuh), circuit breakers, 'Limit of total fields [1000]'",
+   "area": "search-cluster",
+   "level": "L3",
+   "tool": "OpenSearch/Wazuh indexer, Elasticsearch, Graylog",
+   "context": "Months after install: Wazuh stops showing new alerts, ingestion fails, dashboards error out.",
+   "error_text": "this action would add [2] total shards, but this cluster currently has [1000]/[1000] maximum shards open | CircuitBreakingException: [parent] Data too large | Limit of total fields [1000] has been exceeded",
+   "frequency_signal": "Several Wazuh Google Group threads and Medium write-ups on the shard limit; 'CircuitBreakingException: [parent] Data too large' (~88k views) on discuss.elastic.co; the field-limit error is on the Graylog forum top list.",
+   "root_causes": [
+    "Daily indices x shards x replicas over long retention reach the default 1000 shards per node.",
+    "Heap too small for the shard count or for heavy aggregations.",
+    "Dynamic mapping of arbitrary JSON keys explodes the field count."
+   ],
+   "diagnosis": [
+    "GET _cluster/health?filter_path=active_shards,unassigned_shards",
+    "GET _cat/indices?v&s=index",
+    "GET _nodes/stats/breaker?pretty",
+    "GET _cat/nodes?v&h=name,heap.percent,ram.percent"
+   ],
+   "fix": [
+    "Retention policy (ISM in OpenSearch/Wazuh, ILM in Elastic) deleting old wazuh-alerts-* or log indices; 1 primary shard for small daily indices.",
+    "Stopgap: PUT _cluster/settings {\"persistent\": {\"cluster.max_shards_per_node\": 1500}} (Wazuh indexer needs the admin cert in curl).",
+    "Heap at most ~50% of RAM and below ~31GB; avoid huge dashboard aggregations.",
+    "Map fields explicitly or set dynamic: false; raise index.mapping.total_fields.limit only as a stopgap."
+   ],
+   "prevention": "Plan shard size (tens of GB) and retention at install; alert on shard count and heap usage.",
+   "sources": [
+    {
+     "title": "Wazuh Google Group: maximum shards open limit - looking for clues",
+     "url": "https://groups.google.com/g/wazuh/c/AungE5r1llI",
+     "type": "mailing-list",
+     "verified": true
+    },
+    {
+     "title": "Wazuh FAQ: Elasticsearch reached shards limit by node",
+     "url": "https://desvelao.github.io/wazuh-faqs/faqs/elasticsearch-reached-shards-limit-by-node/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "discuss.elastic.co top topics (circuit breaker)",
+     "url": "https://discuss.elastic.co/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Wazuh search: maximum shards open",
+     "url": "https://www.reddit.com/r/Wazuh/search/?q=maximum+shards+open&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Log pipeline ingest problems: timestamps off by hours, _grokparsefailure, Fluent Bit '[_type]' errors and backpressure",
+   "area": "log-pipeline",
+   "level": "L2",
+   "tool": "Logstash, Fluent Bit, Graylog, Elasticsearch/OpenSearch",
+   "context": "Shipping Apache, Traefik, syslog and container logs into Elasticsearch/OpenSearch or Graylog.",
+   "error_text": "Events shifted by the UTC offset | tags: _grokparsefailure, _dateparsefailure | mapper_parsing_exception failed to parse field [@timestamp] | Action/metadata line [1] contains an unknown parameter [_type] | [input] tail.0 paused (mem buf overlimit)",
+   "frequency_signal": "'How to set @timestamp timezone?' (~115k views) and 'Replace @timestamp with actual timestamp from log file' (~97k) on discuss.elastic.co; 'Timezone Graylog Server' (~50k) on the Graylog forum; Fluent Bit #4155 (98 comments) and #5217 (64) on stuck or skipped logs.",
+   "root_causes": [
+    "Stores keep UTC and UIs show browser time; timestamps without a zone are parsed as UTC.",
+    "Grok patterns that do not match the real line format.",
+    "Same field name with different types from different sources.",
+    "ES 8+ and OpenSearch 2.x removed mapping types, so the old _type parameter is rejected.",
+    "Output slower than input: memory buffer limit pauses tail inputs; retries pile up."
+   ],
+   "diagnosis": [
+    "Kibana Discover: inspect raw @timestamp vs the original line; Dev Tools Grok Debugger.",
+    "Logstash: temporary output { stdout { codec => rubydebug } }",
+    "Fluent Bit: HTTP_Server On then curl -s http://127.0.0.1:2020/api/v1/metrics | jq",
+    "GET INDEX/_mapping/field/FIELD"
+   ],
+   "fix": [
+    "Logstash:\nfilter {\n  grok { match => { \"message\" => \"%{COMBINEDAPACHELOG}\" } }\n  date { match => [\"timestamp\", \"dd/MMM/yyyy:HH:mm:ss Z\"] target => \"@timestamp\" }\n}\n# lines without zone: add timezone => \"Asia/Kolkata\" (your zone) to the date filter",
+    "Fluent Bit es output: Suppress_Type_Name On; Trace_Error On while debugging.",
+    "Fluent Bit buffering: storage.path /var/lib/fluent-bit/ with storage.type filesystem on inputs, Mem_Buf_Limit sized to RAM, sane Retry_Limit.",
+    "Graylog: root_timezone in server.conf, per-user time zone, time zone setting on syslog inputs for senders without one."
+   ],
+   "prevention": "Log in UTC with ISO 8601 offsets or JSON at the source; explicit index templates.",
+   "sources": [
+    {
+     "title": "discuss.elastic.co top topics (timestamp/timezone threads)",
+     "url": "https://discuss.elastic.co/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Fluent Bit docs: Elasticsearch output (Suppress_Type_Name)",
+     "url": "https://docs.fluentbit.io/manual/data-pipeline/outputs/elasticsearch",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "fluent/fluent-bit issues sorted by comments (#4155, #5217, #3058)",
+     "url": "https://github.com/fluent/fluent-bit/issues?q=is%3Aissue+sort%3Acomments-desc",
+     "type": "github-issues-list",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: logstash @timestamp timezone",
+     "url": "https://stackoverflow.com/search?q=logstash+%40timestamp+timezone",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Graylog will not start or you cannot log in: MongoDB AVX on Proxmox, password_secret/root_password_sha2, OpenSearch at 127.0.0.1",
+   "area": "log-management",
+   "level": "L1",
+   "tool": "Graylog, MongoDB, OpenSearch",
+   "context": "New Graylog stack in Docker or packages, often inside a Proxmox VM.",
+   "error_text": "WARNING: MongoDB 5.0+ requires a CPU with AVX support, and your current system does not appear to have that! / Illegal instruction | Could not connect to http://127.0.0.1:9200 | default username and password not working | web interface not showing up",
+   "frequency_signal": "Graylog forum top list: 'Gray log default username and password not working' (~62k views), 'Could not connect to http://127.0.0.1:9200' (~32k), 'web-interface not showing up' (~29k); Graylog #13950 and graylog-docker #241 on AVX.",
+   "root_causes": [
+    "MongoDB 5+ needs AVX; Proxmox's default kvm64-style CPU types do not pass it through.",
+    "root_password_sha2 generated with echo (adds a newline) or password_secret missing/short.",
+    "In Docker, 127.0.0.1 is the Graylog container, not OpenSearch.",
+    "http_bind_address on 127.0.0.1 or a wrong http_external_uri behind a proxy."
+   ],
+   "diagnosis": [
+    "grep -o -m1 avx /proc/cpuinfo   # inside the VM",
+    "docker logs mongodb --tail 20 ; docker logs graylog 2>&1 | grep -iE 'error|exception' | tail",
+    "echo -n 'PASSWORD' | sha256sum   # compare with the configured hash"
+   ],
+   "fix": [
+    "Proxmox: VM > Hardware > Processors > Type host (or an AVX-capable model), then a full stop/start; MongoDB 4.4 only as a last resort (end of life).",
+    "GRAYLOG_PASSWORD_SECRET=$(pwgen -N 1 -s 96) ; GRAYLOG_ROOT_PASSWORD_SHA2=$(echo -n 'NEW_PASSWORD' | sha256sum | cut -d' ' -f1)",
+    "GRAYLOG_HTTP_BIND_ADDRESS=0.0.0.0:9000, GRAYLOG_HTTP_EXTERNAL_URI=https://graylog.example.com/, GRAYLOG_ELASTICSEARCH_HOSTS=http://opensearch:9200"
+   ],
+   "prevention": "Check CPU flags before choosing VM CPU types; start from Graylog's official compose files.",
+   "sources": [
+    {
+     "title": "Graylog2/graylog2-server #13950: MongoDB 5.0 requires AVX",
+     "url": "https://github.com/Graylog2/graylog2-server/issues/13950",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Graylog2/graylog-docker #241: MongoDB 5 failed to start after upgrade",
+     "url": "https://github.com/Graylog2/graylog-docker/issues/241",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "community.graylog.org top topics",
+     "url": "https://community.graylog.org/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Proxmox search: mongodb avx",
+     "url": "https://www.reddit.com/r/Proxmox/search/?q=mongodb+avx&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Graylog 'Journal utilization is too high', buffers at 100%, messages stop being indexed",
+   "area": "log-management",
+   "level": "L2-L3",
+   "tool": "Graylog, OpenSearch",
+   "context": "Graylog running for a while; peak hours or after an OpenSearch problem.",
+   "error_text": "Journal utilization is too high and may go over the limit soon. Please verify that your OpenSearch cluster is healthy and fast enough. | Uncommited messages deleted from journal | process buffer 100% | failed indexing attempts",
+   "frequency_signal": "Graylog forum top list: 'Graylog high journal utilization is too high' (42 replies), 'Journal Utilization is too high' (~19k views), 'Graylog journal getting full', 'Process Buffer filling very fast during peak hours', 'Buffer process 100%' (~17k).",
+   "root_causes": [
+    "OpenSearch is slow, red or read-only (disk watermark), so output buffers stall and the journal fills.",
+    "Expensive extractors or pipeline rules (greedy regex) saturate the process buffer.",
+    "Too few processors for the CPU count, heap too small, journal on a small disk (default max 5GB)."
+   ],
+   "diagnosis": [
+    "System > Nodes > node details: buffers and journal.",
+    "System > Overview: notifications and indexer failures.",
+    "GET _cluster/health and GET _cat/allocation?v on the backend.",
+    "sudo tail -n 200 /var/log/graylog-server/server.log"
+   ],
+   "fix": [
+    "Fix the backend first (disk, read-only blocks, health).",
+    "Simplify pipeline rules and extractors; anchor regexes.",
+    "Tune processbuffer_processors / outputbuffer_processors to the cores, raise the Graylog heap, and set message_journal_max_size with matching disk."
+   ],
+   "prevention": "Alert on journal utilization, buffer usage and indexer failures; load-test before onboarding big sources.",
+   "sources": [
+    {
+     "title": "community.graylog.org top topics (journal and buffer threads)",
+     "url": "https://community.graylog.org/top?period=all",
+     "type": "forum-top",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search: graylog journal utilization is too high",
+     "url": "https://stackoverflow.com/search?q=graylog+%22journal+utilization+is+too+high%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/sysadmin search: graylog journal utilization",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=graylog+journal+utilization&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "Prometheus",
+   "what": "Pull-based metrics database and rule engine; the standard for infrastructure and Kubernetes metrics.",
+   "architecture": "Service discovery (static, file, docker, dockerswarm, kubernetes, ec2) -> relabeling -> scrape loop -> local TSDB (in-memory head + WAL, 2h blocks compacted on disk) -> PromQL for UI, Grafana and recording/alerting rules. Alerts go to Alertmanager; remote_write streams to Mimir/Thanos/VictoriaMetrics; --agent mode only scrapes and forwards.",
+   "current_version_notes": "3.x line since November 2024; the prometheus.io docs showed 3.15 when checked in October 2026. The migration guide lists the 2.x->3.x breaking changes (strict scrape Content-Type, le/quantile normalisation, Alertmanager API v2 only, left-open range selectors, --agent). Only 2.55+ can read a v3 TSDB.",
+   "gotchas": [
+    "No authentication by default: use --web.config.file or Traefik auth; published Docker ports bypass UFW.",
+    "Default retention 15d; retention.size must leave room for WAL and compaction; NFS unsupported.",
+    "Runs as nobody (65534) in the image; data dir ownership matters.",
+    "Reload needs --web.enable-lifecycle or SIGHUP; single-file bind mounts hide edits.",
+    "Cardinality is the main scaling limit; localhost inside a container is not the host."
+   ],
+   "official_docs": "https://prometheus.io/docs/prometheus/latest/storage/ ; https://prometheus.io/docs/prometheus/latest/migration/ ; https://prometheus.io/docs/practices/naming/ ; https://prometheus.io/docs/guides/dockerswarm/"
+  },
+  {
+   "tool": "node_exporter",
+   "what": "Prometheus exporter for Linux host metrics (CPU, memory, disks, filesystems, network, systemd).",
+   "architecture": "Go binary on :9100 with collectors reading /proc and /sys; the textfile collector publishes *.prom files written by your scripts.",
+   "current_version_notes": "1.x. systemd and processes collectors are disabled by default. Ubuntu's packaged prometheus-node-exporter lags upstream; in Docker it needs --net=host --pid=host, the host root at /host and --path.rootfs=/host.",
+   "gotchas": [
+    "Snap squashfs, tmpfs and overlay mounts cause false disk alerts unless filtered.",
+    "Hung NFS mounts make scrapes time out.",
+    "Unfiltered systemd collector adds many series."
+   ],
+   "official_docs": "https://github.com/prometheus/node_exporter"
+  },
+  {
+   "tool": "cAdvisor",
+   "what": "Per-container resource metrics exporter for Docker hosts (the kubelet embeds its own on Kubernetes).",
+   "architecture": "Reads cgroups and queries the Docker/containerd APIs for names and labels; UI and /metrics on :8080.",
+   "current_version_notes": "Docker Engine 29 (Nov 2025) requires API 1.44+; cAdvisor 0.49.1 failed with 'client version 1.41 is too old' (#3749). Docker 29 also defaults fresh installs to the containerd image store. Image publishing changed around v0.48-v0.52 (#3427, #3669): check the releases page for the current image and tag.",
+   "gotchas": [
+    "High CPU by default: --docker_only, --housekeeping_interval, --disable_metrics.",
+    "Docker labels become Prometheus labels unless --store_container_labels=false.",
+    "Needs host mounts (/, /var/run, /sys, /var/lib/docker, /dev/disk)."
+   ],
+   "official_docs": "https://github.com/google/cadvisor"
+  },
+  {
+   "tool": "blackbox_exporter",
+   "what": "Prober that tests endpoints from outside over HTTP(S), TCP, ICMP, DNS and gRPC; reports probe_success, latency and TLS expiry.",
+   "architecture": "Prometheus calls /probe?target=X&module=Y on :9115; modules in blackbox.yml; the relabel pattern moves the real target into __param_target.",
+   "current_version_notes": "Add &debug=true to any probe URL to see each step of the probe.",
+   "gotchas": [
+    "Prefers IPv6 by default; set preferred_ip_protocol: ip4 on IPv4-only networks.",
+    "ICMP needs CAP_NET_RAW, root or ping_group_range.",
+    "Private CAs need tls_config.ca_file."
+   ],
+   "official_docs": "https://github.com/prometheus/blackbox_exporter"
+  },
+  {
+   "tool": "Alertmanager",
+   "what": "Deduplicates, groups, inhibits, silences and routes alerts from Prometheus (and Grafana/other clients) to receivers.",
+   "architecture": "Label-matched route tree -> receivers (email, Slack, Teams, Telegram, webhook, PagerDuty); timers group_wait/group_interval/repeat_interval; inhibit_rules; local silences; HA via gossip on 9094; amtool CLI.",
+   "current_version_notes": "Prometheus 3 only speaks API v2. Current config docs include msteamsv2_configs for Teams Workflows webhooks after Microsoft retired Office 365 connectors (#3920).",
+   "gotchas": [
+    "Defaults 30s / 5m / 4h confuse people about delays and repeats.",
+    "inhibit equal applies when the listed labels are missing on both alerts.",
+    "smtp_require_tls defaults to true; port 25 is often blocked.",
+    "Gossip needs an advertise address in some container networks; disable it for single instances."
+   ],
+   "official_docs": "https://prometheus.io/docs/alerting/latest/configuration/"
+  },
+  {
+   "tool": "Grafana",
+   "what": "Dashboards, Explore and alerting over Prometheus, Loki, Tempo, Elasticsearch/OpenSearch, Zabbix (plugin) and SQL datasources.",
+   "architecture": "Go backend + React frontend; SQLite by default (MySQL/PostgreSQL for HA); the backend proxies datasource queries, so URLs resolve from the Grafana container; unified alerting with an embedded Alertmanager; file provisioning for datasources, dashboards and alert rules.",
+   "current_version_notes": "Grafana 12 (first released May 2025) removed AngularJS; legacy dashboard alerting was removed in 11; grafana-cli is deprecated in favour of 'grafana cli'. Check the What's new pages for releases after 12.",
+   "gotchas": [
+    "Container UID 472: chown 472:0 bind mounts.",
+    "GF_SECURITY_ADMIN_PASSWORD applies only on first start.",
+    "Behind proxies: Host header, root_url, serve_from_sub_path, websockets for /api/live/.",
+    "SQLite 'database is locked' under load, on NFS or with replicas.",
+    "Exported-for-sharing JSON contains ${DS_...} inputs that file provisioning does not resolve."
+   ],
+   "official_docs": "https://grafana.com/docs/grafana/latest/setup-grafana/configure-grafana/ ; https://grafana.com/tutorials/run-grafana-behind-a-proxy/"
+  },
+  {
+   "tool": "Loki",
+   "what": "Log store that indexes only labels (streams) and keeps compressed chunks; queried with LogQL.",
+   "architecture": "Distributor (validation, rate limits) -> ingesters (WAL, chunks) -> object storage or filesystem (chunks + TSDB index) <- queriers behind query-frontend/scheduler; compactor for retention and deletes; ruler for alerts. Single binary, simple scalable or microservices modes.",
+   "current_version_notes": "3.x. Structured metadata and OTLP ingestion need schema v13 + tsdb; 3.0 set 15 label names per series and 256KB max line size; images from 3.5.8 have no shell; 3.6.0 moved to AWS SDK v2. Promtail is EOL since 2 March 2026.",
+   "gotchas": [
+    "Retention is off by default and needs the compactor with delete_request_store.",
+    "High-cardinality labels cause stream-limit 429s.",
+    "The Docker logging driver can block containers when Loki is down.",
+    "Query limits (500 series, 5000 entries, 721h) surface as Grafana errors."
+   ],
+   "official_docs": "https://grafana.com/docs/loki/latest/setup/upgrade/ ; https://grafana.com/docs/loki/latest/operations/request-validation-rate-limits/ ; https://grafana.com/docs/loki/latest/operations/storage/retention/"
+  },
+  {
+   "tool": "Grafana Alloy (successor to Promtail and Grafana Agent)",
+   "what": "Grafana's OpenTelemetry Collector distribution for metrics, logs, traces and profiles.",
+   "architecture": "A graph of components (discovery.docker -> loki.source.docker -> loki.process -> loki.write; prometheus.scrape -> prometheus.remote_write; otelcol receivers/exporters); UI on port 12345; positions and WAL under --storage.path.",
+   "current_version_notes": "Grafana Agent reached EOL on 1 November 2025 and Promtail on 2 March 2026. 'alloy convert --source-format=promtail' converts configs; 'alloy run --config.format=promtail' runs old configs as a bridge.",
+   "gotchas": [
+    "UI binds 127.0.0.1:12345 by default; pass --server.http.listen-addr=0.0.0.0:12345 in containers.",
+    "Converted configs use a new positions location, so files may be re-read.",
+    "Needs read access to docker.sock, /var/log/journal and /etc/machine-id."
+   ],
+   "official_docs": "https://grafana.com/docs/alloy/latest/set-up/migrate/from-promtail/ ; https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/"
+  },
+  {
+   "tool": "Grafana Tempo",
+   "what": "Tracing backend storing traces in object storage, queried with TraceQL.",
+   "architecture": "Distributor (OTLP gRPC 4317 / HTTP 4318, Jaeger, Zipkin) -> ingesters -> Parquet blocks in object storage <- queriers via query-frontend; compactor; optional metrics-generator; HTTP API on 3200.",
+   "current_version_notes": "Troubleshooting docs cover max trace limits, 'Too many jobs in the queue', response size limits and metrics-generator gaps. Receiver defaults and the overrides format changed during 2.x: read your version's upgrade notes.",
+   "gotchas": [
+    "Bind receivers to 0.0.0.0 in containers.",
+    "gRPC 4317 vs HTTP 4318 mix-ups.",
+    "Large traces hit per-trace limits."
+   ],
+   "official_docs": "https://grafana.com/docs/tempo/latest/troubleshooting/"
+  },
+  {
+   "tool": "Zabbix",
+   "what": "All-in-one monitoring (server, DB, PHP frontend, agents, proxies) with templates, triggers and actions; strong for SNMP/network and classic server fleets.",
+   "architecture": "Zabbix server (port 10051: pollers, trappers, history syncers, housekeeper) -> MySQL/PostgreSQL (optionally TimescaleDB) <- PHP frontend; agent/agent2 answer passive checks on 10050 or send active checks to 10051; proxies for remote sites.",
+   "current_version_notes": "7.0 is the LTS most production installs run. 8.0 LTS was planned for October 2026 (beta 2 in July 2026) with OpenTelemetry integration, complex event processing, a mobile app and UI changes; check the roadmap before planning upgrades.",
+   "gotchas": [
+    "Server= must include the real source IP (Docker NAT changes it).",
+    "Hostname= must match the frontend for active checks.",
+    "'Server is not running' is often the frontend failing to reach the server.",
+    "Busy processes usually mean slow DB or timeouts."
+   ],
+   "official_docs": "https://www.zabbix.com/documentation/8.0/en/manual/whatsnew ; https://www.zabbix.com/roadmap"
+  },
+  {
+   "tool": "Uptime Kuma",
+   "what": "Self-hosted uptime monitor and status page (HTTP, TCP, ping, DNS, push, Docker, certificate expiry).",
+   "architecture": "Node.js app with a Socket.IO UI on 3001; data in /app/data (SQLite, or MariaDB since 2.0).",
+   "current_version_notes": "2.0 released: MariaDB support, Node.js 20.4+, Alpine images dropped; README image tag louislam/uptime-kuma:2. No official SQLite-to-MariaDB migration.",
+   "gotchas": [
+    "NFS not supported for /app/data.",
+    "Checks run from the container: its localhost and DNS.",
+    "Reverse proxies must pass WebSocket upgrades.",
+    "Use retries to avoid false downs."
+   ],
+   "official_docs": "https://github.com/louislam/uptime-kuma ; https://github.com/louislam/uptime-kuma/wiki/Migration-From-v1-To-v2"
+  },
+  {
+   "tool": "Netdata",
+   "what": "Per-second, auto-discovering monitoring agent with built-in alerts and dashboards; can stream to parents/Netdata Cloud and export to Prometheus.",
+   "architecture": "Agent per node: collectors (go.d, python.d, eBPF, cgroups) -> dbengine tiers -> health engine -> web API/dashboard; optional parent-child streaming.",
+   "current_version_notes": "v2.x agents; the Docker install needs host PID/network and host mounts; the newer dashboard is the Netdata Cloud UI, so check the docs for local-only options.",
+   "gotchas": [
+    "Container IDs instead of names when docker.sock is unreadable.",
+    "Many default alerts on busy hosts; tune with edit-config.",
+    "Avoid double paging alongside Alertmanager."
+   ],
+   "official_docs": "https://learn.netdata.cloud/docs/netdata-agent/installation/docker"
+  },
+  {
+   "tool": "Elasticsearch / OpenSearch (incl. Wazuh indexer)",
+   "what": "Distributed search engines used as log and SIEM stores; the Wazuh indexer is OpenSearch-based.",
+   "architecture": "JVM nodes (master-eligible, data, ingest); indices split into primary and replica shards; elected master holds cluster state; disk watermarks drive allocation; ILM (Elastic) / ISM (OpenSearch) manage retention; Kibana / OpenSearch Dashboards / Wazuh dashboard on top.",
+   "current_version_notes": "ES 8+ enables TLS and auth by default. Elastic docs now recommend vm.max_map_count=1048576 (OpenSearch/Wazuh ask for at least 262144). OpenSearch 2.12+ needs OPENSEARCH_INITIAL_ADMIN_PASSWORD. Default limit 1000 shards per node.",
+   "gotchas": [
+    "Single node with replicas is always yellow.",
+    "95% disk makes indices read-only.",
+    "Daily indices without ILM/ISM hit the shard limit.",
+    "Heap at most ~50% of RAM; dynamic mappings explode field counts."
+   ],
+   "official_docs": "https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-common-cluster-issues ; https://www.elastic.co/docs/troubleshoot/elasticsearch/fix-watermark-errors ; https://www.elastic.co/docs/deploy-manage/deploy/self-managed/vm-max-map-count"
+  },
+  {
+   "tool": "Logstash and Fluent Bit",
+   "what": "Log shippers/processors: Logstash (JVM, grok/date filters) and Fluent Bit (light C agent) feeding Elasticsearch/OpenSearch, Loki and others.",
+   "architecture": "input -> parse/filter -> buffer -> output with retries; Fluent Bit buffers in memory (Mem_Buf_Limit) or on disk (storage.type filesystem); Logstash uses memory or persistent queues.",
+   "current_version_notes": "ES 8+/OpenSearch 2.x reject _type: Fluent Bit needs Suppress_Type_Name On. Fluent Bit is on the 4.x/5.x line by 2026 (#11846 tracked a fixed memory-growth regression after 5.0.6).",
+   "gotchas": [
+    "Timestamps without zone parse as UTC.",
+    "Grok failures tag events instead of dropping them.",
+    "Backpressure pauses tail inputs.",
+    "Each output needs the private CA."
+   ],
+   "official_docs": "https://docs.fluentbit.io/manual/data-pipeline/outputs/elasticsearch"
+  },
+  {
+   "tool": "Graylog",
+   "what": "Log management with inputs (syslog, GELF, Beats), streams, pipelines, events/alerts and a web UI.",
+   "architecture": "Graylog server (JVM) with on-disk journal and input/process/output buffers; MongoDB for configuration; OpenSearch (or Graylog Data Node) for messages; UI/API on 9000.",
+   "current_version_notes": "Needs MongoDB (5.0+ requires AVX) and an OpenSearch backend; recent majors add Graylog Data Node. Check the compatibility matrix before upgrades.",
+   "gotchas": [
+    "root_password_sha2 must be hashed with echo -n.",
+    "password_secret must be long (16+ characters).",
+    "High journal utilization usually means OpenSearch is slow or read-only.",
+    "Proxmox VMs need an AVX-capable CPU type."
+   ],
+   "official_docs": "Official Graylog docs were not fetched in this run; community: https://community.graylog.org/top?period=all"
+  },
+  {
+   "tool": "Traefik (as a metrics source in Dokploy)",
+   "what": "Reverse proxy used by Dokploy; exposes Prometheus and OTLP request metrics.",
+   "architecture": "Static config enables metrics.prometheus; served at /metrics on the 'traefik' entrypoint unless metrics.prometheus.entryPoint names another.",
+   "current_version_notes": "Traefik v3 defaults: addEntryPointsLabels true, addRoutersLabels false, addServicesLabels true, buckets 0.1/0.3/1.2/5.0; metrics.otlp is the OpenTelemetry option.",
+   "gotchas": [
+    "Router labels multiply histogram series.",
+    "Never publish the metrics entrypoint.",
+    "Static config changes need a Traefik restart."
+   ],
+   "official_docs": "https://doc.traefik.io/traefik/reference/install-configuration/observability/metrics/"
+  }
+ ]
+}

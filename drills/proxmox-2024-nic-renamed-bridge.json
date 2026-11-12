@@ -1,0 +1,74 @@
+{
+  "id": "proxmox-2024-nic-renamed-bridge",
+  "title": "The bridge port that no longer exists",
+  "level": "L2",
+  "track": "network",
+  "topics": ["ubuntu-netconfig", "network-problems", "proxmox-ve"],
+  "minutes": 7,
+  "role": "You look after a Proxmox VE host in a small office. The VMs and the host's own management address all sit on the bridge vmbr0.",
+  "source": {
+    "label": "Proxmox Support Forum: no networking after upgrade to 8.2 (April 2024)",
+    "url": "https://forum.proxmox.com/threads/no-networking-after-upgrade-to-8-2.145727/",
+    "org": "Proxmox community",
+    "date": "2024-04-24",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You upgraded the host from Proxmox VE 8.1 to 8.2 and rebooted. Now nothing answers: not the web UI, not SSH, not the VMs. At the console the host can't even ping its gateway, 192.0.2.1.",
+  "steps": [
+    {
+      "situation": "You are at the console. Where do you look?",
+      "evidence": "$ journalctl -b -u networking | grep -E 'error|warning'\nerror: vmbr0: bridge port eno1 does not exist\nwarning: vmbr0: apply bridge ports settings: bridge configuration failed (missing ports)",
+      "evidence_cmd": "journalctl -b -u networking",
+      "choices": [
+        {"text": "Read this boot's log of the networking service", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "ifupdown says exactly what failed: the bridge was told to use a port called eno1, and there is no such interface."},
+        {"text": "Disable the firewall services and reboot", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "The first thing tried in the thread. It changed nothing: the firewall wasn't even in use."},
+        {"text": "Reset the network configuration to defaults", "verdict": "bad", "effect": {"service": -10, "time": -15, "evidence": -15, "trust": -5}, "why": "You'd lose bridges, VLANs and bonds, and the cause is still unknown."}
+      ]
+    },
+    {
+      "situation": "If eno1 is gone, what is the NIC called now?",
+      "evidence": "$ ip -br link\nlo        UNKNOWN  00:00:00:00:00:00\neno1np0   DOWN     3c:ec:ef:10:20:31\neno2np1   DOWN     3c:ec:ef:10:20:32\nvmbr0     DOWN     6e:41:7a:00:00:01\n$ dmesg | grep -i 'renamed from'\ni40e 0000:3b:00.0 eno1np0: renamed from eth0\ni40e 0000:3b:00.1 eno2np1: renamed from eth1\n$ grep -nE 'bridge-ports|^iface' /etc/network/interfaces\n5:iface eno1 inet manual\n8:iface vmbr0 inet static\n11:        bridge-ports eno1",
+      "evidence_cmd": "ip -br link",
+      "choices": [
+        {"text": "Compare the three: the kernel now names the port eno1np0, the config still says eno1", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "The hardware is fine; its name changed with the new kernel. The config points at an interface that no longer exists, so the bridge has no port and no traffic."},
+        {"text": "Try another switch port and cable", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 0}, "why": "The link isn't the problem. Nothing is even attached to the bridge."},
+        {"text": "Boot the old kernel for good and pin it", "verdict": "risky", "effect": {"service": 10, "time": 5, "evidence": -5, "trust": -5}, "why": "It does bring the network back, as in the thread, but you're stuck on an old kernel and the rename returns with the next one."}
+      ]
+    },
+    {
+      "situation": "Fix it on the interface that exists now.",
+      "choices": [
+        {"text": "Back up /etc/network/interfaces, change eno1 to eno1np0 everywhere (bridge-ports, bonds), run `ifreload -a`, check `ip -br addr`", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 5, "trust": 5}, "why": "That's the fix several users confirmed. Check every line that names the old port, including `bond-slaves` if you have bonds."},
+        {"text": "Put the host's IP straight on eno1np0 and drop the bridge", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": 0, "trust": -5}, "why": "The host comes back, but every VM loses its network because vmbr0 has no uplink."},
+        {"text": "Rename the NIC back with `ip link set eno1np0 name eno1`", "verdict": "risky", "effect": {"service": 10, "time": 5, "evidence": 0, "trust": 0}, "why": "It works until the next reboot, because nothing makes the rename persistent."}
+      ]
+    },
+    {
+      "situation": "Network is back. How do you stop the next kernel from doing this again?",
+      "evidence": "$ cat /etc/systemd/network/10-lan0.link\n[Match]\nMACAddress=3c:ec:ef:10:20:31\n[Link]\nName=lan0",
+      "choices": [
+        {"text": "Pin the name by MAC with a systemd .link file, use that name in the config, refresh the initramfs, reboot to test", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "A name you choose, tied to the MAC, doesn't depend on the driver or kernel. Pick one the kernel never uses itself, not eth0."},
+        {"text": "Boot with `net.ifnames=0` to go back to eth0 names", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "With several NICs, eth0 and eth1 can swap between boots, which is why predictable names exist."},
+        {"text": "Nothing: it was a one-off", "verdict": "bad", "effect": {"service": -5, "time": 0, "evidence": -5, "trust": -10}, "why": "Interface names depend on driver attributes that can change with any kernel."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 24 April 2024, just after Proxmox VE 8.2, a user reported that after upgrading and rebooting, the host and its VMs were unreachable, and booting the previous kernel brought the network back. Disabling the firewall services changed nothing. Proxmox staff asked for `ip a`, /etc/network/interfaces and the journal, which showed \"vmbr0: bridge port eno8 does not exist\" and a bridge configuration that failed with missing ports: the new kernel had given the NIC a different name. Staff noted that predictable names lower the risk of renaming but don't remove it. Several users fixed it the same way, by putting the new names into /etc/network/interfaces; one shared a host where eno1 became eno1np0 and ens1f0 became ens1f0np0, inside bonds. Others pointed to the upgrade notes, to the systemd documentation saying names depend on driver attributes that can change with a kernel, and to the admin guide's section on overriding device names; one user pinned custom names by MAC address.",
+    "lessons": ["Hardware or kernel change, then no IP: suspect a renamed interface first.", "Prove it with `ip -br link`, `dmesg | grep -i 'renamed from'` and the config file, side by side.", "Pin names by MAC with a systemd .link file, and read the upgrade notes before upgrading.", "Appliances such as TrueNAS store settings per interface name too: configure the current interface from the console, then reboot."],
+    "commands": ["ip -br link", "dmesg | grep -i 'renamed from'", "journalctl -b -u networking", "grep -n bridge-ports /etc/network/interfaces", "ifreload -a", "udevadm test-builtin net_id /sys/class/net/eno1np0"]
+  },
+  "practise": {
+    "labs": ["10-net-basics"],
+    "handbook": [
+      {"file": "50-problems-cloud-iac-proxmox.md", "heading": "7.2 Web UI dead after an IP, hostname or NIC change"},
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "Interfaces, routes and netplan"},
+      {"file": "02-network.md", "heading": "Interfaces, addresses, links"}
+    ],
+    "sites": [
+      {"label": "Killercoda EgyKode: network diagnosis, name, route, reachability", "url": "https://killercoda.com/egykode/scenario/network-layer-diagnosis"},
+      {"label": "KodeKloud: Ubuntu 24.04 playground (free)", "url": "https://kodekloud.com/playgrounds/playground-ubuntu"},
+      {"label": "iximiuz: networking playgrounds", "url": "https://labs.iximiuz.com/playgrounds?category=networking"}
+    ]
+  }
+}

@@ -1,0 +1,73 @@
+{
+  "id": "pihole-2022-resolved-port-53",
+  "title": "Two DNS servers, one port 53",
+  "level": "L0",
+  "track": "network",
+  "topics": ["port-ownership", "sockets-ports", "network-problems"],
+  "minutes": 6,
+  "role": "You look after a small office's Ubuntu 20.04 server and want it to run Pi-hole as the DNS filter for the whole network.",
+  "source": {
+    "label": "pi-hole/pi-hole #4816: Installation breaks Ubuntu's systemd-resolved (GitHub issue)",
+    "url": "https://github.com/pi-hole/pi-hole/issues/4816",
+    "org": "Pi-hole",
+    "date": "2022-07-11",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You install Pi-hole. Its DNS engine, FTL, refuses to start, and its log says port 53 is already in use. Nothing else was installed on this box, so who is on port 53?",
+  "steps": [
+    {
+      "situation": "FTL exits a second after it starts. The office still uses the router for DNS, so nobody is affected yet.",
+      "evidence": "$ sudo ss -lntup 'sport = :53'\nNetid State  Local Address:Port   Process\nudp   UNCONN 127.0.0.53%lo:53      users:((\"systemd-resolve\",pid=612,fd=12))\ntcp   LISTEN 127.0.0.53%lo:53      users:((\"systemd-resolve\",pid=612,fd=13))",
+      "evidence_cmd": "sudo ss -lntup 'sport = :53'",
+      "choices": [
+        {"text": "Find the owner of port 53: ss for the PID, then systemctl status of its unit", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "Port → process → unit. It is `systemd-resolved`, Ubuntu's own resolver, with its stub listener on 127.0.0.53. Now you know what any change will touch."},
+        {"text": "Reboot and try again", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "resolved starts at boot, before Pi-hole. You get the same error a few minutes later."},
+        {"text": "Move Pi-hole to port 5353 and carry on", "verdict": "risky", "effect": {"service": -5, "time": 0, "evidence": 0, "trust": -5}, "why": "It starts, but clients only ask port 53. Your DNS filter answers nobody."}
+      ]
+    },
+    {
+      "situation": "Both want port 53: resolved for the host itself, Pi-hole for the whole office. How do you share it?",
+      "choices": [
+        {"text": "Turn off only the stub (DNSStubListener=no) and point /etc/resolv.conf at the non-stub file", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "That is the full job, as the maintainer described it: resolved keeps working for the host, and port 53 is free for Pi-hole."},
+        {"text": "Keep the stub on 127.0.0.53 and bind Pi-hole only to its own addresses", "verdict": "good", "effect": {"service": 15, "time": 0, "evidence": 5, "trust": 0}, "why": "Users in the thread did this, with `bind-interfaces` in a dnsmasq file. Both run, each on its own address. You must remember that the host asks resolved, not Pi-hole."},
+        {"text": "Stop and mask systemd-resolved", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": -5}, "why": "The port is free, but the host has no resolver until Pi-hole runs. One user could no longer pull the Pi-hole Docker image."},
+        {"text": "kill -9 the PID on port 53", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": 0}, "why": "systemd restarts the service, and you have learned nothing about who owns it."}
+      ]
+    },
+    {
+      "situation": "On a second server a colleague let the installer do it its own way. That host now resolves nothing: apt update fails, ping example.com fails.",
+      "evidence": "$ systemctl status systemd-resolved | grep -i stub\n... DNSStubListener= is disabled, but /etc/resolv.conf is a symlink to /run/systemd/resolve/stub-resolv.conf ...\n$ ls -l /etc/resolv.conf\nlrwxrwxrwx 1 root root 39 /etc/resolv.conf -> ../run/systemd/resolve/stub-resolv.conf\n$ grep nameserver /etc/resolv.conf\nnameserver 127.0.0.53",
+      "evidence_cmd": "systemctl status systemd-resolved",
+      "choices": [
+        {"text": "Read resolved's warning and repoint the symlink to /run/systemd/resolve/resolv.conf", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 10, "trust": 0}, "why": "The installer turned the stub off but left the host asking 127.0.0.53, where nothing listens now. resolved told you so in its status."},
+        {"text": "Write a nameserver line into /etc/resolv.conf with echo", "verdict": "risky", "effect": {"service": 10, "time": 0, "evidence": -5, "trust": 0}, "why": "You write through the symlink into a file resolved generates. It works until resolved rewrites it."},
+        {"text": "Pi-hole is broken: uninstall it", "verdict": "bad", "effect": {"service": 0, "time": -15, "evidence": -5, "trust": -5}, "why": "Pi-hole isn't the problem. The host's own resolver setup is half changed."}
+      ]
+    },
+    {
+      "situation": "The host resolves again and Pi-hole runs. The router still hands out its own address as DNS.",
+      "choices": [
+        {"text": "Test both paths before you switch DHCP: the host's lookups, and a query from a client to the server", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "`resolvectl status` and `dig` on the host, then `dig @192.0.2.10 example.com` from a laptop. Switch DHCP when both answer."},
+        {"text": "Switch DHCP now; people will tell you if it fails", "verdict": "risky", "effect": {"service": -5, "time": 5, "evidence": 0, "trust": -10}, "why": "If it fails, the whole office loses DNS at once, and you find out from the help desk."},
+        {"text": "Ubuntu is unsuitable: reinstall the server with another distribution", "verdict": "bad", "effect": {"service": -10, "time": -20, "evidence": 0, "trust": -5}, "why": "A maintainer disagreed with dropping Ubuntu: many installs work. The fix is one setting and one symlink."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In July 2022 a user reported that installing Pi-hole (v5.11.4, FTL v5.16.1) on Ubuntu 20.04 broke the host's own DNS. The installer sets `DNSStubListener=no` in `/etc/systemd/resolved.conf`, keeps a `.orig` copy and restarts resolved. But `/etc/resolv.conf` still links to the stub file, so the host keeps asking 127.0.0.53, where nothing listens, and resolved warns about exactly that. Maintainer dschaper showed that FTL fails with `Address already in use` while the stub holds port 53, and said the installer did \"half the job\": the symlink must also point at the non-stub file. The issue was labelled Bug: Confirmed in August 2022 and was still open when read. Users shared other ways: keep the stub and run Pi-hole on 127.0.0.1 and the LAN address, or add `bind-interfaces` in `/etc/dnsmasq.d/`. One user who turned resolved off could not pull the Pi-hole Docker image until they turned it back on.",
+    "lessons": ["`Address already in use`: find the owner (port → PID → unit) before you change anything.", "On Ubuntu, 127.0.0.53 is systemd-resolved's stub; /etc/resolv.conf is usually a symlink to it.", "If you turn the stub off, repoint /etc/resolv.conf in the same change.", "Test DNS from the host and from a client before you hand the server to DHCP."],
+    "commands": ["sudo ss -lntup 'sport = :53'", "systemctl status systemd-resolved", "resolvectl status", "ls -l /etc/resolv.conf", "dig @127.0.0.1 example.com"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "7.4 Pi-hole or AdGuard: port 53 busy, clients bypass"},
+      {"file": "28-learn-networking.md", "heading": "systemd-resolved and the 127.0.0.53 stub"},
+      {"file": "22-playbook-ports-inventory.md", "heading": "Scenario — bind: Address already in use"}
+    ],
+    "sites": [
+      {"label": "SadServers: Bergen, port already in use (free account)", "url": "https://sadservers.com/scenario/bergen"},
+      {"label": "iximiuz Labs: find the listening port (free account)", "url": "https://labs.iximiuz.com/challenges/networking-find-listening-port-24f244e3"}
+    ]
+  }
+}

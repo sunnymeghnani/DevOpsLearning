@@ -1,0 +1,124 @@
+# DevOps Field Handbook, built from the Markdown sources and served by nginx.
+#
+#   docker compose up -d --build                  start (or rebuild after editing a module) -> http://localhost:8173
+#   docker compose logs -f                        follow the access log
+#   docker compose down                           stop and remove the container
+#
+# Hands-on labs (optional profile "labs"; see DOCKER.md):
+#   docker compose --profile labs up -d --build   handbook + labs controller (+ builds the lab image)
+#   docker compose --profile labs down            stop everything; every lab container and devlab-net go too
+#   labs/clean.sh [--all]                         remove everything the labs ever created
+#
+# Automatic cleanup: the `janitor` service removes this project's own superseded image builds, its
+# build cache and leftover lab machines on a timer. It never selects anything another project made
+# (DOCKER.md, "Automatic cleanup"). Tune it in a .env file next to this one, for example:
+#   JANITOR_CACHE_KEEP_HOURS=48   JANITOR_IMAGE_KEEP_DAYS=7   JANITOR_EVERY_MINUTES=60
+services:
+  handbook:
+    build:
+      context: .
+      args:
+        RUN_TESTS: "true"            # the image only builds if the unit tests pass
+    image: devops-handbook:local
+    container_name: devops-handbook
+    ports:
+      - "127.0.0.1:8173:8080"        # this machine only, same as the old python server
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp                         # nginx-unprivileged keeps its pid and temp files here
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NGINX_ENTRYPOINT_QUIET_LOGS: "1"
+    # Labs: nginx proxies /api/labs/ and /lab-term/<sid>/ by name through Docker's DNS
+    # (resolver 127.0.0.11, see docker/nginx.conf), so it starts and serves the handbook with the
+    # labs off (those routes then answer 502). While the labs run, the controller attaches this
+    # container to devlab-net and detaches it on shutdown, so no lab network exists when labs are off.
+
+  janitor:
+    build:
+      context: docker/janitor
+    image: devops-handbook-janitor:local
+    container_name: devops-handbook-janitor
+    restart: unless-stopped          # like the handbook: keeps cleaning on its timer after a reboot
+    network_mode: none               # no network at all: it only needs the Docker socket
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    mem_limit: 128m
+    pids_limit: 64
+    volumes:
+      # Same trust level as the labs controller. janitor.py selects only this project's images
+      # (by label), build cache (by our Dockerfiles' step text) and devlab=1 containers, and never
+      # force-removes an image: one that any container uses is kept.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - janitor-state:/state         # when the labs were last used (for the lab-image keep window)
+      - /etc/localtime:/etc/localtime:ro   # log times in the machine's time zone
+    environment:
+      JANITOR_CACHE_KEEP_HOURS: ${JANITOR_CACHE_KEEP_HOURS:-48}
+      JANITOR_IMAGE_KEEP_DAYS: ${JANITOR_IMAGE_KEEP_DAYS:-7}
+      JANITOR_EVERY_MINUTES: ${JANITOR_EVERY_MINUTES:-60}
+      LABS_MAX_SECONDS: ${LABS_MAX_SECONDS:-10800}
+    logging:
+      driver: json-file
+      options: { max-size: 1m, max-file: "2" }
+
+  # ------------------------------------------------------------------ labs (profile "labs")
+  labs-controller:
+    profiles: ["labs"]
+    build:
+      context: labs
+      dockerfile: controller/Dockerfile   # controller/Dockerfile.dockerignore keeps solve.sh + answers out
+    image: devops-handbook-labs-controller
+    container_name: devops-handbook-labs
+    restart: "no"                    # labs never come back on their own after a reboot
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    stop_grace_period: 60s           # time to remove every lab container and devlab-net
+    volumes:
+      # The one privileged piece: the Docker socket. The controller only runs the lab image with
+      # the SPEC options, execs into its labs, removes devlab=1 containers and manages devlab-net.
+      - /var/run/docker.sock:/var/run/docker.sock
+      - labs-progress:/data
+    environment:
+      LABS_HANDBOOK: devops-handbook
+      LABS_SELF: devops-handbook-labs
+      LABS_MAX_SECONDS: ${LABS_MAX_SECONDS:-10800}   # a lab machine is destroyed 3 h after it started
+    networks:
+      - default
+      - devlab-net
+
+  # Build-only: `up --build` / `build` build devops-handbook-lab:base, and scale 0 means compose never
+  # runs it. Only the controller starts lab machines from it, with the options in labs/SPEC.md.
+  lab-base:
+    profiles: ["labs"]
+    build:
+      context: labs/base
+    image: devops-handbook-lab:base
+    scale: 0
+
+networks:
+  # Lab machines live here: internal (no internet, no route out), no published ports.
+  devlab-net:
+    name: devlab-net
+    internal: true
+    labels:
+      devops-handbook.labs: "network"
+
+volumes:
+  janitor-state:
+    name: devops-handbook-janitor-state      # one small JSON file
+  labs-progress:
+    name: devops-handbook-labs-progress    # progress.json: finished rooms and points (kept by down; labs/clean.sh --all removes it)

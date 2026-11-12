@@ -1,0 +1,6 @@
+{
+ "q1": "nginx -t",
+ "q2": "www-data",
+ "q3": "carriage return",
+ "q4": "file"
+}

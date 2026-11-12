@@ -1,0 +1,80 @@
+{
+  "id": "datadog-2023-systemd-networkd-routes",
+  "title": "The security update that deleted the routes",
+  "level": "L2",
+  "track": "network",
+  "topics": ["ubuntu-netconfig", "routing-nat", "ssh-hardening", "systemd-units"],
+  "minutes": 8,
+  "role": "You are on call for a platform that runs Kubernetes on thousands of Ubuntu 22.04 VMs in several regions.",
+  "source": {
+    "label": "Datadog: 2023-03-08 multi-region infrastructure connectivity issue (post-mortem)",
+    "url": "https://www.datadoghq.com/blog/2023-03-08-multiregion-infrastructure-connectivity-issue/",
+    "org": "Datadog",
+    "date": "2023-03-08",
+    "read_on": "2026-11-07"
+  },
+  "brief": "06:03 UTC. Alerts fire in every region at once: nodes drop out of their clusters, pods can't reach each other, dashboards go blank. Nobody deployed anything this morning.",
+  "steps": [
+    {
+      "situation": "Five regions, different cloud providers, same minute. What do you look at first?",
+      "evidence": "$ journalctl --since 05:55 -o short | grep -E 'unattended|systemd-networkd' | head -4\nMar 08 06:00:41 node-17 unattended-upgrade: Packages that will be upgraded: libsystemd0 systemd ...\nMar 08 06:01:07 node-17 systemd[1]: Stopping Network Configuration...\nMar 08 06:01:07 node-17 systemd[1]: Started Network Configuration.\nMar 08 06:01:08 node-17 systemd-networkd[1022]: eth0: Configured",
+      "evidence_cmd": "journalctl --since 05:55 | grep -E 'unattended|systemd-networkd'",
+      "choices": [
+        {"text": "Find what all broken nodes share: the journal on a few of them, around 06:00", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "A failure that hits every region and provider in the same minute points at something you run everywhere. Here: a systemd update, applied automatically, restarted `systemd-networkd`."},
+        {"text": "It must be a cloud provider outage: open tickets and wait", "verdict": "bad", "effect": {"service": -15, "time": -15, "evidence": -5, "trust": -5}, "why": "Several providers failing in the same minute is far less likely than your own common change. You lose the first hour."},
+        {"text": "Reboot every node now", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": -15, "trust": -5}, "why": "A reboot did clear the fault on many nodes. But you'd wipe the evidence, and replacing nodes in bulk hit cloud API rate limits and lost data."}
+      ]
+    },
+    {
+      "situation": "On a broken node the host network looks fine. Pod traffic is dead.",
+      "evidence": "# broken node                      # freshly booted node\n$ ip route | grep -c cilium         $ ip route | grep -c cilium\n0                                   14\n$ ip route show default             $ ip route show default\ndefault via 198.51.100.1 dev eth0   default via 198.51.100.1 dev eth0",
+      "evidence_cmd": "ip route; ip route | grep cilium",
+      "choices": [
+        {"text": "Save ip route from a broken and a healthy node, side by side", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 5}, "why": "The CNI's routes are gone. When `systemd-networkd` restarted, it removed routes it hadn't created. At boot it starts before the CNI, so fresh nodes are fine."},
+        {"text": "Restart systemd-networkd again to make it re-read its config", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -10, "trust": 0}, "why": "Restarting the service is what removed the routes. Doing it again won't bring them back."},
+        {"text": "Add the missing pod routes by hand on each node", "verdict": "risky", "effect": {"service": 5, "time": -15, "evidence": 0, "trust": 0}, "why": "Tens of thousands of nodes, each with its own CNI routes: you can't type your way out, and you'd fight the CNI."}
+      ]
+    },
+    {
+      "situation": "You know the cause. Most of the fleet is degraded. How do you bring it back?",
+      "choices": [
+        {"text": "Recover in order: capacity, regional control planes, then clusters; live data before the backlog", "verdict": "best", "effect": {"service": 25, "time": 5, "evidence": 0, "trust": 5}, "why": "Datadog did it in that order and scaled compute above normal to handle live and old data together. Customers first need what's happening now."},
+        {"text": "Process the historical backlog first so no data is lost", "verdict": "bad", "effect": {"service": -15, "time": -10, "evidence": 0, "trust": -10}, "why": "Customers stay blind to what is happening now while you process hours they can wait for."},
+        {"text": "Replace every node at once with fresh ones", "verdict": "risky", "effect": {"service": 5, "time": -10, "evidence": -5, "trust": 0}, "why": "Mass replacement runs into cloud API rate limits and loses local data. Do it in waves."}
+      ]
+    },
+    {
+      "situation": "It's 06:20 and customers are noticing. You're still debugging.",
+      "choices": [
+        {"text": "Declare a high-severity incident, appoint incident commanders, post status updates", "verdict": "best", "effect": {"service": 5, "time": 5, "evidence": 5, "trust": 25}, "why": "Datadog declared at 06:31 and went public. A response this size needs roles, shifts and one place for updates."},
+        {"text": "Keep debugging quietly until you know the root cause", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": -25}, "why": "Customers learn about it from their own blank dashboards, and you work alone on a problem that needs hundreds of people."},
+        {"text": "Page everyone into one giant call", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 5}, "why": "A crowd without roles is slower than a small team. Split by region and function."}
+      ],
+      "evidence": "#incidents  06:20  bot: 1,800 monitors firing in 5 regions\n#incidents  06:21  Sam: still no root cause, looking at nodes"
+    },
+    {
+      "situation": "All regions are back. What stops a repeat?",
+      "choices": [
+        {"text": "Turn off the automatic update channel; ship patches through change management; stop networkd from touching foreign routes", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 10}, "why": "Patches still arrive, but tested and in waves, not in one global window. On systemd that last part is `ManageForeignRoutes=no` in `networkd.conf`."},
+        {"text": "Turn off security updates everywhere", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -20}, "why": "You swap an outage for a security incident. Control when updates happen; don't skip them."},
+        {"text": "Pin the old systemd version forever", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": -5}, "why": "It hides the real problem, which is that any networkd restart deletes CNI routes."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "At 06:00 UTC on 8 March 2023 a systemd security update was applied automatically to many Ubuntu 22.04 VMs. A legacy security update channel was enabled in the base image, and the default update window is 06:00-07:00 UTC. When the update restarted `systemd-networkd`, it deleted the routes managed by the Cilium CNI, and tens of thousands of nodes lost connectivity across US1, EU1, US3, US4 and US5. Freshly booted nodes were fine because networkd starts before the CNI adds its routes. Datadog declared a high-severity incident at 06:31, restored compute and control planes first and live data before the backlog, and declared all services operational on 9 March. Afterwards it disabled the legacy update channel, changed networkd so it leaves the routing table alone on restart, and audited for similar channels.",
+    "lessons": ["Unattended upgrades in a fleet are a global change: run them in waves.", "When everything breaks at once, look for what you run everywhere.", "Compare a broken node with a healthy one before you touch either.", "Know who owns each route: networkd, netplan or the CNI."],
+    "commands": ["journalctl -u systemd-networkd --since 05:55", "ip route", "networkctl status", "cat /etc/apt/apt.conf.d/50unattended-upgrades", "zgrep systemd /var/log/apt/history.log*"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "41-problems-linux-systems.md", "heading": "2.6 Unattended-upgrades restarted or rebooted prod"},
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "1. Interfaces, routes and netplan"}
+    ],
+    "sites": [
+      {"label": "iximiuz Labs: networking playgrounds (free account)", "url": "https://labs.iximiuz.com/playgrounds?category=networking"},
+      {"label": "KodeKloud Ubuntu playground (free account)", "url": "https://kodekloud.com/playgrounds/playground-ubuntu"}
+    ]
+  }
+}

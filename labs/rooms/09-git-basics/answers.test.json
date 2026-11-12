@@ -1,0 +1,6 @@
+{
+ "q1": ".gitignore",
+ "q2": "git rm --cached",
+ "q3": "git reflog",
+ "q4": "detached HEAD"
+}

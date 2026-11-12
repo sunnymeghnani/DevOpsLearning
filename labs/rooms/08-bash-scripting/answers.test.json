@@ -1,0 +1,6 @@
+{
+ "q1": "/usr/bin:/bin",
+ "q2": "env -i",
+ "q3": "pipefail",
+ "q4": "0"
+}

@@ -1,0 +1,81 @@
+{
+ "id": "l0-net-basics",
+ "title": "Everyone gets 403 from the admin panel",
+ "level": "L0",
+ "map_node": "net-basics",
+ "path": "fresher",
+ "order": 10,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "nginx behind load balancer (nginx mailing list, November 2011)",
+  "url": "https://mailman.nginx.org/pipermail/nginx/2011-November/030594.html",
+  "note": "adapted"
+ },
+ "brief": "**TICKET NET-415 · admin.example.com: 403 Forbidden for the whole office**\n\nTwo changes went in yesterday:\n\n1. The load balancer `lb-01` was moved **onto this VM**. It now connects to nginx from `127.0.0.1` and, as before, puts the client's address in the `X-Forwarded-For` header.\n2. The VPN pool was enlarged: VPN clients now get addresses from **10.20.0.0 to 10.20.3.255** (NET-412).\n\nSince then nobody can open the admin panel, not even from the office. Ping and the TCP connection to port 80 work fine; the server answers, just with 403. The allowlist is in `/etc/nginx/sites-available/admin`.\n\nLet the right people in, and nobody else.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Who does nginx think the client is?",
+   "text": "A connection's source address is decided at the IP layer; `X-Forwarded-For` is just an HTTP header that nginx's realip module may trust, but only when the request comes from an address listed in `set_real_ip_from`. Read `/var/log/nginx/admin-access.log`, then reproduce a VPN user through the LB: `curl -H 'X-Forwarded-For: 10.20.0.25' http://127.0.0.1/`.\n\nTrust the header from the LB's current address only, so that nobody else can fake it. Done when office clients through the LB get 200 and are logged with their own address.",
+   "points": 50,
+   "hints": [
+    "Every log line starts with `127.0.0.1`: nginx ignores the header because the LB's address is not in `set_real_ip_from`. The config still names the old LB address.",
+    "Change it to `set_real_ip_from 127.0.0.1;` (not `0.0.0.0/0`: then any client could claim any address), then `sudo nginx -t && sudo systemctl reload nginx`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which client address does nginx log for every request before your fix?",
+     "format": "IPv4 address",
+     "answer_sha256": "12ca17b49af2289436f303e0166030a21e525d266e209267433801a8fd4071a0"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which TCP/IP model layer does the X-Forwarded-For header belong to?",
+     "format": "layer name",
+     "answer_sha256": "1fe289205936c3fdb61158223892c7a8bee6ff4dfa085ea1c094ce0294e32114"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "clients through the LB are seen with their own address; forged headers from other hosts are ignored",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Fix the prefix length",
+   "text": "Now 10.20.0.x works but 10.20.2.15 still gets 403. An allow rule with a prefix covers a block of 2^(32−prefix) addresses. Work out by hand which single prefix covers exactly 10.20.0.0 to 10.20.3.255: how many addresses is that, which power of two?\n\nChange the allowlist so the whole VPN pool gets in and nothing outside it does (not 10.20.4.x, not 10.21.x.x, not the internet). Done when every address from 10.20.0.0 to 10.20.3.255 gets 200 and anything else gets 403.",
+   "points": 50,
+   "hints": [
+    "4 × 256 = 1024 = 2^10 addresses, so the prefix is 32 − 10. A /24 covers only 256 addresses (10.20.0.0–10.20.0.255).",
+    "`allow 10.20.0.0/22;` keeps `deny all;` after it. Test with `-H 'X-Forwarded-For: 10.20.3.254'` (200) and `10.20.4.9` (403)."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which prefix length covers exactly 10.20.0.0–10.20.3.255?",
+     "format": "/NN",
+     "answer_sha256": "3bb7a1f1d938d1d64d69c8736e75836b772617d3c9ec7a7d593d210422fc1c7b"
+    },
+    {
+     "id": "q4",
+     "prompt": "What is the broadcast (last) address of 10.20.0.0/22?",
+     "format": "IPv4 address",
+     "answer_sha256": "05dc85e49625027d79f50a7f5574bfbad364066382c0169a512926414c40b4c0"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the whole VPN pool 10.20.0.0/22 gets 200, everything else 403",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. `set_real_ip_from 10.0.0.10;` still named the old load balancer. The LB now connects from `127.0.0.1`, so nginx did not trust its `X-Forwarded-For` header. Every request appeared to come from `127.0.0.1`, and `allow 10.20.0.0/24` denied it.\n2. `allow 10.20.0.0/24` covers 256 addresses (10.20.0.0–10.20.0.255). The VPN pool 10.20.0.0–10.20.3.255 is 1024 addresses: a **/22**.\n\n### Layers\n`ping` (ICMP, IP layer) and the TCP connect worked, and nginx answered. A 403 is an **application-layer** decision, so stop debugging the network and read the server's config and logs.\n\n### Task 1\n```bash\ntail -3 /var/log/nginx/admin-access.log                  # 127.0.0.1 ... 403\ncurl -i -H 'X-Forwarded-For: 10.20.0.25' http://127.0.0.1/   # 403\nsudo nano /etc/nginx/sites-available/admin               # set_real_ip_from 127.0.0.1;\nsudo nginx -t && sudo systemctl reload nginx\ncurl -s -o /dev/null -w '%{http_code}\\n' -H 'X-Forwarded-For: 10.20.0.25' http://127.0.0.1/   # 200\ntail -1 /var/log/nginx/admin-access.log                  # 10.20.0.25 ...\n```\n*Why:* trust the header only from your own proxies. `set_real_ip_from 0.0.0.0/0` would let any client write any address into the header and walk past the allowlist.\n\n### Task 2 (subnetting by hand)\n- 10.20.**0**.0 → 10.20.**3**.255: the third octet runs 0–3, so 4 × 256 = 1024 = 2^10 addresses, and the prefix is 32 − 10 = **/22**.\n- Mask 255.255.252.0; network 10.20.0.0; broadcast **10.20.3.255**; 1022 usable hosts.\n```bash\nsudo sed -i 's|allow 10.20.0.0/24;|allow 10.20.0.0/22;|' /etc/nginx/sites-available/admin\nsudo nginx -t && sudo systemctl reload nginx\nfor ip in 10.20.3.254 10.20.4.9; do curl -s -o /dev/null -w \"$ip %{http_code}\\n\" -H \"X-Forwarded-For: $ip\" http://127.0.0.1/; done\n```\n*Why:* a prefix block must start on a multiple of its size. 10.20.0.0/22 does (0 is a multiple of 4 in the third octet); 10.20.2.0/22 would not be a valid network start.\n\n**Source (adapted):** [nginx behind load balancer](https://mailman.nginx.org/pipermail/nginx/2011-November/030594.html): behind an ELB, nginx saw the balancer's address instead of the client's, which broke allow/deny and rate limits. The realip module (`set_real_ip_from` + `real_ip_header`) was the suggested fix."
+}

@@ -1,0 +1,71 @@
+{
+  "id": "wikimedia-2022-apache-listen-443",
+  "title": "One Listen line, a fleet of dead Apaches",
+  "level": "L1",
+  "track": "web",
+  "topics": ["apache-vhosts", "apache-81-444", "ansible-practice"],
+  "minutes": 6,
+  "role": "You are on the SRE team of a large wiki site. Puppet manages Apache on hundreds of application servers and on a few other web hosts.",
+  "source": {
+    "label": "Wikimedia: Incidents/2022-05-24 Failed Apache restart",
+    "url": "https://wikitech.wikimedia.org/wiki/Incidents/2022-05-24_Failed_Apache_restart",
+    "org": "Wikimedia",
+    "date": "2022-05-24",
+    "read_on": "2026-11-10"
+  },
+  "brief": "11:40 UTC. A colleague merges a Puppet change to the Apache configuration. At 11:45 a probe alert fires for a port-443 service, and IRC starts filling with alerts.",
+  "steps": [
+    {
+      "situation": "Hosts that just ran Puppet show `apache2.service` failed and connection refused on port 80. The others haven't run Puppet yet.",
+      "evidence": "$ systemctl is-failed apache2\nfailed\n$ curl -sI http://localhost/ | head -1\ncurl: (7) Failed to connect to localhost port 80: Connection refused\n$ grep -n '^Listen' /etc/apache2/ports.conf\n5:Listen 80\n6:Listen 443",
+      "evidence_cmd": "systemctl is-failed apache2",
+      "choices": [
+        {"text": "Stop it spreading: disable the Puppet agent on the app servers before the next runs", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "This is what was done at 11:45. Every host that runs Puppet next would break the same way; stopping the agent buys you time."},
+        {"text": "Restart Apache on every host", "verdict": "bad", "effect": {"service": -15, "time": -5, "evidence": -5, "trust": 0}, "why": "Apache reads the same bad config and fails again, and healthy hosts get a restart they didn't need."},
+        {"text": "Wait for the next Puppet run to settle it", "verdict": "bad", "effect": {"service": -20, "time": -10, "evidence": 0, "trust": -5}, "why": "The next run is what breaks the remaining hosts."}
+      ]
+    },
+    {
+      "situation": "The revert merged at 11:46 and you forced a Puppet run. The broken hosts are still down.",
+      "choices": [
+        {"text": "Look at one broken host: what is in ports.conf now, does apachectl configtest pass, is the service even running?", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "A revert changes what future runs write. On these hosts the bad `Listen 443` line stayed and Apache stayed stopped, so the revert alone fixed nothing."},
+        {"text": "The revert must be wrong: revert the revert and try again", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -5, "trust": -5}, "why": "You are back to the broken change, without having looked at a single host."},
+        {"text": "Reboot the broken hosts", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "Apache starts at boot with the same ports.conf and fails the same way."}
+      ]
+    },
+    {
+      "situation": "Cause found by 11:50: the change makes Apache listen on 443 even where mod_ssl is not enabled. A subset of the app servers is down.",
+      "choices": [
+        {"text": "One scripted command over the fleet tool: remove the line, start Apache. Then a proper patch for the other servers", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 0, "trust": 5}, "why": "Run at 11:56; first recoveries came a minute later. A proper fix for hosts on Debian's default config followed at 12:05 and was tested on one host first."},
+        {"text": "SSH to each host and edit the file by hand", "verdict": "risky", "effect": {"service": 10, "time": -15, "evidence": 0, "trust": 0}, "why": "It works, slowly, and by host 30 someone makes a typo."},
+        {"text": "Enable Puppet again and let it fix things", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": -5}, "why": "You already saw that a run doesn't remove the line or start the service."}
+      ]
+    },
+    {
+      "situation": "All healthy at 12:16. The catalog compiled fine in the pre-merge check, so the check passed. What do you change?",
+      "choices": [
+        {"text": "A canary group that gets Puppet changes first, and careful review for patches that touch service config", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 10}, "why": "The report's gaps: the patch wasn't reviewed carefully, and there's no controlled place to try Puppet changes. A compiling catalog can still produce a config Apache rejects."},
+        {"text": "Add apachectl configtest to the Puppet run before any restart", "verdict": "good", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 5}, "why": "Worth adding, but it checks syntax, and an extra `Listen 443` is valid syntax: Apache failed when it started. Apache's docs warn that a clean configtest doesn't promise a clean restart. Keep the canary."},
+        {"text": "Freeze all Apache changes for a month", "verdict": "bad", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": -10}, "why": "Changes pile up and the next one is bigger. Make changes safer, not rarer."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 24 May 2022 at 11:40 UTC a Puppet change was merged that made Apache listen on port 443 whether or not mod_ssl was enabled. Apache failed to restart on the hosts that applied it. About 140 alerts reached IRC (connection refused on port 80), and a very small number of 502s hit mostly logged-in users. At 11:45 the author realised what had happened and Puppet was disabled on the MediaWiki hosts; the revert merged at 11:46 did not repair hosts already broken. At 11:56 a Cumin command removed `Listen 443` from `/etc/apache2/ports.conf` and started Apache; the app servers were fixed by 11:58. A proper fix for non-MediaWiki servers that use Debian's default config was merged at 12:05, tested on one host at 12:07, and all were healthy at 12:16. The catalog compiler passed because the catalog compiled; the problem was the resulting Apache config. The report names the gaps: careless review and no canary environment for Puppet changes.",
+    "lessons": ["When config management spreads a bad change, stop the agent before you fix hosts.", "A revert fixes future runs; check what is on the broken hosts now.", "\"It compiles\" is not \"Apache starts\": test the rendered config.", "Roll config changes to a canary group first."],
+    "commands": ["systemctl status apache2", "sudo apachectl configtest", "grep -n '^Listen' /etc/apache2/ports.conf", "sudo puppet agent --disable 'bad Listen change'", "sudo cumin 'app*' \"sed -i 's/Listen 443//' /etc/apache2/ports.conf\" 'systemctl start apache2'"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "25-playbook-site-down.md", "heading": "9.1 Apache won't start after a config change"},
+      {"file": "29-learn-webservers-proxies.md", "heading": "2.6 TLS with mod_ssl"},
+      {"file": "52-devops-day-to-day.md", "heading": "10.1 A routine config change takes production down"},
+      {"file": "33-learn-cicd-iac-sre.md", "heading": "Canary releases"}
+    ],
+    "sites": [
+      {"label": "SadServers: Verona, Apache portal won't open (free account)", "url": "https://sadservers.com/scenario/verona"},
+      {"label": "Killercoda: Dev Bench, a systemd service won't start (free account)", "url": "https://killercoda.com/barrymister/scenario/linux-service-wont-start"}
+    ]
+  }
+}

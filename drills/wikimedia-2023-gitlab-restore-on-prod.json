@@ -1,0 +1,70 @@
+{
+  "id": "wikimedia-2023-gitlab-restore-on-prod",
+  "title": "The replica's restore job, now on production",
+  "level": "L2",
+  "track": "data",
+  "topics": ["backup-tools", "devops-day-to-day"],
+  "minutes": 6,
+  "role": "You are an SRE for a self-hosted GitLab. Production backs up every night, and a replica in the other data centre restores that backup a little later, so it is always ready to take over.",
+  "source": {
+    "label": "Wikimedia: Incidents/2023-02-28 GitLab data loss",
+    "url": "https://wikitech.wikimedia.org/wiki/Incidents/2023-02-28_GitLab_data_loss",
+    "org": "Wikimedia",
+    "date": "2023-02-28",
+    "read_on": "2026-11-10"
+  },
+  "brief": "Yesterday, 27 February, in planned maintenance, you switched production from `gitlab-a` to the former replica `gitlab-b`. It's 02:05 UTC on 28 February. A ProbeDown alert for `gitlab-b:443` from 02:03 sits in the ticket queue. Nobody was paged; you happen to see it.",
+  "steps": [
+    {
+      "situation": "The web UI on `gitlab-b` doesn't answer. In chat, a night-shift user says GitLab went away in the middle of their work.",
+      "evidence": "ops@gitlab-b:~$ systemctl list-timers --all | grep -iE 'backup|restore'\nTue 00:04  ...  gitlab-backup.timer   gitlab-backup.service\nTue 02:00  ...  gitlab-restore.timer  gitlab-restore.service\nops@gitlab-b:~$ journalctl -u gitlab-restore --since 01:59 | tail -2\nFeb 28 02:00:01 gitlab-b restore[48121]: Restoring backup ..._2023_02_28_00_04 ...\nFeb 28 02:00:03 gitlab-b restore[48121]: Unpacking backup ... done",
+      "evidence_cmd": "systemctl list-timers --all",
+      "choices": [
+        {"text": "Check the timers and job logs on the new production host before touching GitLab", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "The replica's nightly restore timer is still enabled on what is now production. At 02:00 it started restoring the 00:04 backup over live data."},
+        {"text": "Restart GitLab to clear the slowness", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -10, "trust": 0}, "why": "You'd interrupt a restore halfway and still not know why GitLab went down."},
+        {"text": "Switch back to gitlab-a right away", "verdict": "risky", "effect": {"service": -5, "time": -10, "evidence": -5, "trust": 0}, "why": "A second switchover at 2 a.m., before you understand the first. And gitlab-a doesn't have yesterday's changes either."}
+      ]
+    },
+    {
+      "situation": "The restore is still running. Backups from the replica side could be restored over production too.",
+      "choices": [
+        {"text": "Let this restore finish, and block more: disable the restore timer and the rsync that feeds backups to this host", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "Disabling rsync on production was the real move, and it prevented a larger loss. The restore finished at 02:20 and GitLab then ran normally."},
+        {"text": "Kill the restore now", "verdict": "risky", "effect": {"service": -10, "time": -5, "evidence": 0, "trust": 0}, "why": "A half-restored database is worse than either the old or the new state, and you'd need another restore anyway."},
+        {"text": "Restore the newest replica backup to undo it", "verdict": "bad", "effect": {"service": -20, "time": -10, "evidence": -5, "trust": -10}, "why": "That backup is older still: you'd lose even more. This is exactly the loss the real team prevented."}
+      ]
+    },
+    {
+      "situation": "GitLab is up. Work done between the 00:04 backup and the 02:00 restore is gone. It was a quiet night: one SSH session and a couple of merges.",
+      "choices": [
+        {"text": "Announce the exact window, and ask people who pushed or merged in it to push again from their clones", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 5, "trust": 25}, "why": "Pushed commits still live in people's clones; merge requests and comments from the window must be redone. A precise window lets people check in minutes."},
+        {"text": "Say nothing: hardly anyone used it at night", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -25}, "why": "The few people affected discover it later and lose trust in every backup claim."},
+        {"text": "Report \"a brief outage, no data loss\"", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -30}, "why": "It's false, and the merges people made in that window are proof."}
+      ]
+    },
+    {
+      "situation": "Root cause: the setting that turns the restore timer on was set by hand per host, and nobody checked the timers after the switchover. What changes?",
+      "choices": [
+        {"text": "Derive restore on/off from the host's role, automate switchovers, check timers after each one, and make the restore script refuse to run on the active host", "verdict": "best", "effect": {"service": 10, "time": 5, "evidence": 5, "trust": 10}, "why": "The report's actions: the role-based setting was done first; a cookbook, a timer check and a guard in the script followed as tasks."},
+        {"text": "Add \"check the timers\" to the switchover wiki page", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "Better than nothing, but a manual step was what failed. Put the guard in the code."},
+        {"text": "Stop the nightly restore on the replica", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": 0, "trust": -5}, "why": "The replica is no longer ready to take over, and you no longer test your backups every night."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 27 February 2023 Wikimedia switched its GitLab production from gitlab1004 to gitlab2002 in planned maintenance (10:00 to 12:00 UTC). Some settings depend on whether a host is production or replica, and the restore timer setting `profile::gitlab::enable_restore` was not changed on the new production host. At 00:04 on 28 February the nightly backup ran there; at 02:00 the restore job restored that backup onto production. A ProbeDown alert fired at 02:03 and opened a task, but nobody was paged. The restore finished at 02:20. Disabling the rsync server on production stopped replica backups from being restored too, which would have lost more. Work between 00:04 and 02:00 was lost (the report says one and a half hours); the night was quiet, with one SSH connection and two merges or other actions. Actions: restore enabled or disabled automatically by instance role (done), a switchover cookbook, a timer check after switchovers, and a guard in the restore script against the active host.",
+    "lessons": ["Jobs that are safe on a replica can be destructive on production: tie them to the role.", "After a switchover, list the timers and cron jobs on both hosts.", "A destructive script should check where it runs and refuse on the primary.", "Alerts on production at night should reach a person."],
+    "commands": ["systemctl list-timers --all", "journalctl -u gitlab-restore --since 01:59", "sudo systemctl disable --now gitlab-restore.timer", "sudo systemctl stop rsync", "crontab -l"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "07-services-systemd.md", "heading": "Timers (systemd cron)"},
+      {"file": "47-cicd-gitlab-jenkins-actions-argocd.md", "heading": "Backups and restore"},
+      {"file": "52-devops-day-to-day.md", "heading": "10.2 Ran the command on the wrong server"}
+    ],
+    "sites": [
+      {"label": "SadServers: Alexandria, the vanishing backups (free account)", "url": "https://sadservers.com/scenario/alexandria"},
+      {"label": "SadServers: Cairo, a systemd timer that stopped (free account)", "url": "https://sadservers.com/scenario/cairo"}
+    ]
+  }
+}

@@ -1,0 +1,1807 @@
+{
+ "domain": "docker",
+ "problems": [
+  {
+   "title": "Docker 29 upgrade breaks Traefik/Portainer/Dokploy: 'client version 1.24 is too old'",
+   "area": "Docker Engine / API",
+   "tool": "Docker Engine 29, Traefik, Portainer",
+   "level": "L1",
+   "error_text": "Error response from daemon: client version 1.24 is too old. Minimum supported API version is 1.44 | Portainer: Failed loading environment. The environment named local is unavailable",
+   "context": "apt upgrade to docker-ce 29.x (from 2025-11-10) on hosts where Traefik < v3.6.1 (dokploy-traefik), Portainer < 2.33.5 LTS/2.36.0 STS or other socket clients run; routing dies, apps keep running.",
+   "frequency_signal": "2nd most-viewed forums.docker.com topic of the past year (~41k views); Portainer #12925 has 439 comments; also traefik #12270, Coolify, Appwrite.",
+   "root_causes": [
+    "Engine 29 only accepts API 1.44+ (Docker 25+).",
+    "Docker packages not pinned.",
+    "Socket clients embed their own old Docker client."
+   ],
+   "diagnosis": [
+    "docker version   # minimum API version",
+    "docker logs --tail 100 dokploy-traefik 2>&1 | grep -i 'too old'",
+    "zgrep -h docker-ce /var/log/apt/history.log*"
+   ],
+   "fix": [
+    "Upgrade clients: Traefik >= v3.6.1, Portainer >= 2.33.5 LTS / 2.36.0 STS (Dokploy: use its own Traefik update path).",
+    "Temporary: {\"min-api-version\": \"1.24\"} in daemon.json, restart, verify with docker version, remove later.",
+    "Last resort: install 28.5.2 and sudo apt-mark hold docker-ce docker-ce-cli containerd.io"
+   ],
+   "prevention": "Pin Docker packages, upgrade on staging first, list socket clients (docker ps --filter volume=/var/run/docker.sock) before major upgrades.",
+   "sources": [
+    {
+     "title": "Docker forums: Docker 29 breaks Traefik",
+     "url": "https://forums.docker.com/t/docker-29-increased-minimum-api-version-breaks-traefik-reverse-proxy/150384",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Portainer #12925",
+     "url": "https://github.com/portainer/portainer/issues/12925",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/selfhosted search",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=docker+29+client+version+too+old+traefik&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Docker fills the root disk: overlay2, build cache and logs ('no space left on device')",
+   "area": "Docker Engine / storage",
+   "tool": "Docker Engine",
+   "level": "L1",
+   "error_text": "write /var/lib/docker/...: no space left on device | failed to register layer: ... no space left on device | Dokploy Postgres in recovery mode",
+   "context": "Build hosts, runners and Dokploy servers building locally; Ubuntu LVM installs often leave the root LV small.",
+   "frequency_signal": "forums.docker.com all-time: 'How to delete cache?' ~1.39M views, '/var/lib/docker/overlay' cleanup ~974k, '<none> images' ~734k, 'change image directory' ~734k; first item in Dokploy's instance troubleshooting.",
+   "root_causes": [
+    "Unpruned BuildKit cache and old images per deploy.",
+    "json-file logs never rotate by default.",
+    "Apps writing to the container layer; named volumes skipped by prune.",
+    "Docker 29 containerd store keeps compressed+uncompressed layers in a separate path."
+   ],
+   "diagnosis": [
+    "docker system df -v",
+    "sudo du -xh --max-depth=1 /var/lib/docker /var/lib/containerd 2>/dev/null | sort -h",
+    "docker ps -a --size --format '{{.Names}} {{.Size}}'",
+    "sudo vgs; sudo lvs"
+   ],
+   "fix": [
+    "docker builder prune -f --filter until=72h; docker image prune -a -f --filter until=168h; docker container prune -f",
+    "Log rotation: {\"log-driver\": \"local\"} or json-file with log-opts max-size 10m / max-file 3; recreate containers.",
+    "Cap cache: {\"builder\": {\"gc\": {\"enabled\": true, \"defaultKeepStorage\": \"20GB\"}}}",
+    "sudo lvextend -r -l +100%FREE /dev/ubuntu-vg/ubuntu-lv or move data-root to a bigger disk."
+   ],
+   "prevention": "Separate filesystem for Docker, 85% disk alert, weekly prune timer, log rotation in the daemon.json template.",
+   "sources": [
+    {
+     "title": "forums.docker.com top (all time)",
+     "url": "https://forums.docker.com/top?period=all",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: Prune unused objects",
+     "url": "https://docs.docker.com/engine/manage-resources/pruning/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: Configure logging drivers",
+     "url": "https://docs.docker.com/engine/logging/configure/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "SO search",
+     "url": "https://stackoverflow.com/search?q=docker+overlay2+%22no+space+left+on+device%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "CLI can't reach the daemon: 'Cannot connect to the Docker daemon' or 'permission denied ... docker.sock'",
+   "area": "Docker Engine / daemon access",
+   "tool": "Docker Engine",
+   "level": "L0",
+   "error_text": "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running? | permission denied while trying to connect to the Docker daemon socket ... connect: permission denied",
+   "context": "Fresh installs, new users or service accounts (gitlab-runner shell executor), after reboots or daemon.json edits.",
+   "frequency_signal": "'Cannot connect to the Docker daemon' ~1.29M views on forums.docker.com; compose #4181 226 reactions; permission error is a top SO Docker question.",
+   "root_causes": [
+    "dockerd failed to start or is disabled.",
+    "DOCKER_HOST or docker context points elsewhere.",
+    "User not in docker group or session predates it; ~/.docker owned by root."
+   ],
+   "diagnosis": [
+    "systemctl status docker docker.socket containerd --no-pager",
+    "journalctl -u docker -b -n 50 --no-pager",
+    "env | grep -i docker_; docker context ls; id"
+   ],
+   "fix": [
+    "sudo systemctl enable --now docker (fix the journal error first)",
+    "unset DOCKER_HOST or docker context use default",
+    "sudo usermod -aG docker $USER and re-login; sudo chown \"$USER\":\"$USER\" ~/.docker -R; never chmod 666 the socket"
+   ],
+   "prevention": "docker group = root: grant via config management only; alert on docker.service failures.",
+   "sources": [
+    {
+     "title": "Docker docs: Troubleshoot the daemon",
+     "url": "https://docs.docker.com/engine/daemon/troubleshoot/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: Linux post-install",
+     "url": "https://docs.docker.com/engine/install/linux-postinstall/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "SO search",
+     "url": "https://stackoverflow.com/search?q=%22permission+denied+while+trying+to+connect+to+the+Docker+daemon+socket%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Docker Hub 'toomanyrequests: You have reached your pull rate limit'",
+   "area": "Registries / Docker Hub",
+   "tool": "Docker Hub, mirrors, Harbor proxy cache",
+   "level": "L1",
+   "error_text": "toomanyrequests: You have reached your pull rate limit. You may increase the limit by authenticating and upgrading (HTTP 429)",
+   "context": "Runners, Kubernetes nodes or Dokploy builds behind one NAT IP pulling anonymously; DinD jobs with empty caches.",
+   "frequency_signal": "Long-running theme since 2020; limits revised in 2025; Harbor recommends 2.1.1+ proxy cache because of it.",
+   "root_causes": [
+    "Anonymous limit per IPv4 or IPv6 /64 (docs Oct 2026: 100 pulls/6 h; Personal 200/6 h; paid unlimited).",
+    "Ephemeral CI re-pulls base images.",
+    "Mirror set for dockerd but not for BuildKit or containerd."
+   ],
+   "diagnosis": [
+    "TOKEN=$(curl -s 'https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull' | jq -r .token)",
+    "curl -s --head -H \"Authorization: Bearer $TOKEN\" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit",
+    "docker info | grep -A3 -i 'registry mirrors'"
+   ],
+   "fix": [
+    "docker login on every host/runner with an access token.",
+    "Harbor proxy-cache project: harbor.example.internal/dockerhub-proxy/library/nginx:1.27",
+    "{\"registry-mirrors\": [\"https://mirror.example.internal\"]} (Docker Hub only); containerd: /etc/containerd/certs.d/docker.io/hosts.toml with override_path = true; dind: command [\"--registry-mirror\", ...]"
+   ],
+   "prevention": "No anonymous CI pulls; mirror base images into Harbor; immutable tags with IfNotPresent.",
+   "sources": [
+    {
+     "title": "Docker docs: Hub pull limits",
+     "url": "https://docs.docker.com/docker-hub/usage/pulls/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: Registry mirror",
+     "url": "https://docs.docker.com/docker-hub/image-library/mirror/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Harbor docs: Proxy cache",
+     "url": "https://goharbor.io/docs/2.13.0/administration/configure-proxy-cache/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/devops search",
+     "url": "https://www.reddit.com/r/devops/search/?q=docker+hub+rate+limit+mirror&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Private registry TLS: 'x509: certificate signed by unknown authority' (Docker, containerd, BuildKit)",
+   "area": "Registries / TLS",
+   "tool": "Docker Engine, containerd, BuildKit, Harbor",
+   "level": "L2",
+   "error_text": "tls: failed to verify certificate: x509: certificate signed by unknown authority | x509: certificate relies on legacy Common Name field, use SANs instead | http: server gave HTTP response to HTTPS client",
+   "context": "Harbor on an internal CA; every client keeps its own trust store (Docker hosts, Swarm workers, k8s nodes, dind, buildx builders).",
+   "frequency_signal": "forums.docker.com 'Adding (self signed) certificates' ~134k views; moby #9118 (75 comments); buildx #1642 in buildx's most-reacted list.",
+   "root_causes": [
+    "CA not where this client reads: /etc/docker/certs.d/HOST[:PORT]/ca.crt, containerd hosts.toml, OS store, buildkitd.toml.",
+    "Docker treats .crt as CA, .cert as client cert.",
+    "Missing intermediate or no SAN on Harbor's cert.",
+    "docker-container builders ignore daemon.json and certs.d."
+   ],
+   "diagnosis": [
+    "openssl s_client -connect harbor.example.internal:443 -servername harbor.example.internal -showcerts </dev/null",
+    "ls -l /etc/docker/certs.d/harbor.example.internal/",
+    "docker buildx ls"
+   ],
+   "fix": [
+    "sudo mkdir -p /etc/docker/certs.d/harbor.example.internal && sudo cp example-ca.crt /etc/docker/certs.d/harbor.example.internal/ca.crt",
+    "OS store: sudo cp example-ca.crt /usr/local/share/ca-certificates/ && sudo update-ca-certificates; containerd: hosts.toml with ca = path",
+    "buildkitd.toml [registry.\"harbor.example.internal\"] ca = [\"/etc/certs/example-ca.pem\"], then recreate: docker buildx create --driver docker-container --buildkitd-config /etc/buildkitd.toml --use",
+    "Serve the full chain with SANs; insecure-registries only in labs."
+   ],
+   "prevention": "Distribute the CA with Ansible to all trust stores and monitor cert expiry.",
+   "sources": [
+    {
+     "title": "Docker docs: Registry certificates",
+     "url": "https://docs.docker.com/engine/security/certificates/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: BuildKit configuration",
+     "url": "https://docs.docker.com/build/buildkit/configure/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "buildx #1642",
+     "url": "https://github.com/docker/buildx/issues/1642",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "SO search",
+     "url": "https://stackoverflow.com/search?q=docker+private+registry+%22x509%3A+certificate+signed+by+unknown+authority%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Push/pull denied: 'requested access to the resource is denied', Harbor 'unauthorized', ECR 'no basic auth credentials'",
+   "area": "Registries / auth",
+   "tool": "Docker CLI, Harbor, Amazon ECR",
+   "level": "L1",
+   "error_text": "denied: requested access to the resource is denied | unauthorized: unauthorized to access repository: team-a/app, action: push | no basic auth credentials",
+   "context": "First CI push to Harbor or ECR, new projects or robots, sudo/non-sudo mixups.",
+   "frequency_signal": "forums.docker.com: 'requested access to the resource is denied' ~504k views; 'ECR no basic auth credentials' ~390k views.",
+   "root_causes": [
+    "Tag lacks registry/project, so push goes to docker.io.",
+    "Harbor project missing or robot lacks push.",
+    "Credentials keyed by exact host string; sudo uses another config.json.",
+    "ECR tokens last 12 h; repo must exist."
+   ],
+   "diagnosis": [
+    "docker image ls --format '{{.Repository}}:{{.Tag}}'",
+    "jq '.auths | keys' ~/.docker/config.json",
+    "sudo tail -n 50 /var/log/harbor/core.log"
+   ],
+   "fix": [
+    "docker tag app:1.4.2 harbor.example.internal/team-a/app:1.4.2 && docker push harbor.example.internal/team-a/app:1.4.2",
+    "echo \"$HARBOR_TOKEN\" | docker login harbor.example.internal -u 'robot$team-a+ci' --password-stdin",
+    "aws ecr get-login-password --region eu-central-1 | docker login --username AWS --password-stdin ACCOUNT_ID.dkr.ecr.eu-central-1.amazonaws.com"
+   ],
+   "prevention": "REGISTRY/PROJECT/APP:GIT_SHA naming in CI templates; one least-privilege robot per pipeline.",
+   "sources": [
+    {
+     "title": "forums.docker.com top (all time)",
+     "url": "https://forums.docker.com/top?period=all",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "SO search",
+     "url": "https://stackoverflow.com/search?q=%22denied%3A+requested+access+to+the+resource+is+denied%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "SO search (ECR)",
+     "url": "https://stackoverflow.com/search?q=ecr+%22no+basic+auth+credentials%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "'localhost' in a container is the container: 'Empty reply from server' or can't reach a host service",
+   "area": "Docker networking",
+   "tool": "Docker Engine",
+   "level": "L1",
+   "error_text": "curl: (52) Empty reply from server | connect ECONNREFUSED 127.0.0.1:5432 | Could not resolve host: host.docker.internal",
+   "context": "Apps binding 127.0.0.1, containers using a DB on the host, Docker Desktop guides applied to Ubuntu.",
+   "frequency_signal": "forums.docker.com: 'Accessing host machine from within docker container' ~671k views; 'network_mode: host not working' ~424k.",
+   "root_causes": [
+    "App listens on 127.0.0.1 inside its namespace.",
+    "host.docker.internal exists by default only on Docker Desktop.",
+    "Host service bound to 127.0.0.1 or UFW drops docker0/br-* traffic.",
+    "network_mode: host ignores ports:."
+   ],
+   "diagnosis": [
+    "docker run --rm --net container:CONTAINER nicolaka/netshoot ss -ltnp",
+    "docker exec CONTAINER getent hosts host.docker.internal",
+    "sudo ss -ltnp 'sport = :5432'; sudo ufw status verbose"
+   ],
+   "fix": [
+    "Bind the app to 0.0.0.0 (gunicorn -b 0.0.0.0:8000).",
+    "--add-host host.docker.internal=host-gateway or extra_hosts: [\"host.docker.internal:host-gateway\"]",
+    "sudo ufw allow in on docker0 to any port 5432 proto tcp"
+   ],
+   "prevention": "Configurable listen address defaulting to 0.0.0.0; run dependencies as containers on a shared network.",
+   "sources": [
+    {
+     "title": "Docker docs: docker run (--add-host)",
+     "url": "https://docs.docker.com/reference/cli/docker/container/run/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "forums.docker.com top (all time)",
+     "url": "https://forums.docker.com/top?period=all",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/docker search",
+     "url": "https://www.reddit.com/r/docker/search/?q=host.docker.internal+linux&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Containers can't reach each other by name ('ENOTFOUND', 'external network could not be found')",
+   "area": "Docker networking / DNS",
+   "tool": "Docker Engine, Compose, Dokploy",
+   "level": "L1",
+   "error_text": "getaddrinfo for mysql failed: Name or service not known | getaddrinfo ENOTFOUND dokploy-postgres | network dokploy-network declared as external, but could not be found",
+   "context": "Default bridge, app and DB in separate Compose projects or Dokploy apps, joining dokploy-network for Traefik.",
+   "frequency_signal": "This year's forums.docker.com top list ('php_network_getaddresses error'); Dokploy documents ENOTFOUND dokploy-postgres.",
+   "root_causes": [
+    "Default bridge has no embedded DNS.",
+    "Each Compose project has its own default network.",
+    "External network missing, or overlay not --attachable."
+   ],
+   "diagnosis": [
+    "docker inspect -f '{{json .NetworkSettings.Networks}}' CONTAINER | jq 'keys'",
+    "docker run --rm --network NET nicolaka/netshoot dig +short SERVICE",
+    "docker network inspect dokploy-network -f '{{.Driver}} {{.Attachable}}'"
+   ],
+   "fix": [
+    "Put both on one user-defined network and use service names.",
+    "Compose: networks: [default, dokploy-network] plus networks: dokploy-network: external: true",
+    "docker network create -d overlay --attachable shared-net"
+   ],
+   "prevention": "Explicit networks in every Compose file; keep databases off the proxy network.",
+   "sources": [
+    {
+     "title": "Dokploy: Instance troubleshooting",
+     "url": "https://docs.dokploy.com/docs/core/troubleshooting/instance",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "forums.docker.com top (past year)",
+     "url": "https://forums.docker.com/top?period=yearly",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "SO search",
+     "url": "https://stackoverflow.com/search?q=docker+compose+service+name+not+resolved+different+projects+network",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Published ports bypass UFW (and 'iptables: No chain/target/match' after firewall reloads)",
+   "area": "Docker networking / firewall",
+   "tool": "Docker Engine, UFW, iptables",
+   "level": "L2",
+   "error_text": "No error: 5432 reachable from outside while ufw allows only 22 | driver failed programming external connectivity ... iptables: No chain/target/match by that name",
+   "context": "UFW-only Ubuntu servers with Compose files publishing \"5432:5432\".",
+   "frequency_signal": "Perennial Server Fault / Reddit self-hosting complaint; explained in Docker's packet-filtering docs.",
+   "root_causes": [
+    "DNAT in the nat table sends packets through FORWARD, not UFW's INPUT.",
+    "ports binds all addresses by default.",
+    "Flushing iptables deletes Docker chains; Docker 28 restructured rules and needs ipset."
+   ],
+   "diagnosis": [
+    "docker ps --format '{{.Names}} {{.Ports}}'",
+    "sudo iptables -S DOCKER-USER",
+    "nc -vz SERVER_IP 5432   # from another host"
+   ],
+   "fix": [
+    "Remove ports: for services behind Traefik; bind others to 127.0.0.1:5432:5432.",
+    "sudo iptables -I DOCKER-USER -i ens18 ! -s 192.0.2.0/24 -j DROP (persist it).",
+    "Chains flushed: sudo systemctl restart docker; don't set \"iptables\": false."
+   ],
+   "prevention": "Regular port audits against an allow-list; only the proxy publishes 80/443.",
+   "sources": [
+    {
+     "title": "Docker docs: Packet filtering and firewalls",
+     "url": "https://docs.docker.com/engine/network/packet-filtering-firewalls/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker Engine 28 release notes",
+     "url": "https://docs.docker.com/engine/release-notes/28/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "SF search",
+     "url": "https://serverfault.com/search?q=docker+ufw+published+ports+bypass",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/selfhosted search",
+     "url": "https://www.reddit.com/r/selfhosted/search/?q=docker+ufw+bypass&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Docker subnets collide with LAN/VPN, or 'could not find an available, non-overlapping IPv4 address pool'",
+   "area": "Docker networking / IP planning",
+   "tool": "Docker Engine, Compose, Swarm",
+   "level": "L2",
+   "error_text": "could not find an available, non-overlapping IPv4 address pool among the defaults to assign to the network | Pool overlaps with other one on this address space",
+   "context": "Office or VPN ranges in 172.16.0.0/12 or 192.168.0.0/16; many small Compose projects.",
+   "frequency_signal": "forums.docker.com topics 139459 and 69686; docker/for-linux #599.",
+   "root_causes": [
+    "Default pools 172.17-172.31 and 192.168.0.0/16 shadow LAN routes.",
+    "Every project creates a network and exhausts pools.",
+    "New pools don't move existing networks."
+   ],
+   "diagnosis": [
+    "ip route; ip route get 172.18.5.10",
+    "docker network inspect -f '{{.Name}} {{range .IPAM.Config}}{{.Subnet}}{{end}}' $(docker network ls -q)"
+   ],
+   "fix": [
+    "{\"bip\": \"10.200.0.1/24\", \"default-address-pools\": [{\"base\": \"10.201.0.0/16\", \"size\": 24}]} then restart Docker and recreate networks.",
+    "Swarm only at init: docker swarm init --default-addr-pool 10.20.0.0/16 --default-addr-pool-mask-length 26 (before installing Dokploy)."
+   ],
+   "prevention": "Reserve a Docker range in the IP plan and ship daemon.json before the first container.",
+   "sources": [
+    {
+     "title": "Docker forums: non-overlapping IPv4 pool",
+     "url": "https://forums.docker.com/t/error-could-not-find-an-available-non-overlapping-ipv4-address-pool-among-the-defaults-to-assign-to-the-network/139459",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: Swarm networking",
+     "url": "https://docs.docker.com/engine/swarm/networking/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/sysadmin search",
+     "url": "https://www.reddit.com/r/sysadmin/search/?q=docker+subnet+conflict+vpn&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Docker fails inside Proxmox LXC after update: 'open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied'",
+   "area": "Docker Engine / upgrades",
+   "tool": "docker-ce, containerd.io, runc, Proxmox LXC",
+   "level": "L2",
+   "error_text": "unable to start container process: error during container init: open sysctl net.ipv4.ip_unprivileged_port_start file: reopen fd 8: permission denied: unknown",
+   "context": "Docker inside unprivileged Proxmox LXC (Debian 11-13) after November 2025 updates (docker-ce >= 28.4 with containerd.io >= 1.7.28-2).",
+   "frequency_signal": "Top-10 forums.docker.com topic of the past year (~7.3k views, 9 replies).",
+   "root_causes": [
+    "runc security fixes for container-escape CVEs made sysctl writes stricter; AppArmor confinement of the LXC blocks them.",
+    "Docker in LXC is nested containerisation and inherits LXC AppArmor limits."
+   ],
+   "diagnosis": [
+    "pct config CTID | grep -E \"unprivileged|features|apparmor\"",
+    "apt list --installed 2>/dev/null | grep -E \"docker-ce/|containerd.io\"",
+    "journalctl -u docker -n 50"
+   ],
+   "fix": [
+    "Preferred: run Docker in a VM instead of LXC.",
+    "Workaround: pin docker-ce 5:28.3.3-1 + containerd.io 1.7.28-1 with apt-mark hold.",
+    "Reported workaround that lowers isolation: lxc.apparmor.profile: unconfined in the CT config (trusted workloads only)."
+   ],
+   "prevention": "Docker hosts as VMs; staged package upgrades with pinned versions.",
+   "sources": [
+    {
+     "title": "Docker forums: Docker fails to run on Debian (bullseye) after update",
+     "url": "https://forums.docker.com/t/docker-fails-to-run-on-debian-bullseye-after-update-unable-to-start-container-process-error-during-container-init-open-sysctl-net-ipv4-ip-unprivileged-port-start-file-reopen-fd-8-permission-denied-unknown/150363",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/Proxmox search",
+     "url": "https://www.reddit.com/r/Proxmox/search/?q=docker+lxc+ip_unprivileged_port_start&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Rootless Docker: subuid errors, privileged ports, and Docker 29 'address already in use' on every published port",
+   "area": "Docker Engine / rootless",
+   "tool": "Docker rootless, rootlesskit, slirp4netns, pasta",
+   "level": "L2",
+   "error_text": "No subuid ranges found for user | cannot expose privileged port 80 | failed to bind host port 10.0.2.100:3000/tcp: address already in use",
+   "context": "Teams moving away from the docker group to rootless mode; Ubuntu 24.04 AppArmor userns restriction; Docker 29.0.x rootless with slirp4netns.",
+   "frequency_signal": "forums.docker.com top topics of the year: rootless networking after update (22 replies), running containers as non-root (2.6k views).",
+   "root_causes": [
+    "/etc/subuid and /etc/subgid missing ranges.",
+    "Ubuntu 24.04 restricts unprivileged user namespaces unless an AppArmor profile exists.",
+    "Ports below 1024 need net.ipv4.ip_unprivileged_port_start.",
+    "Docker 29 port-driver changes broke slirp4netns setups.",
+    "systemctl --user needs a real login session and linger."
+   ],
+   "diagnosis": [
+    "grep ops /etc/subuid /etc/subgid",
+    "systemctl --user status docker",
+    "docker context ls; echo $DOCKER_HOST",
+    "journalctl --user -u docker -n 50"
+   ],
+   "fix": [
+    "sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 ops",
+    "sudo loginctl enable-linger ops",
+    "switch the rootlesskit network driver to pasta via a systemd user drop-in, or set \"userland-proxy\": false in ~/.config/docker/daemon.json",
+    "use ports above 1024 behind Traefik, or set net.ipv4.ip_unprivileged_port_start=80"
+   ],
+   "prevention": "Decide rootless vs docker group explicitly; document who has docker access; pin Docker versions.",
+   "sources": [
+    {
+     "title": "Docker docs: rootless troubleshooting",
+     "url": "https://docs.docker.com/engine/security/rootless/troubleshoot/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: networking fails with rootless Docker after update",
+     "url": "https://forums.docker.com/t/after-update-networking-fails-with-rootless-docker/150458",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: Running Docker containers as non-root user",
+     "url": "https://forums.docker.com/t/running-docker-containers-as-non-root-user/151333",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Containers don't come back after a reboot",
+   "area": "Docker Engine / lifecycle",
+   "tool": "dockerd, restart policies, systemd",
+   "level": "L1",
+   "error_text": "Exited (255) after reboot; container with --restart unless-stopped not restarted",
+   "context": "Single-host Compose apps, NAS/homelab, containers depending on NFS mounts or on interfaces that come up late.",
+   "frequency_signal": "forums.docker.com top of the year: 'container with --restart unless-stopped is not restarted automatically upon system reboot'.",
+   "root_causes": [
+    "docker.service not enabled (only docker.socket).",
+    "No restart policy, or container was stopped manually before reboot (unless-stopped remembers).",
+    "Bind mount source on NFS/iSCSI not mounted yet; container fails and gives up.",
+    "Container binds a specific IP that is not up yet."
+   ],
+   "diagnosis": [
+    "systemctl is-enabled docker docker.socket",
+    "docker inspect -f \"{{.HostConfig.RestartPolicy.Name}} {{.State.ExitCode}} {{.State.Error}}\" CONTAINER",
+    "journalctl -b -u docker | grep -i -E \"error|failed\""
+   ],
+   "fix": [
+    "sudo systemctl enable docker",
+    "restart: unless-stopped in Compose; docker update --restart unless-stopped CONTAINER",
+    "systemd drop-in: After=/Requires= remote-fs.target or RequiresMountsFor=/mnt/data"
+   ],
+   "prevention": "Reboot test after every new service; uptime checks.",
+   "sources": [
+    {
+     "title": "Docker forums: unless-stopped not restarted after reboot",
+     "url": "https://forums.docker.com/t/nginx-container-with-restart-unless-stopped-is-not-restarted-automatically-upon-system-reboot/150569",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=docker+restart+unless-stopped+not+starting+after+reboot",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Container exits 137, 139 or 143: OOM kills, stop timeouts and missing CPU features",
+   "area": "Docker Engine / lifecycle",
+   "tool": "dockerd, cgroups, Proxmox CPU type",
+   "level": "L1",
+   "error_text": "Exited (137) | OOMKilled: true | Exited (139) | Illegal instruction (core dumped) | MongoDB 5.0+ requires a CPU with AVX support",
+   "context": "Memory-limited containers, apps that ignore SIGTERM, MongoDB/other AVX images on VMs with a generic CPU type.",
+   "frequency_signal": "forums.docker.com top of the year: 'Docker compose mongo exit code 139' (~1.7k views).",
+   "root_causes": [
+    "137 = SIGKILL: OOM killer or docker stop timeout after 10 s.",
+    "143 = SIGTERM handled.",
+    "139 = SIGSEGV; often missing AVX because the VM CPU type is kvm64/x86-64-v2.",
+    "Shell-form CMD makes sh PID 1 so signals never reach the app."
+   ],
+   "diagnosis": [
+    "docker inspect -f \"{{.State.OOMKilled}} {{.State.ExitCode}}\" CONTAINER",
+    "journalctl -k | grep -i oom",
+    "grep -o -m1 avx /proc/cpuinfo"
+   ],
+   "fix": [
+    "raise memory limit or fix the leak; set deploy.resources.limits",
+    "exec-form CMD, init: true, stop_grace_period",
+    "Proxmox: set the VM CPU type to host or x86-64-v3"
+   ],
+   "prevention": "Memory alerts per container; exec-form CMD in Dockerfile reviews; CPU type standard for VMs.",
+   "sources": [
+    {
+     "title": "Docker forums: Docker compose mongo exit code 139",
+     "url": "https://forums.docker.com/t/docker-compose-mongo-exit-code-139/151353",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=docker+exited+137+OOMKilled",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Logs never rotate, or 'docker logs' prints nothing",
+   "area": "Docker Engine / logging",
+   "tool": "json-file, local, journald drivers",
+   "level": "L1",
+   "error_text": "/var/lib/docker/containers/ID/ID-json.log is 40G | Error response from daemon: configured logging driver does not support reading",
+   "context": "Chatty apps, daemon.json log-opts added after containers were created.",
+   "frequency_signal": "compose #1083 'Ability to clear log history' 158 reactions; daily theme in disk-full threads.",
+   "root_causes": [
+    "json-file has no rotation by default.",
+    "log-opts apply only to containers created after the change.",
+    "Drivers like syslog/gelf cannot be read with docker logs (dual logging only for some setups)."
+   ],
+   "diagnosis": [
+    "sudo du -sh /var/lib/docker/containers/*/*-json.log | sort -h | tail",
+    "docker inspect -f \"{{.HostConfig.LogConfig}}\" CONTAINER"
+   ],
+   "fix": [
+    "daemon.json: {\"log-driver\":\"local\",\"log-opts\":{\"max-size\":\"10m\",\"max-file\":\"3\"}} then recreate containers",
+    "emergency: truncate -s 0 on the file (never rm)"
+   ],
+   "prevention": "Ship daemon.json with log limits before the first container.",
+   "sources": [
+    {
+     "title": "docker/compose #1083 Ability to clear log history",
+     "url": "https://github.com/docker/compose/issues/1083",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: configure logging drivers",
+     "url": "https://docs.docker.com/engine/logging/configure/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Volumes: data gone after down -v, space not freed, files owned by root",
+   "area": "Docker storage",
+   "tool": "named volumes, bind mounts",
+   "level": "L1",
+   "error_text": "permission denied writing /data | volume prune frees nothing | database empty after docker compose down -v",
+   "context": "Compose apps with databases, images running as non-root users.",
+   "frequency_signal": "moby #2259 'mount volume as user other than root' 254 reactions; compose #3270; forums 'Docker volume space after container deletion'.",
+   "root_causes": [
+    "down -v deletes named volumes declared in the file.",
+    "docker volume prune (23+) removes only anonymous volumes unless --all.",
+    "Named volumes copy ownership from the image path at first use; bind mounts keep host ownership.",
+    "Image UID differs from host directory owner."
+   ],
+   "diagnosis": [
+    "docker system df -v",
+    "docker volume ls -f dangling=true",
+    "docker run --rm -v VOL:/v alpine ls -ln /v",
+    "docker inspect -f \"{{.Config.User}}\" IMAGE"
+   ],
+   "fix": [
+    "chown in the Dockerfile before VOLUME; user: \"1000:1000\"; chown host dir to the image UID",
+    "docker volume prune --all only after checking",
+    "backup before down -v"
+   ],
+   "prevention": "Never use down -v in runbooks for stateful apps; label volumes.",
+   "sources": [
+    {
+     "title": "moby/moby #2259 mount volume as non-root",
+     "url": "https://github.com/moby/moby/issues/2259",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "docker/compose #3270 named volumes root",
+     "url": "https://github.com/docker/compose/issues/3270",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: volume space after container deletion",
+     "url": "https://forums.docker.com/t/docker-volume-space-after-container-deletion/150050",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Port is already allocated / address already in use",
+   "area": "Networking / ports",
+   "tool": "docker-proxy, Swarm ingress",
+   "level": "L0",
+   "error_text": "Bind for 0.0.0.0:443 failed: port is already allocated | failed to bind host port for 0.0.0.0:80: address already in use",
+   "context": "Apache/Nginx on the host vs a Traefik container; old container still holding the port; Swarm services on ingress.",
+   "frequency_signal": "moby #31698 'Address already in use when deploying service' 103 comments; forums 'Container Port Mapping Issue'.",
+   "root_causes": [
+    "Host service already listens.",
+    "Another container or a stopped Swarm service still publishes it.",
+    "Swarm ingress reserves the port on every node."
+   ],
+   "diagnosis": [
+    "sudo ss -ltnp \"sport = :443\"",
+    "docker ps --filter publish=443",
+    "docker service ls --format \"{{.Name}} {{.Ports}}\""
+   ],
+   "fix": [
+    "Move/stop the host service (Apache 81/444 pattern).",
+    "Remove the old container/service.",
+    "Change the published port."
+   ],
+   "prevention": "Port inventory; one owner per port.",
+   "sources": [
+    {
+     "title": "moby/moby #31698",
+     "url": "https://github.com/moby/moby/issues/31698",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: Container Port Mapping Issue",
+     "url": "https://forums.docker.com/t/container-port-mapping-issue/150171",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "No DNS or no internet in containers and builds (systemd-resolved, corporate DNS, HTTP proxy)",
+   "area": "Networking / DNS",
+   "tool": "dockerd embedded DNS, systemd-resolved, BuildKit",
+   "level": "L1",
+   "error_text": "Temporary failure in name resolution | Could not resolve host | php_network_getaddresses: getaddrinfo failed | i/o timeout pulling",
+   "context": "Ubuntu with 127.0.0.53, networks where 8.8.8.8 is blocked, corporate HTTP proxies, internal-only DNS names.",
+   "frequency_signal": "forums.docker.com top: 'Docker DNS Error on Raspberry Pi', 'Accessing external smtp server from a docker container', 'phpmyadmin getaddrinfo'.",
+   "root_causes": [
+    "Docker cannot use 127.0.0.53 inside containers and falls back to the upstream list or 8.8.8.8.",
+    "Default bridge copies host resolv.conf; user networks use 127.0.0.11 forwarding to host resolvers.",
+    "Proxy set in shell but not for dockerd (pulls) or containers/builds."
+   ],
+   "diagnosis": [
+    "docker run --rm busybox nslookup example.com",
+    "docker run --rm busybox cat /etc/resolv.conf",
+    "resolvectl status | grep \"DNS Servers\"",
+    "systemctl show docker -p Environment"
+   ],
+   "fix": [
+    "daemon.json \"dns\": [\"10.10.0.2\"], \"dns-search\": [\"corp.example.com\"]",
+    "dockerd proxy: daemon.json \"proxies\" or systemd drop-in HTTP_PROXY/NO_PROXY",
+    "client proxies in ~/.docker/config.json for containers and builds"
+   ],
+   "prevention": "Golden daemon.json per site.",
+   "sources": [
+    {
+     "title": "Docker forums: Docker DNS Error on Raspberry Pi",
+     "url": "https://forums.docker.com/t/docker-dns-error-on-raspberry-pi/150418",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: Accessing external smtp server from a container",
+     "url": "https://forums.docker.com/t/accessing-to-external-smtp-server-from-a-docker-container/150289",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "MTU: large requests or pulls hang over VPN, VXLAN or overlay networks",
+   "area": "Networking / MTU",
+   "tool": "docker0, overlay, dind",
+   "level": "L2",
+   "error_text": "TLS handshake timeout | Pulling fs layer forever | curl hangs after headers | git clone stalls in container",
+   "context": "Underlay MTU below 1500 (OpenStack/VXLAN 1450, WireGuard 1420, PPPoE 1492); Swarm overlay; GitLab dind.",
+   "frequency_signal": "forums top of the year: 'Docker stuck on Pulling fs layer'; libnetwork #2661; moby #53765 (IPv6 overlay MTU 20 bytes too large).",
+   "root_causes": [
+    "Containers default to 1500 while the path is smaller and PMTUD is blocked.",
+    "Overlay subtracts 50 bytes assuming IPv4 outer header; IPv6 transport needs 70."
+   ],
+   "diagnosis": [
+    "ip link | grep mtu",
+    "docker run --rm alpine ping -M do -s 1472 -c 2 203.0.113.10",
+    "tracepath 203.0.113.10"
+   ],
+   "fix": [
+    "daemon.json \"mtu\": 1400 (default bridge) and per network com.docker.network.driver.mtu",
+    "docker network create -d overlay --opt com.docker.network.driver.mtu=1400",
+    "MSS clamping on the router"
+   ],
+   "prevention": "Record underlay MTU in the IP plan.",
+   "sources": [
+    {
+     "title": "moby/moby #53765 overlay MTU IPv6",
+     "url": "https://github.com/moby/moby/issues/53765",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "moby/libnetwork #2661",
+     "url": "https://github.com/moby/libnetwork/issues/2661",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: stuck on Pulling fs layer",
+     "url": "https://forums.docker.com/t/docker-stuck-on-pulling-fs-layer-after-downloading-is-started/151108",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "cr0x: Docker network MTU issues",
+     "url": "https://cr0x.net/en/docker-network-mtu-mss-fixes/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "My change didn't show up: compose up doesn't rebuild, cache hides edits, single-file bind mounts go stale",
+   "area": "Compose / builds",
+   "tool": "Compose v2, BuildKit",
+   "level": "L1",
+   "error_text": "old code still served after git pull | Caddyfile edit ignored | Found orphan containers",
+   "context": "Compose projects updated in place.",
+   "frequency_signal": "compose #1487 'up doesn't rebuild'; forums 'Docker seems to cache Caddyfile' (12 replies).",
+   "root_causes": [
+    "up reuses the existing image unless --build.",
+    "Editors replace files (new inode); single-file bind mounts keep the old inode.",
+    "Project name from directory name; renamed services leave orphans.",
+    ".dockerignore or COPY ordering."
+   ],
+   "diagnosis": [
+    "docker compose config",
+    "docker compose images",
+    "docker inspect -f \"{{.Created}}\" IMAGE",
+    "docker compose build --progress=plain"
+   ],
+   "fix": [
+    "docker compose up -d --build --pull always",
+    "mount the directory, not the file",
+    "--remove-orphans; set name: in compose file"
+   ],
+   "prevention": "Image tags per commit; CI builds.",
+   "sources": [
+    {
+     "title": "docker/compose #1487",
+     "url": "https://github.com/docker/compose/issues/1487",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: Docker seems to cache Caddyfile",
+     "url": "https://forums.docker.com/t/docker-seems-to-cache-caddyfile/150638",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "docker-compose vs docker compose: command not found, 'version is obsolete'",
+   "area": "Compose",
+   "tool": "Compose v1/v2",
+   "level": "L0",
+   "error_text": "docker-compose: command not found | unknown shorthand flag: 'd' in -d | the attribute `version` is obsolete",
+   "context": "Old tutorials, Ubuntu packages, Compose v1 EOL.",
+   "frequency_signal": "forums: 'Docker will not start after installing docker compose'; compose #4181 226 reactions.",
+   "root_causes": [
+    "Compose v1 (Python) EOL; v2 is a CLI plugin.",
+    "Plugin missing so docker treats compose as unknown.",
+    "Distribution docker.io/docker-compose packages mixed with docker-ce."
+   ],
+   "diagnosis": [
+    "docker compose version",
+    "apt list --installed | grep -E \"docker|compose\""
+   ],
+   "fix": [
+    "sudo apt install docker-compose-plugin",
+    "remove version: key",
+    "do not mix docker.io and docker-ce"
+   ],
+   "prevention": "Install from Docker apt repo.",
+   "sources": [
+    {
+     "title": "docker/compose #4181",
+     "url": "https://github.com/docker/compose/issues/4181",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: Docker will not start after installing docker compose",
+     "url": "https://forums.docker.com/t/docker-will-not-start-after-installing-docker-compose-n-w-out-the/151374",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Variables: '.env' vs env_file, '$' needs '$$', and secrets in build args",
+   "area": "Compose",
+   "tool": "Compose v2",
+   "level": "L1",
+   "error_text": "The \"DB_PASS\" variable is not set. Defaulting to a blank string.",
+   "context": "Compose, Portainer, Dokploy env handling.",
+   "frequency_signal": "compose #6170 --env-file; #6358 build secrets; Portainer #1857 env_file.",
+   "root_causes": [
+    ".env feeds interpolation only.",
+    "$ in values is interpolated.",
+    "ARG/ENV secrets persist in image history."
+   ],
+   "diagnosis": [
+    "docker compose config",
+    "docker history --no-trunc IMAGE | grep -i pass"
+   ],
+   "fix": [
+    "env_file: for containers",
+    "$$ for literals",
+    "RUN --mount=type=secret and compose secrets"
+   ],
+   "prevention": "Secrets never in ARG/ENV.",
+   "sources": [
+    {
+     "title": "docker/compose #6358 build secrets",
+     "url": "https://github.com/docker/compose/issues/6358",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "docker/compose #6170 --env-file",
+     "url": "https://github.com/docker/compose/issues/6170",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "depends_on doesn't wait for the database",
+   "area": "Compose",
+   "tool": "Compose v2",
+   "level": "L1",
+   "error_text": "ECONNREFUSED db:5432 on startup | connection refused then container exits",
+   "context": "App + DB stacks.",
+   "frequency_signal": "compose #374 'delay container startup' 316 reactions.",
+   "root_causes": [
+    "depends_on only orders start, not readiness.",
+    "No healthcheck.",
+    "Swarm ignores depends_on."
+   ],
+   "diagnosis": [
+    "docker compose ps",
+    "docker inspect -f \"{{json .State.Health}}\" CONTAINER"
+   ],
+   "fix": [
+    "healthcheck + depends_on condition: service_healthy",
+    "app retries with backoff"
+   ],
+   "prevention": "Apps tolerate dependencies restarting.",
+   "sources": [
+    {
+     "title": "docker/compose #374",
+     "url": "https://github.com/docker/compose/issues/374",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "exec format error / no matching manifest for linux/arm64 / multi-platform --load fails",
+   "area": "Builds",
+   "tool": "buildx",
+   "level": "L1",
+   "error_text": "exec /usr/local/bin/docker-entrypoint.sh: exec format error | no matching manifest for linux/arm64/v8 in the manifest list entries | docker exporter does not currently support exporting manifest lists",
+   "context": "Images built on Apple silicon or ARM boards, deployed to amd64 servers; CRLF scripts.",
+   "frequency_signal": "buildx #59 (51 reactions), #166 (41), #1595 (34).",
+   "root_causes": [
+    "Image architecture differs from host.",
+    "--load cannot load a manifest list with the classic store.",
+    "CRLF or missing interpreter gives no such file or directory."
+   ],
+   "diagnosis": [
+    "docker image inspect -f \"{{.Architecture}}\" IMAGE",
+    "docker buildx imagetools inspect REF",
+    "file entrypoint.sh"
+   ],
+   "fix": [
+    "docker buildx build --platform linux/amd64,linux/arm64 --push",
+    "enable containerd image store for multi-platform --load",
+    "dos2unix"
+   ],
+   "prevention": "CI builds with explicit --platform.",
+   "sources": [
+    {
+     "title": "docker/buildx #59",
+     "url": "https://github.com/docker/buildx/issues/59",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "docker/buildx #166",
+     "url": "https://github.com/docker/buildx/issues/166",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "docker/buildx #1595",
+     "url": "https://github.com/docker/buildx/issues/1595",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "buildx docker-container builder ignores daemon.json: insecure registries, mirrors, CA, custom networks",
+   "area": "Builds",
+   "tool": "buildx, buildkitd.toml",
+   "level": "L2",
+   "error_text": "http: server gave HTTP response to HTTPS client | x509: certificate signed by unknown authority | network mode \"custom_network\" not supported by buildkit",
+   "context": "CI runners using docker buildx create; Harbor with private CA.",
+   "frequency_signal": "buildx #1642 (38 reactions), #175 (82 reactions), #476 (77).",
+   "root_causes": [
+    "docker-container builder runs its own buildkitd with its own config and trust.",
+    "BuildKit supports only host/none network modes."
+   ],
+   "diagnosis": [
+    "docker buildx ls",
+    "docker buildx inspect --bootstrap"
+   ],
+   "fix": [
+    "buildkitd.toml with [registry.\"harbor.example.com\"] ca and mirrors; recreate builder with --buildkitd-config (--config on older buildx)",
+    "use --network host or the default docker driver"
+   ],
+   "prevention": "Builder config in Git.",
+   "sources": [
+    {
+     "title": "docker/buildx #1642",
+     "url": "https://github.com/docker/buildx/issues/1642",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "docker/buildx #175",
+     "url": "https://github.com/docker/buildx/issues/175",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Harbor shows unknown/unknown artifacts; BuildKit cache export to Harbor returns 404",
+   "area": "Builds / Harbor",
+   "tool": "buildx, Harbor",
+   "level": "L3",
+   "error_text": "error writing manifest blob: failed commit on ref ... unexpected status: 404 Not Found | unknown/unknown platform in index",
+   "context": "buildx >= 0.10 provenance attestations; registry cache exports to Harbor.",
+   "frequency_signal": "harbor #14774 (64 reactions, 64 comments); buildx #1533 (28 reactions); buildx #271.",
+   "root_causes": [
+    "Attestation manifests appear as unknown/unknown entries in the image index.",
+    "Classic cache manifest media type not accepted by some registries; image-manifest=true writes an OCI image manifest."
+   ],
+   "diagnosis": [
+    "docker buildx imagetools inspect --raw REF | jq .manifests[].platform"
+   ],
+   "fix": [
+    "--provenance=false where consumers cannot handle indexes",
+    "--cache-to type=registry,ref=...,mode=max,image-manifest=true,oci-mediatypes=true"
+   ],
+   "prevention": "Pin buildx versions in CI.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #14774",
+     "url": "https://github.com/goharbor/harbor/issues/14774",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "docker/buildx #1533",
+     "url": "https://github.com/docker/buildx/issues/1533",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Portainer: instance timed out, lost admin password, or environment unreachable",
+   "area": "Portainer",
+   "tool": "Portainer CE, Agent, Edge Agent",
+   "level": "L1",
+   "error_text": "Your Portainer instance timed out for security purposes | Failed loading environment | environment is unreachable",
+   "context": "New installs left unattended; Docker upgrades; Swarm agent on overlay.",
+   "frequency_signal": "Portainer #12925 (439 reactions), #11436 (184), #12934.",
+   "root_causes": [
+    "5-minute window to create the admin user.",
+    "Embedded Docker client too old for Docker 26/29.",
+    "Agent port 9001 blocked or agent not global on Swarm."
+   ],
+   "diagnosis": [
+    "docker logs portainer --tail 50",
+    "docker service ps portainer_agent"
+   ],
+   "fix": [
+    "docker restart portainer then create admin",
+    "reset password with portainer/helper-reset-password",
+    "upgrade Portainer and agent together"
+   ],
+   "prevention": "Pin Portainer and Docker versions together.",
+   "sources": [
+    {
+     "title": "portainer/portainer #12925",
+     "url": "https://github.com/portainer/portainer/issues/12925",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "portainer/portainer #11436",
+     "url": "https://github.com/portainer/portainer/issues/11436",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "portainer/portainer #12934",
+     "url": "https://github.com/portainer/portainer/issues/12934",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Portainer stacks: env vars don't reach containers, git stacks with relative paths, 'volumes must be a mapping'",
+   "area": "Portainer",
+   "tool": "Portainer CE stacks",
+   "level": "L1",
+   "error_text": "Failed to deploy a stack: volumes must be a mapping | variable is not set",
+   "context": "Stacks created in the Portainer UI or from Git.",
+   "frequency_signal": "Portainer #1857 (45 reactions), #6390 (34); forums 'Failed to deploy a stack volumes must be a mapping'.",
+   "root_causes": [
+    "UI variables are written to stack.env and used for interpolation; containers only get them via env_file: stack.env or environment:.",
+    "YAML indentation.",
+    "Relative bind paths resolve inside Portainer data dir."
+   ],
+   "diagnosis": [
+    "docker compose -f FILE config",
+    "check stack.env"
+   ],
+   "fix": [
+    "env_file: stack.env",
+    "fix YAML",
+    "absolute paths or named volumes"
+   ],
+   "prevention": "Validate stacks in CI.",
+   "sources": [
+    {
+     "title": "portainer/portainer #1857",
+     "url": "https://github.com/portainer/portainer/issues/1857",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "portainer/portainer #6390",
+     "url": "https://github.com/portainer/portainer/issues/6390",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker forums: volumes must be a mapping",
+     "url": "https://forums.docker.com/t/failed-to-deploy-a-stack-volumes-must-be-a-mapping/150293",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Swarm service stuck at 0/1: pending, no suitable node, No such image",
+   "area": "Swarm",
+   "tool": "Swarm mode",
+   "level": "L1",
+   "error_text": "no suitable node (scheduling constraints not satisfied on 3 nodes) | insufficient resources | No such image: harbor.example.com/team-a/app:1.4.2",
+   "context": "Dokploy apps and stacks on multi-node Swarm.",
+   "frequency_signal": "Daily Swarm/Dokploy question; moby #33183 logs gaps.",
+   "root_causes": [
+    "Constraints/labels unmatched.",
+    "Reservations exceed free resources.",
+    "Workers lack registry credentials (--with-registry-auth)."
+   ],
+   "diagnosis": [
+    "docker service ps --no-trunc SERVICE",
+    "docker node ls",
+    "docker node inspect NODE --format \"{{.Spec.Labels}}\""
+   ],
+   "fix": [
+    "docker service update --with-registry-auth",
+    "fix constraints/labels",
+    "lower reservations"
+   ],
+   "prevention": "Placement documented.",
+   "sources": [
+    {
+     "title": "moby/moby #33183",
+     "url": "https://github.com/moby/moby/issues/33183",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Works with docker compose up, fails with docker stack deploy",
+   "area": "Swarm",
+   "tool": "docker stack",
+   "level": "L2",
+   "error_text": "Ignoring unsupported options: build, restart | Ignoring deprecated options: container_name | .env not loaded",
+   "context": "Dokploy compose in stack mode, Traefik labels.",
+   "frequency_signal": "moby #29133 (118 comments), moby #31101 (173 reactions).",
+   "root_causes": [
+    "stack deploy ignores build, depends_on, container_name, restart.",
+    ".env not read; labels must be under deploy.labels for Traefik Swarm provider."
+   ],
+   "diagnosis": [
+    "docker stack config -c compose.yml",
+    "docker service inspect --format \"{{json .Spec.Labels}}\""
+   ],
+   "fix": [
+    "prebuild and push images",
+    "export vars or docker stack config",
+    "deploy.labels"
+   ],
+   "prevention": "Separate compose files for dev and Swarm.",
+   "sources": [
+    {
+     "title": "moby/moby #29133",
+     "url": "https://github.com/moby/moby/issues/29133",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "moby/moby #31101",
+     "url": "https://github.com/moby/moby/issues/31101",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Overlay network: tasks on other nodes unreachable",
+   "area": "Swarm networking",
+   "tool": "overlay, VXLAN",
+   "level": "L2",
+   "error_text": "no route to host / timeout between services on different nodes; works on same node",
+   "context": "Multi-node Swarm across VLANs, VMware, cloud SGs.",
+   "frequency_signal": "moby #32195 (250 comments), #30134, #26106.",
+   "root_causes": [
+    "2377/tcp, 7946/tcp+udp, 4789/udp blocked.",
+    "Wrong advertise address on multi-NIC hosts.",
+    "VXLAN port conflict with VMware NSX; checksum offload bugs."
+   ],
+   "diagnosis": [
+    "docker info --format \"{{.Swarm.NodeAddr}}\"",
+    "sudo tcpdump -ni ens18 udp port 4789",
+    "nc -zvu NODE 4789"
+   ],
+   "fix": [
+    "open ports between nodes only",
+    "--advertise-addr/--data-path-addr",
+    "--data-path-port at init",
+    "ethtool -K IFACE tx-checksum-ip-generic off"
+   ],
+   "prevention": "Swarm port matrix in firewall as code.",
+   "sources": [
+    {
+     "title": "moby/moby #32195",
+     "url": "https://github.com/moby/moby/issues/32195",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "moby/moby #30134",
+     "url": "https://github.com/moby/moby/issues/30134",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Routing mesh: real client IP lost, published ports open on every node",
+   "area": "Swarm networking",
+   "tool": "ingress",
+   "level": "L2",
+   "error_text": "all requests from 10.0.0.2 | X-Real-Ip is an ingress address",
+   "context": "Traefik/Nginx as Swarm service.",
+   "frequency_signal": "moby #25526 (365 reactions/comments), #32299 (69), #35082 (146).",
+   "root_causes": [
+    "Ingress SNATs to the ingress network.",
+    "Ports on 127.0.0.1 not honoured in Swarm."
+   ],
+   "diagnosis": [
+    "docker service inspect --format \"{{json .Endpoint.Spec.Ports}}\" SERVICE"
+   ],
+   "fix": [
+    "mode: host publishing for the proxy, global on edge nodes"
+   ],
+   "prevention": "Edge proxy in host mode.",
+   "sources": [
+    {
+     "title": "moby/moby #25526",
+     "url": "https://github.com/moby/moby/issues/25526",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "moby/moby #32299",
+     "url": "https://github.com/moby/moby/issues/32299",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "moby/moby #35082",
+     "url": "https://github.com/moby/moby/issues/35082",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Rolling update paused, no rollback, downtime during deploy",
+   "area": "Swarm",
+   "tool": "service update",
+   "level": "L2",
+   "error_text": "update paused due to failure or early termination of task | rollback: update rolled back",
+   "context": "Zero-downtime deploys.",
+   "frequency_signal": "moby #30321 (124 comments).",
+   "root_causes": [
+    "No healthcheck; default failure_action pause; stop-first order."
+   ],
+   "diagnosis": [
+    "docker service inspect --pretty SERVICE",
+    "docker service ps SERVICE"
+   ],
+   "fix": [
+    "update_config order start-first, failure_action rollback, monitor 30s",
+    "docker service rollback SERVICE"
+   ],
+   "prevention": "Healthchecks mandatory.",
+   "sources": [
+    {
+     "title": "moby/moby #30321",
+     "url": "https://github.com/moby/moby/issues/30321",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Swarm secrets/configs can't be updated: 'only updates to Labels are allowed'",
+   "area": "Swarm",
+   "tool": "secrets, configs",
+   "level": "L2",
+   "error_text": "rpc error: code = InvalidArgument desc = only updates to Labels are allowed | secret X is in use by the following service",
+   "context": "Rotating DB passwords, TLS certs.",
+   "frequency_signal": "moby #13490 secrets best practices (223 reactions).",
+   "root_causes": [
+    "Secrets/configs immutable."
+   ],
+   "diagnosis": [
+    "docker secret ls",
+    "docker service inspect --format \"{{json .Spec.TaskTemplate.ContainerSpec.Secrets}}\""
+   ],
+   "fix": [
+    "create versioned secret, service update --secret-rm/--secret-add target same",
+    "compose name: app_db_v2"
+   ],
+   "prevention": "Versioned names.",
+   "sources": [
+    {
+     "title": "moby/moby #13490",
+     "url": "https://github.com/moby/moby/issues/13490",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Lost quorum: 'The swarm does not have a leader'",
+   "area": "Swarm",
+   "tool": "raft managers",
+   "level": "L3",
+   "error_text": "Error response from daemon: rpc error: code = Unknown desc = The swarm does not have a leader. It's possible that too few managers are online.",
+   "context": "2-manager clusters, manager VM deleted, IP change.",
+   "frequency_signal": "moby #25432 (78 comments).",
+   "root_causes": [
+    "Majority of managers lost; even manager counts."
+   ],
+   "diagnosis": [
+    "docker node ls",
+    "docker info --format \"{{json .Swarm}}\""
+   ],
+   "fix": [
+    "docker swarm init --force-new-cluster --advertise-addr IP on a surviving manager",
+    "restore /var/lib/docker/swarm backup"
+   ],
+   "prevention": "1 or 3 or 5 managers; backup swarm dir.",
+   "sources": [
+    {
+     "title": "moby/moby #25432",
+     "url": "https://github.com/moby/moby/issues/25432",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Docker docs: administer and maintain a swarm",
+     "url": "https://docs.docker.com/engine/swarm/admin_guide/",
+     "type": "docs",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Harbor down after a reboot or upgrade",
+   "area": "Harbor",
+   "tool": "Harbor (docker compose install)",
+   "level": "L2",
+   "error_text": "harbor-core unhealthy | nginx: host not found in upstream \"core\" | harbor-log failed",
+   "context": "Offline installer with docker compose.",
+   "frequency_signal": "harbor #7008 (42 comments), #13589 (50 comments).",
+   "root_causes": [
+    "Containers depend on harbor-log syslog; start order after reboot.",
+    "harbor.yml edited without ./prepare.",
+    "Skipping minor versions on upgrade."
+   ],
+   "diagnosis": [
+    "docker compose -f /opt/harbor/docker-compose.yml ps",
+    "docker logs harbor-core --tail 50"
+   ],
+   "fix": [
+    "./prepare && docker compose down && up -d",
+    "systemd unit for harbor",
+    "upgrade path N-2 with migration"
+   ],
+   "prevention": "Backups of DB and data before upgrades.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #7008",
+     "url": "https://github.com/goharbor/harbor/issues/7008",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #13589",
+     "url": "https://github.com/goharbor/harbor/issues/13589",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Harbor disk still full after deleting tags: GC, retention and quotas",
+   "area": "Harbor",
+   "tool": "Harbor GC, tag retention",
+   "level": "L2",
+   "error_text": "quota exceeded | disk at 95% after deleting repositories",
+   "context": "Long-running Harbor storing CI images.",
+   "frequency_signal": "harbor #15445 (43 comments), #12948 (52), discussions #22734, #20309, #22454.",
+   "root_causes": [
+    "Deleting tags removes references only; GC frees blobs.",
+    "2-hour window protects recent blobs.",
+    "Quota and disk counted differently."
+   ],
+   "diagnosis": [
+    "GC history in UI",
+    "du -sh /data/registry"
+   ],
+   "fix": [
+    "tag retention rules",
+    "GC with delete untagged, dry run first, scheduled"
+   ],
+   "prevention": "Retention + weekly GC + disk alerts.",
+   "sources": [
+    {
+     "title": "Harbor docs: garbage collection",
+     "url": "https://goharbor.io/docs/2.13.0/administration/garbage-collection/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #15445",
+     "url": "https://github.com/goharbor/harbor/issues/15445",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Harbor discussion #22734 accelerate GC",
+     "url": "https://github.com/goharbor/harbor/discussions/22734",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Harbor robot accounts: 'robot$' names, unauthorized in CI, OIDC breaks robots",
+   "area": "Harbor",
+   "tool": "robot accounts",
+   "level": "L2",
+   "error_text": "unauthorized: authentication required | failed to verify secret, username: robot$gitlab",
+   "context": "GitLab CI variables, OIDC auth mode.",
+   "frequency_signal": "harbor #15253 (73 comments), #9553, #8744.",
+   "root_causes": [
+    "$ expanded by shells/CI.",
+    "Robot expired or lacks project permission.",
+    "Old versions broke robots in OIDC mode."
+   ],
+   "diagnosis": [
+    "curl -u \"robot\\$team-a+ci:TOKEN\" https://harbor.example.com/v2/_catalog"
+   ],
+   "fix": [
+    "single quotes / --password-stdin; GitLab variable with expand disabled",
+    "refresh secret"
+   ],
+   "prevention": "Robot expiry calendar.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #15253",
+     "url": "https://github.com/goharbor/harbor/issues/15253",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #9553",
+     "url": "https://github.com/goharbor/harbor/issues/9553",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Harbor behind Traefik/Nginx: wrong external_url, CSRF token invalid, login loops",
+   "area": "Harbor",
+   "tool": "Harbor + reverse proxy",
+   "level": "L2",
+   "error_text": "CSRF token invalid | unauthorized: authentication required with realm http://harbor.example.com/service/token",
+   "context": "TLS terminated at Traefik.",
+   "frequency_signal": "harbor #12676 (60 comments), #3114, #8243 (43 reactions).",
+   "root_causes": [
+    "external_url mismatch; X-Forwarded-Proto missing; multiple hostnames unsupported."
+   ],
+   "diagnosis": [
+    "curl -sI https://harbor.example.com/v2/ | grep -i www-authenticate"
+   ],
+   "fix": [
+    "set external_url, run prepare",
+    "pass X-Forwarded-Proto https",
+    "one hostname"
+   ],
+   "prevention": "One canonical URL.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #12676",
+     "url": "https://github.com/goharbor/harbor/issues/12676",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #3114",
+     "url": "https://github.com/goharbor/harbor/issues/3114",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #8243",
+     "url": "https://github.com/goharbor/harbor/issues/8243",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Harbor replication jobs fail or time out",
+   "area": "Harbor",
+   "tool": "replication",
+   "level": "L3",
+   "error_text": "504 Gateway Time-out | failed to fetch artifacts | invalid manifest",
+   "context": "DR copies between sites, pulling from Docker Hub.",
+   "frequency_signal": "harbor #8037 (40 comments), #18813 (40).",
+   "root_causes": [
+    "Endpoint TLS/CA, robot perms, proxy timeouts, rate limits, filters."
+   ],
+   "diagnosis": [
+    "job logs in UI",
+    "docker logs harbor-jobservice"
+   ],
+   "fix": [
+    "test endpoint, robot with pull/push, filters, bandwidth limit",
+    "proxy timeouts"
+   ],
+   "prevention": "Replication monitoring.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #8037",
+     "url": "https://github.com/goharbor/harbor/issues/8037",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #18813",
+     "url": "https://github.com/goharbor/harbor/issues/18813",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Harbor proxy cache: library/ path, images not listed or untagged",
+   "area": "Harbor",
+   "tool": "proxy cache project",
+   "level": "L2",
+   "error_text": "manifest unknown for dockerhub-proxy/nginx | repository list empty",
+   "context": "Docker Hub pull-through via Harbor.",
+   "frequency_signal": "harbor #19609 (37 reactions), #18335 (56 comments), #21454 (39 comments).",
+   "root_causes": [
+    "Official images need library/ prefix.",
+    "Cached artifacts appear only after first pull and may be untagged."
+   ],
+   "diagnosis": [
+    "docker pull harbor.example.com/dockerhub-proxy/library/nginx:1.27"
+   ],
+   "fix": [
+    "use library/ path; containerd/dockerd mirror config with path rewrite"
+   ],
+   "prevention": "Document proxy paths.",
+   "sources": [
+    {
+     "title": "goharbor/harbor #19609",
+     "url": "https://github.com/goharbor/harbor/issues/19609",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #21454",
+     "url": "https://github.com/goharbor/harbor/issues/21454",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "goharbor/harbor #18335",
+     "url": "https://github.com/goharbor/harbor/issues/18335",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "Docker Engine (Moby)",
+   "what": "dockerd plus CLI that run OCI containers; base of Compose, Swarm, Dokploy, Portainer.",
+   "architecture": "CLI -> versioned API on /var/run/docker.sock -> dockerd -> containerd -> runc. overlay2 under /var/lib/docker or the containerd image store; bridge/overlay networking with iptables/nftables (DOCKER, DOCKER-USER), embedded DNS 127.0.0.11; json-file or local logging.",
+   "current_version_notes": "29.x current (29.0.0 on 2025-11-10; 29.8.2 on 2026-09-30). 29: min API 1.44, containerd store default on fresh installs, experimental nftables, cgroup v1 deprecated. 28: networking hardening, ipset required, schema-1 pulls removed.",
+   "gotchas": [
+    "docker group = root",
+    "published ports bypass UFW",
+    "json-file never rotates by default",
+    "registry-mirrors is Hub-only",
+    "unpinned upgrades break socket clients"
+   ],
+   "official_docs": "https://docs.docker.com/engine/"
+  },
+  {
+   "tool": "BuildKit / buildx",
+   "what": "Docker's build engine and its CLI plugin.",
+   "architecture": "Builders with drivers: docker (uses daemon config), docker-container (own buildkitd.toml, cache export, multi-platform), kubernetes, remote; content-addressed cache; inline/registry/local cache backends.",
+   "current_version_notes": "buildx 0.10+ adds provenance attestations (unknown/unknown index entries); registry cache with the docker driver needs the containerd store.",
+   "gotchas": [
+    "builders ignore daemon.json/certs.d",
+    "--progress=plain to see RUN output",
+    "secrets via --secret, not ARG",
+    "multi-platform --load needs containerd store"
+   ],
+   "official_docs": "https://docs.docker.com/build/"
+  },
+  {
+   "tool": "Docker Compose v2",
+   "what": "docker compose plugin running multi-container apps from the Compose Specification.",
+   "architecture": "Project owns PROJECT_default network, volumes and containers labelled com.docker.compose.*; config hash decides recreation; builds via BuildKit.",
+   "current_version_notes": "v1 (docker-compose, Python) is EOL; v2 ignores version: and names containers with hyphens.",
+   "gotchas": [
+    ".env is for interpolation, env_file for containers",
+    "literal $ must be $$",
+    "down -v deletes volumes",
+    "up doesn't rebuild or pull by default",
+    "stack deploy ignores build/depends_on"
+   ],
+   "official_docs": "https://docs.docker.com/compose/"
+  },
+  {
+   "tool": "Docker Swarm mode",
+   "what": "Orchestrator built into Docker Engine; Dokploy runs on it.",
+   "architecture": "Raft managers (odd number, tolerate (N-1)/2 failures) and workers; ports 2377/tcp, 7946/tcp+udp, 4789/udp; ingress routing mesh with service VIPs; embedded DNS; secrets in the encrypted Raft log.",
+   "current_version_notes": "Maintained, low feature velocity; moby #25526 (client IP) open since 2016; default-addr-pool and data-path-port only at init.",
+   "gotchas": [
+    "--with-registry-auth",
+    "Traefik needs deploy.labels and a port",
+    "secrets/configs immutable",
+    "mode: host keeps client IP"
+   ],
+   "official_docs": "https://docs.docker.com/engine/swarm/"
+  },
+  {
+   "tool": "Portainer CE",
+   "what": "Web UI for Docker, Swarm and Kubernetes environments.",
+   "architecture": "Server container (portainer_data volume) using the socket, Agent (9001) or Edge Agent; stacks in /data/compose/ID; UI 9443/9000.",
+   "current_version_notes": "LTS/STS channels; Docker 29 support in 2.33.5 LTS / 2.36.0 STS; Docker 26 fix in 2.20.3; 2.27.0 changed .env interpolation.",
+   "gotchas": [
+    "5-minute initial admin window",
+    "socket mount = root",
+    "UI vars reach containers via env_file: stack.env"
+   ],
+   "official_docs": "https://docs.portainer.io/"
+  },
+  {
+   "tool": "Harbor",
+   "what": "CNCF registry with projects, RBAC, robot accounts, replication, proxy cache, Trivy scanning, retention.",
+   "architecture": "harbor.yml -> ./prepare -> docker compose: nginx, portal, core (token service), registry, jobservice, PostgreSQL, Redis, trivy-adapter, harbor-log (127.0.0.1:1514); data in /data.",
+   "current_version_notes": "Docs 2.13-2.15; upgrades only from N-2 minors; external PostgreSQL >= 12 since 2.9; GC non-blocking with a 2-hour window.",
+   "gotchas": [
+    "robot$ names",
+    "external_url behind proxies",
+    "harbor-log boot dependency",
+    "GC needed to free space",
+    "library/ path in proxy cache"
+   ],
+   "official_docs": "https://goharbor.io/docs/"
+  },
+  {
+   "tool": "Docker Hub and registry mirrors",
+   "what": "Default public registry and pull-through caches in front of it.",
+   "architecture": "auth.docker.io tokens, registry-1.docker.io with ratelimit headers; dockerd registry-mirrors (Hub only), containerd hosts.toml, buildkitd.toml mirrors; Distribution proxy or Harbor proxy cache.",
+   "current_version_notes": "Docs Oct 2026: 100 pulls/6 h anonymous per IPv4 or /64, 200/6 h Personal, paid unlimited.",
+   "gotchas": [
+    "NAT shares the anonymous budget",
+    "credentialed mirrors expose private images",
+    "daemon mirror doesn't cover BuildKit/containerd"
+   ],
+   "official_docs": "https://docs.docker.com/docker-hub/usage/pulls/"
+  },
+  {
+   "tool": "GitLab CI Docker-in-Docker",
+   "what": "docker:dind service used to build and push images from GitLab jobs.",
+   "architecture": "Privileged runner; job talks to tcp://docker:2376 with TLS certs in the shared /certs/client volume; dind has its own storage, CA trust and mirrors.",
+   "current_version_notes": "TLS on by default since 19.03; old dind fails on cgroup v2; pin docker and dind to your Engine major.",
+   "gotchas": [
+    "needs privileged",
+    "alias: docker when pulling dind via a mirror path",
+    "CA must be trusted inside dind",
+    "empty cache every job"
+   ],
+   "official_docs": "https://docs.gitlab.com/ci/docker/using_docker_build/"
+  }
+ ],
+ "learning_signals": [
+  "Most Docker pain on servers is upgrades: Docker 29 API floor, runc/AppArmor fixes in LXC, rootless port drivers. Practitioners learn to pin versions and stage upgrades.",
+  "Forum top lists are dominated by disk usage, localhost/host networking and daemon connectivity; these are the first things to master.",
+  "Swarm knowledge comes from moby issues with hundreds of comments (client IP, overlay connectivity, rolling updates); there is little new course material, so the DCA Swarm section plus docs is the path.",
+  "Harbor operators learn GC, retention and robot accounts from GitHub issues and discussions; the docs cover mechanics, the issues cover the surprises.",
+  "BuildKit behaviour (separate builder config, attestations, cache export) surprises people moving from classic builds; buildx issues are the best source."
+ ],
+ "coverage_notes": "Merged from the partial research catalog (10 problems + 8 tool notes) and a 14-fetch top-up: forums.docker.com top yearly, docker/compose + docker/buildx + moby/moby + portainer + goharbor issues by reactions, moby area/swarm and harbor issues by comments, harbor discussions, Harbor GC docs, Docker rootless troubleshooting docs, a search on overlay MTU."
+}

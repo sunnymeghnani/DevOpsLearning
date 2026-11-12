@@ -1,0 +1,5 @@
+{
+ "q1": "systemd-analyze verify",
+ "q2": "5",
+ "q3": "reset-failed"
+}

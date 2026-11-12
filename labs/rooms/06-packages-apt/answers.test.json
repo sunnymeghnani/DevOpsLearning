@@ -1,0 +1,6 @@
+{
+ "q1": "dpkg --configure -a",
+ "q2": "postinst",
+ "q3": "apt-mark showhold",
+ "q4": "1.1"
+}

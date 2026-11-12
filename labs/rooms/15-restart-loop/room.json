@@ -1,0 +1,75 @@
+{
+ "id": "l1-restart-loop",
+ "title": "The service that keeps restarting",
+ "level": "L1",
+ "map_node": "systemd-units",
+ "path": "junior",
+ "order": 15,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "bitcoind.service: Start request repeated too quickly (bitcoin/bitcoin issue #26718)",
+  "url": "https://github.com/bitcoin/bitcoin/issues/26718",
+  "note": "adapted"
+ },
+ "brief": "**ALERT 02:05 · batch-02 · export-worker down, nightly exports missing**\n\nYesterday the export-worker package was upgraded to 2.0 (`/etc/export-worker/CHANGES`). Since then the service flaps: systemd starts it, it dies at once, systemd tries again, and after a few seconds it stops trying.\n\nThe night shift ran `systemctl restart export-worker` three times. \"It just fails again, or refuses with *Start request repeated too quickly*.\"\n\nDon't restart it again. Read what systemd says about each attempt, fix the unit properly, and leave the worker running as the `exporter` user, started at boot. Don't hide the problem with `Restart=always` or a bigger start limit.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Read why it dies, then fix the unit",
+   "text": "`systemctl status export-worker` shows only the last lines. `journalctl -u export-worker` shows every attempt and why it failed. `systemd-analyze verify` checks a unit file without starting it.\n\nThere are two faults left over from the upgrade. One stops systemd before the program even runs; the other shows up once the first is fixed. Fix both in a way the next restart and the next boot will use. Done when `verify` is clean, every environment file the unit needs exists and sets `EXPORT_DIR`, and systemd has loaded the new unit.",
+   "points": 50,
+   "hints": [
+    "The journal says `Failed to load environment files: No such file or directory`. `systemd-analyze verify /etc/systemd/system/export-worker.service` says `Command /usr/local/bin/export-worker is not executable`. `cat /etc/export-worker/CHANGES`.",
+    "`sudo cp /etc/export-worker/worker.env.example /etc/export-worker/worker.env`, then in `sudo systemctl edit --full export-worker` set `ExecStart=/opt/export-worker/bin/export-worker --queue nightly`. After editing the file directly, run `sudo systemctl daemon-reload`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which command checks a unit file and reports the missing program without starting the service?",
+     "format": "command with subcommand, without the unit",
+     "answer_sha256": "bd5f51e01912802b21f67ed772d5c794f1df7f8d10e6daf6507c11aac102cd6c"
+    },
+    {
+     "id": "q2",
+     "prompt": "By default, how many starts within 10 seconds does systemd allow before it refuses with \"Start request repeated too quickly\"?",
+     "format": "number",
+     "answer_sha256": "ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "systemd-analyze verify is clean; the environment file exists and sets EXPORT_DIR; User=exporter kept; no daemon-reload pending",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Get it out of the start limit",
+   "text": "The unit file is fixed, but the service is still in the failed state, and inside the 10-second window systemd refuses new starts. Clear the failed state and the start counter, start the worker, and watch it for a while: a worker that dies again a second later is not fixed.\n\nDone when export-worker runs as `exporter`, keeps the same PID, writes `/var/lib/export-worker/heartbeat`, and starts at boot.",
+   "points": 50,
+   "hints": [
+    "`systemctl show -p NRestarts,Result,StartLimitBurst export-worker` shows the counters. There is one `systemctl` subcommand that resets a failed unit.",
+    "`sudo systemctl reset-failed export-worker && sudo systemctl start export-worker`, then `systemctl status export-worker` twice, a few seconds apart: same Main PID, `active (running)`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which systemctl subcommand clears a unit's failed state and its start counter?",
+     "format": "subcommand",
+     "answer_sha256": "86293986b46bc2506505a687e6599544149e97ce96334036e2f35277b185ebe9"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "export-worker runs as exporter with a stable PID, writes its heartbeat and starts at boot",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\nThe 2.0 package moved the program to `/opt/export-worker/bin/` and the settings to an environment file, but the unit still had the 1.x paths:\n1. `EnvironmentFile=/etc/export-worker/worker.env` did not exist. systemd reads it **before** it starts the program, so each try ended with `Failed to load environment files: No such file or directory` and `result 'resources'`.\n2. `ExecStart=/usr/local/bin/export-worker` pointed at a file that no longer exists. Once the env file is there, the journal shows `status=203/EXEC`.\n3. `Restart=on-failure` with `RestartSec=300ms` used up the start limit (`StartLimitBurst=5` in `StartLimitIntervalSec=10s`) within seconds: `Start request repeated too quickly`. After that, a manual `restart` inside the window is refused at once.\n\n### Task 1\n```bash\nsystemctl status export-worker\njournalctl -u export-worker -n 20            # Failed to load environment files ... Start request repeated too quickly\nsudo systemd-analyze verify /etc/systemd/system/export-worker.service   # Command /usr/local/bin/export-worker is not executable\ncat /etc/export-worker/CHANGES\nsudo cp /etc/export-worker/worker.env.example /etc/export-worker/worker.env\nsudo sed -i 's|/usr/local/bin/export-worker|/opt/export-worker/bin/export-worker|' /etc/systemd/system/export-worker.service\nsudo systemd-analyze verify /etc/systemd/system/export-worker.service   # no output\nsudo systemctl daemon-reload\n```\n*Why the reload:* systemd keeps its own parsed copy of every unit. Until you reload, `start` still uses the old one, and `systemctl status` warns `changed on disk`. `systemctl edit --full` reloads for you. A `-` before the path (`EnvironmentFile=-/etc/...`) makes the file optional. That is right for optional settings, but here the worker needs `EXPORT_DIR`, so the file belongs on disk.\n\n### Task 2\n```bash\nsystemctl show -p NRestarts,Result export-worker\nsudo systemctl reset-failed export-worker\nsudo systemctl start export-worker\nsleep 5; systemctl status export-worker      # active (running), same Main PID\nsudo cat /var/lib/export-worker/heartbeat   # the directory is exporter's (0750)\n```\n*Why not raise the limit:* the start limit is what stopped a broken service from restarting forever and flooding the journal. Read the first failure in the journal, not the last line: the last line only says that systemd gave up.\n\n**Source (adapted):** [bitcoind.service: Start request repeated too quickly (bitcoin/bitcoin #26718)](https://github.com/bitcoin/bitcoin/issues/26718): the service failed, restarted five times and hit the start limit. The reporter found in `journalctl -e` that the `ExecStart=` path was wrong, corrected it, and the service started. The missing environment file is added from the same kind of package upgrade."
+}

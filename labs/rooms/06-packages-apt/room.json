@@ -1,0 +1,81 @@
+{
+ "id": "l0-packages-apt",
+ "title": "E: dpkg was interrupted",
+ "level": "L0",
+ "map_node": "packages-apt",
+ "path": "fresher",
+ "order": 6,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "E: dpkg was interrupted, you must manually run 'sudo dpkg --configure -a' (Launchpad Answers #99969)",
+  "url": "https://answers.launchpad.net/ubuntu/+source/yelp/+question/99969",
+  "note": "adapted"
+ },
+ "brief": "**TICKET MON-81 · cannot install anything on mon-01**\n\nYesterday evening Alex installed the monitoring agent `app-agent` 1.0 from our internal mirror. The SSH session dropped in the middle of the install. Since then every apt command stops with:\n\n`E: dpkg was interrupted, you must manually run 'dpkg --configure -a' to correct the problem.`\n\nAlso, this morning the vendor **recalled app-agent 1.1** (it corrupts metrics), but 1.1 is already in our mirror and tonight's maintenance job runs `apt upgrade`.\n\nThis network has no internet; apt uses only `file:/srv/mirror`. Get dpkg healthy with 1.0 configured, and make sure tonight's upgrade can't install 1.1.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Finish the interrupted install",
+   "text": "Reproduce the error (`sudo apt install app-agent`), then do what it says. dpkg will try to finish configuring the package by running its maintainer script again, and that may fail for its own reason. Read the error: it names the script, the file and the line.\n\nFix the cause, not the symptom: don't delete the package's scripts, and keep the agent pointed at 10.0.20.5. Done when `dpkg --audit` prints nothing, app-agent 1.0 shows as installed, and apt works again.",
+   "points": 50,
+   "hints": [
+    "`sudo dpkg --configure -a` re-runs the postinst. `dpkg -s app-agent | grep Status` and `ls /var/lib/dpkg/info/app-agent.*` show the state and the scripts.",
+    "The postinst runs `app-agent --check-config`, which rejects the key `sever`. Fix the typo in `/etc/app-agent/agent.conf`, then run `sudo dpkg --configure -a` again."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which command finishes configuring every unpacked or half-configured package?",
+     "format": "command with options, without sudo",
+     "answer_sha256": "d987c57ca6be2daa0c1114269788c75b53916ea85a21e00f5b74a802d60eaeff"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which maintainer script of app-agent failed?",
+     "format": "script name as in /var/lib/dpkg/info/app-agent.<name>",
+     "answer_sha256": "c51597f6fcd633986a8a02b2114be52ec4fd8e03245ba65c81bdb6897220caa2"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "app-agent 1.0 is fully configured, no interrupted dpkg journal, apt-get check passes",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Keep the recalled version out",
+   "text": "Look at what the mirror offers and what tonight's job would do: `apt-cache policy app-agent` and `apt-get -s upgrade` (`-s` only simulates).\n\nPin the installed version so that `apt upgrade` keeps it back, without removing 1.1 from the mirror (other teams' test boxes use it) and without uninstalling the agent. Done when the simulated upgrade no longer lists app-agent and it stays at 1.0.",
+   "points": 50,
+   "hints": [
+    "`apt-cache policy app-agent` shows `Installed: 1.0` and `Candidate: 1.1`. A hold tells apt never to change that package automatically.",
+    "`sudo apt-mark hold app-agent`; check with `apt-mark showhold` and `apt-get -s upgrade` (\"kept back\")."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which command lists the packages on hold?",
+     "format": "command subcommand",
+     "answer_sha256": "388298feb8c89bd54eaed42ee08e9e74c2ff91611567fad5fa1a137005ea5b68"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which app-agent version is apt's candidate before your fix?",
+     "format": "version number",
+     "answer_sha256": "b05e244762b1e472be89a93800cc3ee326743cecb55984bf12813addb8de66d0"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "app-agent is held at 1.0 while the mirror offers 1.1; a simulated upgrade leaves it alone",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. The install was killed while app-agent's **postinst** was running. dpkg had unpacked the files but never finished configuring them, and its journal in `/var/lib/dpkg/updates/` was never merged. apt refuses to work on top of a database in that state: `E: dpkg was interrupted`.\n2. Re-running the configuration then failed for a second, independent reason: the postinst validates `/etc/app-agent/agent.conf`, which has the typo `sever`.\n3. The mirror offers 1.1, so `apt upgrade` would install the recalled version.\n\n### Task 1\n```bash\nsudo apt install app-agent                 # E: dpkg was interrupted ...\ndpkg -s app-agent | grep Status            # install ok half-configured\nsudo dpkg --configure -a                   # Setting up app-agent (1.0) ...\n#   app-agent: /etc/app-agent/agent.conf:2: unknown key 'sever'\n#   dpkg: error processing package app-agent (--configure):\n#    installed app-agent package post-installation script subprocess returned error exit status 1\ncat /var/lib/dpkg/info/app-agent.postinst  # what the script checks\nsudo sed -i 's/^sever = /server = /' /etc/app-agent/agent.conf\nsudo dpkg --configure -a                   # completes\ndpkg --audit ; sudo apt-get check          # nothing / OK\n```\n*Why:* `dpkg --configure -a` is the documented recovery for an interrupted run. When it fails, the error names the package, the script and usually the reason. Fix that reason, then rerun. Deleting the postinst or using `--force-*` options leaves a package that \"installed\" but was never set up.\n\n### Task 2\n```bash\napt-cache policy app-agent                 # Installed 1.0, Candidate 1.1\napt-get -s upgrade | grep app-agent        # Inst app-agent [1.0] (1.1 ...)\nsudo apt-mark hold app-agent\napt-mark showhold ; apt-get -s upgrade     # app-agent kept back\n```\n*Why:* a hold is the simple, visible way to freeze one package. Remove it with `apt-mark unhold` when a fixed 1.2 arrives. For rules across many hosts, use APT pinning (`/etc/apt/preferences.d/`) from config management.\n\n**Source (adapted):** [E: dpkg was interrupted, you must manually run 'sudo dpkg --configure -a'](https://answers.launchpad.net/ubuntu/+source/yelp/+question/99969): an update was interrupted after a package's post-installation script failed. Running `dpkg --configure -a` was the confirmed fix."
+}

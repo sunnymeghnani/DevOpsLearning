@@ -1,0 +1,72 @@
+{
+  "id": "wazuh-2021-shard-limit-silence",
+  "title": "A month of silence from the SIEM",
+  "level": "L4",
+  "track": "security",
+  "topics": ["wazuh-siem", "wazuh", "alerting"],
+  "minutes": 7,
+  "role": "You run a single-server Wazuh 4.2 stack: the manager, Filebeat, Elasticsearch 7.10 and Kibana with the Wazuh app, watching a few dozen hosts.",
+  "source": {
+    "label": "wazuh/wazuh-dashboard-plugins #3669: no new alerts since October 4th, shards 1000/1000 (GitHub issue)",
+    "url": "https://github.com/wazuh/wazuh-dashboard-plugins/issues/3669",
+    "org": "Wazuh community",
+    "date": "2021-11-01",
+    "read_on": "2026-11-10"
+  },
+  "brief": "1 November. A colleague asks why the Wazuh dashboard shows no alerts since 4 October. Nobody reported an attack, and the agents all show as active.",
+  "steps": [
+    {
+      "situation": "Four quiet weeks. Good news or bad news?",
+      "choices": [
+        {"text": "Check the newest index of each kind and the Filebeat log", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 5}, "why": "A SIEM that suddenly sees nothing has usually stopped storing, not stopped being attacked. The index dates tell you when the pipeline broke."},
+        {"text": "No alerts means nothing happened", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": -15, "trust": -15}, "why": "Agents active plus zero alerts for a month is not quiet. It's blind."},
+        {"text": "Restart every Wazuh service", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": -5, "trust": 0}, "why": "If storage is refusing writes, everything comes back and still stores nothing."}
+      ]
+    },
+    {
+      "situation": "Your first query to Elasticsearch fails.",
+      "evidence": "$ curl -u admin 'http://localhost:9200/_cluster/health?pretty'\ncurl: (52) Empty reply from server",
+      "evidence_cmd": "curl -u admin 'http://localhost:9200/_cluster/health?pretty'",
+      "choices": [
+        {"text": "Use HTTPS and the correct credentials; trust the stack's CA or use -k on localhost", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 10, "trust": 0}, "why": "With security enabled, this Elasticsearch only speaks TLS. A plain-HTTP request gets an empty reply, as the reporter found, along with wrong credentials."},
+        {"text": "Elasticsearch must be down: reinstall it", "verdict": "bad", "effect": {"service": -20, "time": -20, "evidence": -15, "trust": -5}, "why": "It's up. You'd risk the indices you're trying to save."},
+        {"text": "Turn off TLS on Elasticsearch to make curl work", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": -15}, "why": "You'd weaken the security tool to debug it, and break every client configured for TLS."}
+      ]
+    },
+    {
+      "situation": "Now you see the real error.",
+      "evidence": "$ grep -i shards /var/log/filebeat/filebeat | tail -1\n... this action would add [2] total shards, but this cluster currently has [1000]/[1000] maximum shards open;\n$ curl -sk -u admin 'https://localhost:9200/_cat/indices?h=index' | cut -d- -f1-2 | sort | uniq -c\n    95 wazuh-alerts\n    92 wazuh-monitoring\n   310 wazuh-statistics",
+      "evidence_cmd": "grep -i shards /var/log/filebeat/filebeat",
+      "choices": [
+        {"text": "Delete old indices you don't need, such as past statistics, after checking your retention rules", "verdict": "best", "effect": {"service": 20, "time": 10, "evidence": 5, "trust": 5}, "why": "One node allows 1,000 open shards by default and every daily index uses some. Freeing shards lets new indices be created again; the reporter deleted the 2021 statistics indices and alerts flowed."},
+        {"text": "Raise `cluster.max_shards_per_node` to 5000", "verdict": "risky", "effect": {"service": 15, "time": 10, "evidence": -5, "trust": -5}, "why": "It works today. The maintainer advised against it: more shards on one node costs memory and performance, and you hit the new wall later."},
+        {"text": "Delete all wazuh-alerts indices to free the most shards", "verdict": "bad", "effect": {"service": 5, "time": 5, "evidence": -20, "trust": -20}, "why": "You destroy the security history you may need to investigate the blind month."}
+      ]
+    },
+    {
+      "situation": "Alerts are back. How do you stop this happening again?",
+      "choices": [
+        {"text": "One primary shard per new index on one node, a retention policy, and an alert when no alerts arrive for hours", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "Set `index.number_of_shards` to 1 in the Filebeat template and reload it, automate deletion with ILM, and watch the pipeline itself, not just what it reports."},
+        {"text": "Put a reminder in the calendar to clean up indices", "verdict": "risky", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": 0}, "why": "It works until the person with the reminder goes on holiday."},
+        {"text": "Leave it; you'll notice next time", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": -10}, "why": "Nobody noticed for four weeks this time."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "Issue #3669 in wazuh/wazuh-dashboard-plugins was opened on 1 November 2021 for a Wazuh 4.2.4 home lab on Elastic 7.10.2. The newest wazuh-alerts data was from 4 October, monitoring from 5 October and statistics from 10 October. Elasticsearch refused new indices with \"this action would add [2] total shards, but this cluster currently has [1000]/[1000] maximum shards open\", and Kibana could not create the day's wazuh-monitoring index. The reporter's first curl checks returned \"Empty reply from server\" because they used plain HTTP and wrong credentials. The maintainer explained the default limit of 1,000 shards per node and offered options: delete old indices, automated with ILM; add nodes; set `index.number_of_shards` to 1 in `/etc/filebeat/wazuh-template.json` and run `filebeat setup --index-management`; or raise the limit, which is not recommended. The reporter deleted the wazuh-statistics-2021* indices, alerts flowed again, and the issue was closed the same day.",
+    "lessons": ["Silence from a monitoring tool is a symptom: alert on \"no data\".", "On one node, daily indices times shards per index hits the 1,000-shard limit.", "Retention is part of the design, not a cleanup chore.", "Raising a safety limit only moves the wall."],
+    "commands": ["curl -sk -u admin 'https://localhost:9200/_cluster/health?pretty'", "curl -sk -u admin 'https://localhost:9200/_cat/indices?v&s=index'", "grep -i -E 'error|warn' /var/log/filebeat/filebeat", "filebeat setup --index-management", "curl -sk -u admin -X DELETE 'https://localhost:9200/wazuh-statistics-2021*'"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "48-wazuh-and-security-tools.md", "heading": "6.5 Maximum shards open (1000/1000)"},
+      {"file": "49-observability-stack-problems.md", "heading": "10.4 Read-only indices, yellow health, shard limit"},
+      {"file": "48-wazuh-and-security-tools.md", "heading": "Monitoring Wazuh itself"}
+    ],
+    "sites": [
+      {"label": "Wazuh PoC guide: detect an SSH brute-force attack", "url": "https://documentation.wazuh.com/current/proof-of-concept-guide/detect-brute-force-attack.html"},
+      {"label": "OpenSearch Playground (indices and Dev Tools in the browser)", "url": "https://playground.opensearch.org/"}
+    ]
+  }
+}

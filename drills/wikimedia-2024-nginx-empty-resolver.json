@@ -1,0 +1,71 @@
+{
+  "id": "wikimedia-2024-nginx-empty-resolver",
+  "title": "The resolver line that came back empty",
+  "level": "L2",
+  "track": "web",
+  "topics": ["proxy-problems", "network-problems", "site-down-walk"],
+  "minutes": 6,
+  "role": "You are on call for a cloud platform's web proxies: a pair of nginx VMs (one active, one standby) in front of hosted projects. Puppet manages both.",
+  "source": {
+    "label": "Wikimedia: Incidents/2024-11-25 WMCS proxy nginx failure",
+    "url": "https://wikitech.wikimedia.org/wiki/Incidents/2024-11-25_WMCS_proxy_nginx_failure",
+    "org": "Wikimedia",
+    "date": "2024-11-25",
+    "read_on": "2026-11-10"
+  },
+  "brief": "03:12 UTC, you're paged: \"Proxy on proxy-04 is down\". proxy-04 is the standby; proxy-03 carries the traffic and looks fine.",
+  "steps": [
+    {
+      "situation": "The VM is up in the cloud console and SSH works. nginx is stopped and won't start again.",
+      "evidence": "$ sudo systemctl restart nginx\nJob for nginx.service failed because the control process exited with error code.\n$ sudo nginx -t\nnginx: [emerg] invalid number of arguments in \"resolver\" directive in /etc/nginx/sites-enabled/project-example:19\nnginx: configuration file /etc/nginx/nginx.conf test failed",
+      "evidence_cmd": "sudo nginx -t",
+      "choices": [
+        {"text": "Ask nginx what it dislikes: nginx -t and journalctl -u nginx", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "It names the file, the line and the directive. Line 19 is a `resolver` line with no address in it."},
+        {"text": "Reboot the VM", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -10, "trust": 0}, "why": "nginx reads the same file after the reboot and fails the same way."},
+        {"text": "Restart nginx a few more times", "verdict": "bad", "effect": {"service": 0, "time": -5, "evidence": -5, "trust": 0}, "why": "A config error doesn't go away by retrying; systemd just records more failures."}
+      ]
+    },
+    {
+      "situation": "Who wrote an empty resolver line? proxy-03 is built from the same Puppet code.",
+      "evidence": "ops@proxy-03:~$ grep -n resolver /etc/nginx/sites-enabled/project-example\n19:    resolver 192.0.2.53;\nops@proxy-04:~$ grep -n resolver /etc/nginx/sites-enabled/project-example\n19:    resolver ;\nops@proxy-04:~$ grep -c nameserver /etc/resolv.conf\n0",
+      "choices": [
+        {"text": "Diff the config against the healthy twin, then check where the address comes from: /etc/resolv.conf", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 5}, "why": "This is how it was found at 03:54. proxy-04 has no nameserver line, and Puppet stripped the same address from the nginx files."},
+        {"text": "Force a Puppet run: it will put the right config back", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 5, "trust": 0}, "why": "It fails: Puppet can't resolve its own server, because the host has no nameserver. Useful only as a clue."},
+        {"text": "Hand-type a public DNS server into the nginx file", "verdict": "risky", "effect": {"service": 10, "time": 0, "evidence": -5, "trust": -5}, "why": "nginx starts, with a resolver nobody chose, and Puppet will overwrite it once it runs again."}
+      ]
+    },
+    {
+      "situation": "Puppet itself fails with `Temporary failure in name resolution`. You recognise a known bug: Puppet sometimes removes the nameserver line from /etc/resolv.conf.",
+      "choices": [
+        {"text": "Put the nameserver line back by hand, rerun Puppet, check nginx -t, start nginx", "verdict": "best", "effect": {"service": 25, "time": 10, "evidence": 5, "trust": 0}, "why": "What was done at 03:56. With DNS back, Puppet runs and rewrites the nginx files with the address, and both are fixed a minute later."},
+        {"text": "Fix only the nginx file and go back to bed", "verdict": "risky", "effect": {"service": 15, "time": 5, "evidence": 0, "trust": -5}, "why": "nginx runs, but the host still can't resolve names and Puppet stays broken until someone notices again."},
+        {"text": "Disable Puppet on the proxies for good", "verdict": "bad", "effect": {"service": 5, "time": 0, "evidence": 0, "trust": -15}, "why": "You trade one bug for two drifting servers that nobody manages."}
+      ]
+    },
+    {
+      "situation": "04:13, resolved. It was the standby, so no user saw anything; the alert cleared in Alertmanager but you had to close it by hand in the paging tool.",
+      "choices": [
+        {"text": "Link the incident to the known bug, write a runbook for this alert, and review whether a standby proxy should page at night", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 10, "trust": 15}, "why": "The report's actions. A runbook turns 40 minutes of searching into a checklist, and severity should match the impact."},
+        {"text": "Silence all proxy alerts at night", "verdict": "bad", "effect": {"service": -10, "time": 0, "evidence": -5, "trust": -10}, "why": "The next failure could be on the active proxy, with users watching."},
+        {"text": "Nothing to do: no users were affected", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -5}, "why": "The bug is still there. Next time it may hit both proxies."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "At 03:09 UTC on 25 November 2024 Puppet removed the nameserver line from `/etc/resolv.conf` on the Cloud VPS proxy proxy-04 (a known bug, T379927) and also removed the nameserver address from its nginx site files, and nginx failed fatally. At 03:12 ProjectProxyMainProxyDown paged the on-call engineer, who found the VM up and SSH working, but nginx down and not restarting. At 03:54 the responder compared configs with proxy-03 and found the `resolver` line set there and empty on proxy-04. A forced Puppet run at 03:55 failed with a name-resolution error, which matched the known bug. At 03:56 the responder restored `/etc/resolv.conf` by hand and reran Puppet; Puppet and nginx were both fixed at 03:57. The alert cleared in Alertmanager but had to be resolved by hand in VictorOps; the incident closed at 04:13. There was no user impact, because proxy-04 was the standby. Actions: fix the Puppet bug, add a runbook for the alert and reconsider its severity.",
+    "lessons": ["Service won't start: nginx -t names the file and line.", "Diff a broken host against its healthy twin.", "Config management that renders from local facts breaks when the facts break.", "Match paging severity to impact, and give every paging alert a runbook."],
+    "commands": ["sudo nginx -t", "journalctl -u nginx -b", "grep -n resolver /etc/nginx/sites-enabled/*", "cat /etc/resolv.conf", "diff <(ssh proxy-03 cat /etc/nginx/sites-enabled/project-example) /etc/nginx/sites-enabled/project-example", "sudo puppet agent --test"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "29-learn-webservers-proxies.md", "heading": "3.6 nginx -t, nginx -T and logs"},
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "2.1 Temporary failure in name resolution"},
+      {"file": "52-devops-day-to-day.md", "heading": "13.1 The runbook is missing or wrong at 3 AM"}
+    ],
+    "sites": [
+      {"label": "SadServers: Cape Town, borked Nginx (free account)", "url": "https://sadservers.com/scenario/capetown"},
+      {"label": "Killercoda: Dev Bench, a hostname won't resolve (free account)", "url": "https://killercoda.com/barrymister/scenario/linux-dns-resolution-broken"}
+    ]
+  }
+}

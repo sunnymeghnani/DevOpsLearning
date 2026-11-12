@@ -1,0 +1,81 @@
+{
+  "id": "pihole-2025-move-dns-no-downtime",
+  "title": "Move the DNS server without anyone noticing",
+  "level": "L2",
+  "track": "network",
+  "topics": ["dns-deep", "network-problems", "change-management", "docker-networking"],
+  "minutes": 8,
+  "role": "You run the only DNS server for an office, its servers and two Docker hosts: a Pi-hole v6 in Docker. It must move to a new machine, and nobody should notice.",
+  "source": {
+    "label": "Pi-hole forum: Moving pi-hole to another machine? (30 April 2025), with Pi-hole's docs",
+    "url": "https://discourse.pi-hole.net/t/moving-pi-hole-to-another-machine/79548",
+    "org": "Pi-hole community",
+    "date": "2025-04-30",
+    "read_on": "2026-11-10"
+  },
+  "brief": "The old Pi-hole at 192.0.2.53 answers every lookup on the network and also hands out DHCP leases. The new machine is ready at 192.0.2.54. There is no second resolver: any gap is felt by everyone. Each choice names its rung on the risk ladder.",
+  "steps": [
+    {
+      "situation": "You test a full backup import on the new server. Afterwards it answers nothing and logs a warning. Its only network interface is `ens18`.",
+      "evidence": "$ docker exec pihole pihole-FTL --config dns.interface\neth0\n$ ip -br link | grep -v lo\nens18            UP             52:54:00:12:34:56\nDNSMASQ_WARN: interface eth0 does not currently exist",
+      "evidence_cmd": "docker exec pihole pihole-FTL --config dns.interface",
+      "choices": [
+        {"text": "Bring only lists, records and groups; pin interface, listening mode, DHCP and web port with FTLCONF_ variables", "verdict": "best", "effect": {"service": 10, "time": 5, "evidence": 10, "trust": 5}, "why": "Rung 5 on a server no client uses yet. Interface, listening mode and DHCP describe a machine, not your data. Pi-hole's docs say settings set by environment variable become read-only, so no later import can change them."},
+        {"text": "Import everything again, then fix whatever breaks", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -5, "trust": 0}, "why": "The same import brings the same machine settings. It is a second change on top of the first, with no new evidence."},
+        {"text": "Copy the old `/etc/pihole` folder across as it is", "verdict": "risky", "effect": {"service": 0, "time": 5, "evidence": -5, "trust": 0}, "why": "Fast, but it carries the old interface and DHCP settings too, plus a query database you do not need."},
+        {"text": "Re-enter local records from an exported text file and compare", "verdict": "good", "effect": {"service": 5, "time": -5, "evidence": 10, "trust": 0}, "why": "Safe and checkable, only slower. It still needs the machine settings set on purpose."}
+      ]
+    },
+    {
+      "situation": "People say DNS \"stops\" at busy times, and the dashboard shows a high load. Someone suggests a bigger box.",
+      "evidence": "$ dig @192.0.2.53 registry.example.com | grep status\n;; ->>HEADER<<- opcode: QUERY, status: REFUSED, id: 4127\n$ docker exec pihole df -h /dev/shm\nFilesystem  Size  Used Avail Use% Mounted on\nshm          64M   63M  1.0M  99% /dev/shm",
+      "evidence_cmd": "dig @192.0.2.53 registry.example.com",
+      "choices": [
+        {"text": "Read the FTL log for rate-limit and shared-memory lines; check /dev/shm", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "Rung 1. Pi-hole answers REFUSED once a client passes 1000 queries in 60 seconds, and containers behind one Docker host all arrive from its one address. Docker's default 64 MB /dev/shm can fill up and stop FTL."},
+        {"text": "Too many users: size the new machine up and move on", "verdict": "bad", "effect": {"service": 0, "time": -5, "evidence": -15, "trust": 0}, "why": "A bigger box changes neither the per-client limit nor the shared-memory size. Inside a container the load figure is the host's anyway."},
+        {"text": "Restart FTL whenever it happens", "verdict": "risky", "effect": {"service": 5, "time": -5, "evidence": -10, "trust": -5}, "why": "Rung 7 on the only resolver, as a habit. Each restart is a short outage and clears the state you needed to see."}
+      ]
+    },
+    {
+      "situation": "The new server gives the same answers as the old one for every local name. How do clients move?",
+      "choices": [
+        {"text": "Both live; freeze record edits; DHCP hands out the new server; the old one keeps answering until its log goes quiet", "verdict": "best", "effect": {"service": 15, "time": 0, "evidence": 5, "trust": 10}, "why": "Rung 2: a temporary replica. The forum answer gives the same advice: keep both running for a while, so clients that have not moved still get DNS and you can roll back."},
+        {"text": "Swap the addresses in one step at midday", "verdict": "bad", "effect": {"service": -20, "time": 5, "evidence": 0, "trust": -10}, "why": "A rung 7 step with no way back, while everyone is working."},
+        {"text": "Hand out both servers and keep editing records on whichever is handy", "verdict": "risky", "effect": {"service": 5, "time": 5, "evidence": 0, "trust": -10}, "why": "Pi-hole's FAQ says devices may use either listed server, so the order is no priority. Without a freeze, clients get two different answers."},
+        {"text": "A night window with a straight swap", "verdict": "good", "effect": {"service": 5, "time": -5, "evidence": 0, "trust": 5}, "why": "It works, but it spends downtime the parallel run does not need."}
+      ]
+    },
+    {
+      "situation": "The old Pi-hole also serves DHCP. When does that move?",
+      "choices": [
+        {"text": "Last, in a short announced window: off on the old, then on on the new; re-enable the old to roll back", "verdict": "best", "effect": {"service": 10, "time": 5, "evidence": 0, "trust": 10}, "why": "Rung 7, prepared. The forum answer: never two DHCP servers, and turning DHCP back on at the old one is the rollback."},
+        {"text": "Enable DHCP on both for an overlap", "verdict": "bad", "effect": {"service": -20, "time": -5, "evidence": -5, "trust": -10}, "why": "Two DHCP servers on one network hand out conflicting leases and options."},
+        {"text": "Leave DHCP on the old box for good", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "It works today, but the box you meant to retire stays a single point of failure."}
+      ]
+    },
+    {
+      "situation": "Every client has moved and the old server's log is quiet. What now?",
+      "choices": [
+        {"text": "Add a second resolver, keep settings pinned, schedule an export off the box, lift the freeze and say so", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 10}, "why": "Teach: one DNS server was the single point of failure for everything, including image pulls."},
+        {"text": "Wipe the old box the same hour", "verdict": "bad", "effect": {"service": -5, "time": 5, "evidence": -10, "trust": -5}, "why": "It was your way back. Keep it for a few days."},
+        {"text": "Raise the rate limit and never look for the noisy client", "verdict": "risky", "effect": {"service": 5, "time": 5, "evidence": -10, "trust": 0}, "why": "It hides the client as well as relieving it."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "The source thread is a plan, not a failure: on 30 April 2025 a user asked how to move a Pi-hole v6 that also served DHCP. The answer agreed with the plan and added two rules: run old and new side by side for a while so unmoved clients keep DNS and rollback stays possible, and never run two DHCP servers; turning DHCP back on at the old one is the way back. Pi-hole's docs supply the rest: the FAQ says clients may use either listed server; the config reference puts the per-client limit at 1000 queries per 60 seconds, answered REFUSED, and warns that listening mode ALL can make an open resolver; settings set by environment variable become read-only. A 2022 forum thread shows FTL stopping when Docker's 64 MB /dev/shm filled. In a 2025 thread a v6 server warned that eth0 did not exist on an ens18 machine; setting the interface fixed it (cause unconfirmed). The decision shape follows a real migration runbook.",
+    "lessons": ["With no replica, build one for the length of the move.", "Import data, not machine settings; pin those explicitly.", "A server list is not a priority order: freeze records while two resolvers are live.", "Move DHCP last, in a window, never two servers at once."],
+    "commands": ["dig @192.0.2.54 registry.example.com", "docker exec pihole pihole-FTL --config dns.interface", "docker exec pihole df -h /dev/shm", "grep -i 'rate-limit' /var/log/pihole/FTL.log"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "57-method-protect-risk-ladder.md", "heading": "4. The risk ladder"},
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "7.4 Pi-hole or AdGuard: port 53 busy, clients bypass"},
+      {"file": "30-learn-docker.md", "heading": "daemon.json keys that matter on-prem"}
+    ],
+    "sites": [
+      {"label": "Pi-hole docs: FTL configuration reference", "url": "https://docs.pi-hole.net/ftldns/configfile/"}
+    ]
+  }
+}

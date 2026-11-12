@@ -1,0 +1,81 @@
+{
+ "id": "l0-bash-scripting",
+ "title": "Works by hand, never from cron",
+ "level": "L0",
+ "map_node": "bash-scripting",
+ "path": "fresher",
+ "order": 8,
+ "minutes": 30,
+ "difficulty": "easy",
+ "source": {
+  "title": "Why is my crontab not working, and how can I troubleshoot it? (Server Fault)",
+  "url": "https://serverfault.com/questions/449651/why-is-my-crontab-not-working-and-how-can-i-troubleshoot-it",
+  "note": "adapted"
+ },
+ "brief": "**TICKET OPS-1912 · restore test failed: database backups are empty**\n\nDuring the quarterly restore test, every `db-*.sql.gz` in `/var/backups/shop` turned out to be 20 bytes: an empty gzip. Yet `/var/log/shop-backup.log` says `backup OK` every night.\n\nThe backup is `/usr/local/bin/shop-backup`, scheduled in `/etc/cron.d/shop-backup` for 02:30. When the developer runs it by hand (`sudo shop-backup`), the dump is fine. \"So it's not the script.\"\n\nFind out why the scheduled run is different, make it produce real dumps, and make the script tell the truth when something fails. You have sudo; cron's mail goes nowhere on this box.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Make the scheduled run work",
+   "text": "First check that the cron daemon is running at all. Then reproduce what cron does: it starts the job with an almost empty environment and a short `PATH`, not with your login shell's. Run the script that way and read the errors your interactive shell hid from you (`command -v` shows where each tool lives).\n\nFix it so it survives reboots and the next edit: cron enabled, and the job in `/etc/cron.d/shop-backup` able to find every command. Done when the job, run in cron's environment, writes a dump that contains data.",
+   "points": 50,
+   "hints": [
+    "`systemctl status cron`. Reproduce cron: `sudo env -i HOME=/root SHELL=/bin/sh PATH=/usr/bin:/bin /bin/sh -c /usr/local/bin/shop-backup`, then `command -v nginx shop-snapshot`.",
+    "`sudo systemctl enable --now cron`, and add a line `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin` above the job in `/etc/cron.d/shop-backup` (or use absolute paths in the script)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "What PATH does cron give jobs by default on Ubuntu?",
+     "format": "dir:dir",
+     "answer_sha256": "ec1f3f84fccbb088a2bd9b9e301469aafc9541e1b357bcbbe00f889ae3c44179"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which command (with option) runs a program with an empty environment?",
+     "format": "command -option",
+     "answer_sha256": "09eb04a3af7a16a578b47cbbbf42bf2166cdfe8f0d307155aef2b3d0b2aa1133"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "cron is running and enabled; the job, run in cron's environment, writes a dump with data",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Make the script stop lying",
+   "text": "The real bug is in the script: when a step fails, it carries on and logs `backup OK`. Even `set -e` is not enough here, because the exit status of `a | b` is the status of `b` (gzip happily compresses nothing).\n\nMake `shop-backup` exit non-zero and skip the OK line when any step fails, including the dump inside the pipeline. Quote your variables. To test, simulate a database outage with `sudo touch /run/shop-db.down` (remove it afterwards). Done when an outage makes the script fail, and a normal run still succeeds.",
+   "points": 50,
+   "hints": [
+    "Try `bash -c 'false | gzip > /dev/null; echo $?'`, then the same with `set -o pipefail` first.",
+    "Put `set -euo pipefail` right below the `#!/bin/bash` line, and quote `\"$DEST/db-$STAMP.sql.gz\"`. Test with and without `/run/shop-db.down`, checking `echo $?` and the log."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which bash option makes a pipeline fail when any command in it fails?",
+     "format": "option name",
+     "answer_sha256": "8e3c081d66fbfdb7f75d46acbacb2f99ff0d1777533377476468641670209ebc"
+    },
+    {
+     "id": "q4",
+     "prompt": "Without that option, what is `$?` after `false | true`?",
+     "format": "number",
+     "answer_sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "with the database down shop-backup exits non-zero and logs no OK; a normal run still succeeds",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. `cron.service` was stopped and disabled, so nothing ran at 02:30. (The OK lines were from the old server.)\n2. Cron starts jobs with `SHELL=/bin/sh` and `PATH=/usr/bin:/bin`. `nginx` lives in `/usr/sbin` and `shop-snapshot` in `/usr/local/sbin`, so both were `command not found`. By hand, your shell's PATH hid this.\n3. The script had no error handling. `shop-snapshot | gzip > file` returns gzip's status (0), so the script went on and logged `backup OK` over an empty dump.\n\n### Task 1\n```bash\nsystemctl status cron                                   # inactive, disabled\nsudo env -i HOME=/root SHELL=/bin/sh PATH=/usr/bin:/bin /bin/sh -c /usr/local/bin/shop-backup\n#   /usr/local/bin/shop-backup: line 7: nginx: command not found\n#   /usr/local/bin/shop-backup: line 8: shop-snapshot: command not found\ncommand -v nginx shop-snapshot                          # /usr/sbin/nginx  /usr/local/sbin/shop-snapshot\nsudo systemctl enable --now cron\nsudo nano /etc/cron.d/shop-backup                       # add above the job:\n#   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n```\n*Why:* `env -i` empties the environment, so you see what cron sees. Setting `PATH` in the cron file (or absolute paths in the script) makes the job independent of whoever wrote it. To capture a job's errors, append `>> /var/log/shop-backup.log 2>&1` to the job line.\n\n### Task 2\n```bash\nbash -c 'false | true; echo $?'                         # 0\nbash -c 'set -o pipefail; false | true; echo $?'        # 1\nsudo nano /usr/local/bin/shop-backup                    # add: set -euo pipefail ; quote \"$DEST/...\"\nsudo touch /run/shop-db.down; sudo shop-backup; echo $? # non-zero, no new OK line\nsudo rm /run/shop-db.down;   sudo shop-backup; echo $?  # 0, OK logged\nzcat /var/backups/shop/db-$(date +%F).sql.gz | head -3\n```\n*Why:* `-e` stops at the first failing command, `-u` stops on unset variables (typos), and `pipefail` makes a pipeline fail if any part fails. A backup that can't fail loudly is worse than none, because it makes people trust it. Monitor the result (file size, a restore test), not the log line.\n\n**Source (adapted):** [Why is my crontab not working, and how can I troubleshoot it?](https://serverfault.com/questions/449651/why-is-my-crontab-not-working-and-how-can-i-troubleshoot-it): the canonical answer lists \"is cron running\", the restricted environment and PATH as the usual causes, and suggests reproducing the job with `env -i`."
+}

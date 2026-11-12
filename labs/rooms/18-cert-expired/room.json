@@ -1,0 +1,75 @@
+{
+ "id": "l1-cert-expired",
+ "title": "The certificate expired at midnight",
+ "level": "L1",
+ "map_node": "tls-certs",
+ "path": "junior",
+ "order": 18,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "Certificate expired even though renewed (Digitalocean, Nginx, Ubuntu 14.04) (Let's Encrypt Community)",
+  "url": "https://community.letsencrypt.org/t/certificate-expired-even-though-renewed-digitalocean-nginx-ubuntu-14-04/17700",
+  "note": "adapted"
+ },
+ "brief": "**PAGE 00:07 · web-05 · TLS errors on shop.example.com**\n\nThe app servers stopped talking to the shop at midnight: `curl: (60) SSL certificate problem: certificate has expired`. Browsers show `NET::ERR_CERT_DATE_INVALID`.\n\nThe shop's certificate is **self-signed**, and the app servers trust exactly that `.crt` file (it is copied to them). Renewing means issuing a new self-signed certificate for the same names and serving it. The previous admin left notes in `/etc/nginx/ssl/RENEW.txt`.\n\nRead the certificate before you replace it, so you know what it must cover. Then make sure nginx really serves the new one: a correct file on disk is not the same as a fixed site.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Read the dates, issue a new certificate",
+   "text": "See what nginx is serving right now: `openssl s_client` shows the certificate it sends, and `openssl x509 -noout` reads its dates and names from a file. Note every name in the **subjectAltName**: browsers check only the SAN, never the CN (curl and OpenSSL still fall back to the CN when a certificate has no SAN at all, so a quick curl test can pass while every browser fails).\n\nIssue a new self-signed certificate and key at the paths nginx uses. It must be valid now and for at least 30 days, list both names in its SAN, and its key must stay private. Check the old one-liner in `RENEW.txt` before you copy it.",
+   "points": 50,
+   "hints": [
+    "`echo | openssl s_client -connect 127.0.0.1:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -dates -subject -ext subjectAltName`. The RENEW.txt command has no `-addext`, so its certificate would have no SAN at all.",
+    "`cd /etc/nginx/ssl && sudo openssl req -x509 -newkey rsa:2048 -nodes -days 90 -subj '/CN=shop.example.com' -addext 'subjectAltName=DNS:shop.example.com,DNS:www.shop.example.com' -keyout shop.example.com.key -out shop.example.com.crt`, then `sudo chmod 600 shop.example.com.key`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "On which date (UTC) did the old certificate expire?",
+     "format": "YYYY-MM-DD",
+     "answer_sha256": "d66834b1e2633b31445f067d3c463d9b29e4990cf25a07f695578ef8d99b21d3"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which openssl x509 option prints notBefore and notAfter?",
+     "format": "-option",
+     "answer_sha256": "1a5ea3e734460a539abdb0eaa4d0efa2890c1cf9b6ea316f5fb1de8a4ec4d695"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the configured certificate is valid now and for 30+ days, has both names in its SAN, matches its key; the key is not world-readable",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Serve it, and prove it",
+   "text": "Run `s_client` again. nginx still sends the old certificate: it reads certificate files when it starts or reloads, not when they change on disk. Test the config, reload without dropping connections, and check what is served now.\n\nThen test like an app server: `curl --cacert` with the new `.crt` file, without `-k`, for both names. Done when nginx serves the new certificate and both `https://shop.example.com/` and `https://www.shop.example.com/` verify.",
+   "points": 50,
+   "hints": [
+    "`sudo nginx -t && sudo systemctl reload nginx`, then the `s_client ... | openssl x509 -noout -dates` line from task 1 again.",
+    "`curl -sS --cacert /etc/nginx/ssl/shop.example.com.crt https://www.shop.example.com/ -o /dev/null -w '%{http_code}\\n'` must print `200`. For monitoring: `openssl x509 -checkend 1209600 -noout -in <crt>` exits 1 when fewer than 14 days are left."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which openssl x509 option exits non-zero when the certificate expires within the given number of seconds?",
+     "format": "-option",
+     "answer_sha256": "3fe94eb90fc0995cb376de23104c741aa2bc56cb86a327558505177ce459f91a"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "nginx -t passes; nginx serves the new certificate (reloaded); curl trusting that file verifies both names",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\nThe certificate's `notAfter` was **Nov 9 00:00:00 2026 GMT**. Every client that checks dates (all of them) refused it from that second on. The renewal note made it worse: its one-liner sets only `-subj \"/CN=...\"`, so the new certificate would have no subjectAltName and no `www` name. Browsers (and Go clients) match names against the SAN only. curl, OpenSSL and Python fall back to the CN only when there is no SAN at all, so that certificate would pass a quick `curl` test for `shop.example.com` and still fail in every browser.\n\n### Task 1\n```bash\necho | openssl s_client -connect 127.0.0.1:443 -servername shop.example.com 2>/dev/null \\\n  | openssl x509 -noout -dates -subject -ext subjectAltName\n#   notBefore=Aug 11 00:00:00 2026 GMT\n#   notAfter=Nov  9 00:00:00 2026 GMT\n#   DNS:shop.example.com, DNS:www.shop.example.com\ncd /etc/nginx/ssl\nsudo openssl req -x509 -newkey rsa:2048 -nodes -days 90 -subj '/CN=shop.example.com' \\\n  -addext 'subjectAltName=DNS:shop.example.com,DNS:www.shop.example.com' \\\n  -keyout shop.example.com.key -out shop.example.com.crt\nsudo chmod 600 shop.example.com.key\nopenssl x509 -in shop.example.com.crt -noout -dates -ext subjectAltName\n```\nUpdate RENEW.txt with the `-addext` line too, so the next person doesn't repeat it.\n\n### Task 2\n```bash\necho | openssl s_client -connect 127.0.0.1:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -enddate   # still Nov 9\nsudo nginx -t && sudo systemctl reload nginx\necho | openssl s_client -connect 127.0.0.1:443 -servername shop.example.com 2>/dev/null | openssl x509 -noout -enddate   # new date\ncurl -sS --cacert /etc/nginx/ssl/shop.example.com.crt https://shop.example.com/ -o /dev/null -w '%{http_code}\\n'      # 200\n```\n*Then:* copy the new `.crt` to the app servers (they trust that exact file), and monitor expiry, for example `openssl x509 -checkend 1209600` in a daily check or a blackbox exporter probe. With Let's Encrypt, certbot renews automatically. Its `--nginx` plugin also reloads nginx; with `--webroot` or `--standalone` nginx keeps serving the old certificate until something reloads it, so add a deploy hook (`/etc/letsencrypt/renewal-hooks/deploy/`) that runs `nginx -t && systemctl reload nginx`.\n\n**Source (adapted):** [Certificate expired even though renewed (Let's Encrypt Community)](https://community.letsencrypt.org/t/certificate-expired-even-though-renewed-digitalocean-nginx-ubuntu-14-04/17700): the renewal reported success, but browsers still saw the expired certificate. The answer: nginx reads the certificate files at startup and must be reloaded when they change. After `service nginx reload` the site was fine."
+}

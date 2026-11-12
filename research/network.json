@@ -1,0 +1,1150 @@
+{
+ "domain": "network",
+ "module": "42-problems-network-dns-tls-vpn.md",
+ "checked_on": "2026-10-04",
+ "status": "complete: catalog used for 42-problems-network-dns-tls-vpn.md (40 entries)",
+ "problems": [
+  {
+   "title": "netplan apply cuts SSH / YAML errors / warnings",
+   "area": "routes",
+   "level": "L1",
+   "error_text": "Invalid YAML; gateway4 has been deprecated; Permissions for /etc/netplan/X.yaml are too open",
+   "frequency_signal": "classic",
+   "root_causes": [
+    "indentation/tabs",
+    "apply over SSH without netplan try",
+    "old gateway4 key",
+    "world-readable netplan file"
+   ],
+   "fix": [
+    "netplan try",
+    "routes: - to: default",
+    "chmod 600"
+   ],
+   "sources": [
+    {
+     "title": "cloud-init #4031 gateway4 deprecated",
+     "url": "https://github.com/canonical/cloud-init/issues/4031",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search",
+     "url": "https://serverfault.com/search?q=netplan+apply+lost+ssh",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Two default routes / wrong gateway",
+   "area": "routes",
+   "level": "L1",
+   "error_text": "replies leave the wrong NIC; reachable only from own subnet",
+   "frequency_signal": "",
+   "root_causes": [
+    "DHCP + static both install default",
+    "wrong prefix length",
+    "cloud-init regenerates netplan"
+   ],
+   "fix": [
+    "one default route, metrics, dhcp4-overrides use-routes false"
+   ],
+   "sources": [
+    {
+     "title": "Server Fault search",
+     "url": "https://serverfault.com/search?q=two+default+gateways+netplan",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Boot waits 2 min: systemd-networkd-wait-online",
+   "area": "routes",
+   "level": "L1",
+   "error_text": "A start job is running for Wait for Network to be Configured",
+   "frequency_signal": "",
+   "root_causes": [
+    "unused NIC not optional",
+    "bridge without carrier"
+   ],
+   "fix": [
+    "optional: true",
+    "--any / --interface override"
+   ],
+   "sources": [
+    {
+     "title": "LP #2063331",
+     "url": "https://bugs.launchpad.net/bugs/2063331",
+     "type": "bug",
+     "verified": true
+    },
+    {
+     "title": "LP #2036358",
+     "url": "https://bugs.launchpad.net/bugs/2036358",
+     "type": "bug",
+     "verified": true
+    },
+    {
+     "title": "systemd #27724",
+     "url": "https://github.com/systemd/systemd/issues/27724",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Asymmetric routing on multi-homed host",
+   "area": "routes",
+   "level": "L2-L3",
+   "error_text": "second IP unreachable; tcpdump shows SYN in eth1, SYN-ACK out eth0",
+   "frequency_signal": "",
+   "root_causes": [
+    "single default route",
+    "rp_filter strict"
+   ],
+   "fix": [
+    "policy routing tables (netplan routing-policy)",
+    "rp_filter=2"
+   ],
+   "sources": [
+    {
+     "title": "Server Fault search",
+     "url": "https://serverfault.com/search?q=rp_filter+asymmetric+routing",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Docker bridge subnet overlaps a real network",
+   "area": "routes",
+   "level": "L2",
+   "error_text": "cannot reach 172.17/172.18 hosts after Docker install or compose up",
+   "frequency_signal": "",
+   "root_causes": [
+    "default address pools 172.17-172.31 and 192.168.x"
+   ],
+   "fix": [
+    "default-address-pools in daemon.json",
+    "bip"
+   ],
+   "sources": [
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=docker+network+overlaps+vpn+172.17",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Temporary failure in name resolution",
+   "area": "host-dns",
+   "level": "L0-L1",
+   "error_text": "Temporary failure in name resolution",
+   "frequency_signal": "",
+   "root_causes": [
+    "resolv.conf not symlinked",
+    "resolvconf leftover after release upgrade",
+    "NetworkManager vs netplan",
+    "no DNS in netplan"
+   ],
+   "fix": [
+    "resolvectl status",
+    "ln -sf stub-resolv.conf"
+   ],
+   "sources": [
+    {
+     "title": "Ubuntu discourse: DNS after do-release-upgrade 24.04.4",
+     "url": "https://discourse.ubuntu.com/t/dns-nameservers-are-not-configured-or-dont-work-on-ubuntu-24-04-4-lts-after-do-release-upgrade/79606",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Ubuntu discourse: Nameservers 24.04",
+     "url": "https://discourse.ubuntu.com/t/nameservers-ubuntu-24-04/56589",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "dig works, app fails (or reverse)",
+   "area": "host-dns",
+   "level": "L1-L2",
+   "error_text": "curl: Could not resolve host while dig answers",
+   "frequency_signal": "",
+   "root_causes": [
+    "dig bypasses NSS and /etc/hosts",
+    "search domains",
+    "stub vs upstream"
+   ],
+   "fix": [
+    "getent ahosts",
+    "resolvectl query"
+   ],
+   "sources": [
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=dig+works+but+curl+could+not+resolve+host",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Split DNS over VPN (incl. Tailscale MagicDNS)",
+   "area": "host-dns",
+   "level": "L2",
+   "error_text": "internal names fail on VPN, or all DNS goes through VPN",
+   "frequency_signal": "",
+   "root_causes": [
+    "routing domain not set",
+    "Tailscale overwrites resolv.conf when resolved not in stub mode"
+   ],
+   "fix": [
+    "resolvectl domain IFACE ~corp",
+    "--accept-dns=false"
+   ],
+   "sources": [
+    {
+     "title": "Tailscale docs: Linux DNS",
+     "url": "https://tailscale.com/docs/reference/linux-dns",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "tailscale #7816",
+     "url": "https://github.com/tailscale/tailscale/issues/7816",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Containers can't resolve / CoreDNS loop",
+   "area": "host-dns",
+   "level": "L2",
+   "error_text": "Docker uses 8.8.8.8; CoreDNS plugin/loop: Loop detected for zone .",
+   "frequency_signal": "",
+   "root_causes": [
+    "127.0.0.53 not reachable from container netns",
+    "kubelet resolvConf"
+   ],
+   "fix": [
+    "daemon.json dns",
+    "kubelet resolvConf /run/systemd/resolve/resolv.conf"
+   ],
+   "sources": [
+    {
+     "title": "coredns #2087",
+     "url": "https://github.com/coredns/coredns/issues/2087",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes: Debugging DNS resolution",
+     "url": "https://www.kubernetes.io/docs/tasks/administer-cluster/dns-debugging-resolution/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Docker published ports bypass UFW",
+   "area": "firewall",
+   "level": "L1-L2",
+   "error_text": "port reachable from internet despite ufw deny",
+   "frequency_signal": "",
+   "root_causes": [
+    "DNAT in nat PREROUTING before INPUT; FORWARD chain DOCKER"
+   ],
+   "fix": [
+    "bind 127.0.0.1",
+    "DOCKER-USER rules",
+    "ufw-docker"
+   ],
+   "sources": [
+    {
+     "title": "Docker docs: packet filtering",
+     "url": "https://docs.docker.com/engine/network/packet-filtering-firewalls/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Docker 28 hardening blog",
+     "url": "https://www.docker.com/blog/docker-engine-28-hardening-container-networking-by-default/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Docker forum: 28.2.2 breaks bridge networking",
+     "url": "https://forums.docker.com/t/update-to-docker-ce-28-2-2-breaks-bridge-networking-to-container/148399/10",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Docker forum: block ports with nftables on v29",
+     "url": "https://forums.docker.com/t/how-to-block-ports-inusing-nftables-with-docker-v29/151450",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "conntrack table full",
+   "area": "firewall",
+   "level": "L3",
+   "error_text": "nf_conntrack: table full, dropping packet",
+   "frequency_signal": "",
+   "root_causes": [
+    "many short connections",
+    "small max",
+    "long timeouts"
+   ],
+   "fix": [
+    "raise nf_conntrack_max + hashsize",
+    "NOTRACK for high-volume stateless"
+   ],
+   "sources": [
+    {
+     "title": "major.io conntrack",
+     "url": "https://major.io/p/nf-conntrack-table-full-dropping-packet/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "SUSE KB 000020149",
+     "url": "https://www.suse.com/support/kb/doc/?id=000020149",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "NAT reflection / hairpin",
+   "area": "nat",
+   "level": "L1-L2",
+   "error_text": "works from outside, not from inside; Potential DNS Rebind attack detected",
+   "frequency_signal": "",
+   "root_causes": [
+    "no reflection",
+    "split DNS missing",
+    "rebind protection"
+   ],
+   "fix": [
+    "split-horizon override",
+    "enable reflection"
+   ],
+   "sources": [
+    {
+     "title": "OPNsense forum: NAT Reflection not working",
+     "url": "https://forum.opnsense.org/index.php?topic=16783.0",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "opnsense/core #5941",
+     "url": "https://github.com/opnsense/core/issues/5941",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "Netgate docs: DNS rebinding",
+     "url": "https://docs.netgate.com/pfsense/en/latest/services/dns/rebinding.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "LE HTTP-01 timeout",
+   "area": "acme",
+   "level": "L1",
+   "error_text": "Timeout during connect (likely firewall problem)",
+   "frequency_signal": "",
+   "root_causes": [
+    "port 80 closed",
+    "ISP blocks 80",
+    "geo-blocking vs multi-perspective",
+    "PMTUD"
+   ],
+   "fix": [
+    "open 80",
+    "DNS-01"
+   ],
+   "sources": [
+    {
+     "title": "LE: Timeout during connect",
+     "url": "https://community.letsencrypt.org/t/certbot-timeout-during-connect-likely-firewall-problem/224717",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "LE: validation timeouts (PMTUD)",
+     "url": "https://community.letsencrypt.org/t/https-connection-failures-timeouts-from-validation-servers/243673",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "LE HTTP-01 404 / AAAA",
+   "area": "acme",
+   "level": "L1-L2",
+   "error_text": "Invalid response from http://X/.well-known/acme-challenge/...: 404",
+   "frequency_signal": "",
+   "root_causes": [
+    "wrong webroot",
+    "AAAA to another server (IPv6 preferred)"
+   ],
+   "fix": [
+    "fix AAAA or remove",
+    "alias in vhost"
+   ],
+   "sources": [
+    {
+     "title": "LE docs: IPv6 support",
+     "url": "https://letsencrypt.org/docs/ipv6-support/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "LE: webroot failure 2025",
+     "url": "https://community.letsencrypt.org/t/certbot-failed-to-authenticate-some-domains-authenticator-webroot/246763",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Renewal fails / not reloaded",
+   "area": "acme",
+   "level": "L1",
+   "error_text": "Could not bind TCP port 80 because it is already in use",
+   "frequency_signal": "",
+   "root_causes": [
+    "authenticator=standalone in renewal conf",
+    "no deploy hook"
+   ],
+   "fix": [
+    "switch authenticator",
+    "deploy-hook reload"
+   ],
+   "sources": [
+    {
+     "title": "LE: Could not bind TCP port 80",
+     "url": "https://community.letsencrypt.org/t/could-not-bind-tcp-port-80-because-it-is-already-in-use/222758",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Rate limits and CAA",
+   "area": "acme",
+   "level": "L2",
+   "error_text": "too many certificates (5) already issued for this exact set of identifiers in the last 168h0m0s, retry after...; CAA record for X prevents issuance",
+   "frequency_signal": "",
+   "root_causes": [
+    "loops in automation",
+    "no staging"
+   ],
+   "fix": [
+    "staging",
+    "wait",
+    "CAA issue letsencrypt.org"
+   ],
+   "sources": [
+    {
+     "title": "LE docs: rate limits",
+     "url": "https://letsencrypt.org/docs/rate-limits/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "DNS-01 TXT not found / negative cache / secondary SERVFAIL",
+   "area": "acme",
+   "level": "L2",
+   "error_text": "NXDOMAIN looking up TXT for _acme-challenge; SERVFAIL ... secondary validation",
+   "frequency_signal": "",
+   "root_causes": [
+    "propagation",
+    "negative caching",
+    "CNAME delegation",
+    "rate-limited nameserver"
+   ],
+   "fix": [
+    "propagation wait",
+    "CNAME to validation zone"
+   ],
+   "sources": [
+    {
+     "title": "LE: NXDOMAIN TXT",
+     "url": "https://community.letsencrypt.org/t/solved-dns-problem-nxdomain-looking-up-txt-for-acme-challenge/70102",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "LE: secondary SERVFAIL",
+     "url": "https://community.letsencrypt.org/t/secondary-servfail-dns-error-running-certbot/244512",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Chameth: negatively cached surprises",
+     "url": "https://chameth.com/lego-acme-dns-01-surprises/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Missing intermediate",
+   "area": "chain",
+   "level": "L1",
+   "error_text": "unable to get local issuer certificate / unable to verify the first certificate",
+   "frequency_signal": "",
+   "root_causes": [
+    "cert.pem instead of fullchain.pem"
+   ],
+   "fix": [
+    "fullchain"
+   ],
+   "sources": [
+    {
+     "title": "LE: not trusted, install intermediate",
+     "url": "https://community.letsencrypt.org/t/the-certificate-is-not-trusted-in-all-web-browsers-you-may-need-to-install-an-intermediate-chain-certificate-to-link-it-to-a-trusted-root-certificate/242371",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "LE: certbot fullchain missing intermediates",
+     "url": "https://community.letsencrypt.org/t/certbot-fullchain-missing-intermediates/247897",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Gen Y chain + client EKU end (2026)",
+   "area": "chain",
+   "level": "L2-L3",
+   "error_text": "unable to get local issuer certificate on Debian 13/Ubuntu 26.04; strongSwan/pfSense chain errors; mTLS client cert rejected",
+   "frequency_signal": "",
+   "root_causes": [
+    "YE/YR not in trust stores",
+    "incomplete fullchain from acme.sh",
+    "client EKU removed"
+   ],
+   "fix": [
+    "serve full chain with cross-sign",
+    "private CA for client certs"
+   ],
+   "sources": [
+    {
+     "title": "LE: YE/YR under Linux distributions",
+     "url": "https://community.letsencrypt.org/t/chain-validation-issues-with-ye-yr-under-linux-distributions/247836",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "LE: pfSense Y chain",
+     "url": "https://community.letsencrypt.org/t/pfsense-invalid-chains-after-y-generation-cert/247667",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "LE: Upcoming changes",
+     "url": "https://community.letsencrypt.org/t/upcoming-changes-to-let-s-encrypt-certificates/243873",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "LE: Ending TLS client auth",
+     "url": "https://community.letsencrypt.org/t/ending-tls-client-authentication-certificate-support-in-2026/237403",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Private CA not trusted",
+   "area": "chain",
+   "level": "L2",
+   "error_text": "x509: certificate signed by unknown authority",
+   "frequency_signal": "",
+   "root_causes": [
+    "each runtime has own trust store"
+   ],
+   "fix": [
+    "update-ca-certificates; /etc/docker/certs.d; containerd hosts.toml; REQUESTS_CA_BUNDLE; NODE_EXTRA_CA_CERTS; keytool"
+   ],
+   "sources": [
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=x509+certificate+signed+by+unknown+authority+docker+registry",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Unbound/OPNsense DNSSEC SERVFAIL",
+   "area": "dns-server",
+   "level": "L2",
+   "error_text": "SERVFAIL; validation failure ... signature expired / not yet valid",
+   "frequency_signal": "",
+   "root_causes": [
+    "clock",
+    "private zone without domain-insecure",
+    "forwarder strips DNSSEC"
+   ],
+   "fix": [
+    "fix time",
+    "domain-insecure",
+    "disable DNSSEC on forwarders only if needed"
+   ],
+   "sources": [
+    {
+     "title": "OPNsense: DNSSEC BOGUS for private domain",
+     "url": "https://forum.opnsense.org/index.php?topic=44888.0",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "OPNsense: 24.7.8 broke DNS with DNSSEC",
+     "url": "https://forum.opnsense.org/index.php?topic=44058.0",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Pi-hole/AdGuard: port 53 in use, clients bypass",
+   "area": "dns-server",
+   "level": "L1",
+   "error_text": "Failed to bind host port for 0.0.0.0:53: address already in use",
+   "frequency_signal": "",
+   "root_causes": [
+    "systemd-resolved stub listener",
+    "IPv6 RA DNS",
+    "DoH in browsers"
+   ],
+   "fix": [
+    "DNSStubListener=no + resolv.conf symlink"
+   ],
+   "sources": [
+    {
+     "title": "Pi-hole docs: Docker tips and tricks",
+     "url": "https://docs.pi-hole.net/docker/tips-and-tricks/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Pi-hole discourse: port 53 in use",
+     "url": "https://discourse.pi-hole.net/t/update-what-to-do-if-port-53-is-already-in-use/52033",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "WireGuard no handshake",
+   "area": "vpn",
+   "level": "L1-L2",
+   "error_text": "Handshake did not complete after 5 seconds, retrying",
+   "frequency_signal": "",
+   "root_causes": [
+    "UDP blocked",
+    "wrong endpoint/port",
+    "key mismatch",
+    "multi-WAN reply path"
+   ],
+   "fix": [
+    "open UDP 51820",
+    "check keys",
+    "PersistentKeepalive"
+   ],
+   "sources": [
+    {
+     "title": "OPNsense: handshake multi-WAN",
+     "url": "https://forum.opnsense.org/index.php?topic=30540.0",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "OPNsense: [Solved] No handshake",
+     "url": "https://forum.opnsense.org/index.php?topic=43997.0",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "WireGuard handshake OK, no traffic",
+   "area": "vpn",
+   "level": "L2",
+   "error_text": "latest handshake recent, ping fails / no internet",
+   "frequency_signal": "",
+   "root_causes": [
+    "AllowedIPs",
+    "ip_forward",
+    "MASQUERADE",
+    "firewall FORWARD",
+    "return route"
+   ],
+   "fix": [
+    "sysctl, nft masquerade, AllowedIPs"
+   ],
+   "sources": [
+    {
+     "title": "OPNsense: road warrior no internet",
+     "url": "https://forum.opnsense.org/index.php?topic=16847.0",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "wireguard-install discussion #210",
+     "url": "https://github.com/angristan/wireguard-install/discussions/210",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "OpenVPN 2.6 cipher negotiation",
+   "area": "vpn",
+   "level": "L2",
+   "error_text": "OPTIONS ERROR: failed to negotiate cipher with server",
+   "frequency_signal": "",
+   "root_causes": [
+    "BF-CBC default gone; data-ciphers"
+   ],
+   "fix": [
+    "data-ciphers AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305; fallback temporarily"
+   ],
+   "sources": [
+    {
+     "title": "OpenVPN forum: failed to negotiate cipher",
+     "url": "https://forums.openvpn.net/viewtopic.php?t=35810",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "OpenVPN forum: Connection failed after 2.6.0",
+     "url": "https://forums.openvpn.net/viewtopic.php?t=35283",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Tailscale relayed via DERP",
+   "area": "mesh",
+   "level": "L2",
+   "error_text": "tailscale status shows relay \"fra\"; slow",
+   "frequency_signal": "",
+   "root_causes": [
+    "hard NAT both sides",
+    "UDP blocked"
+   ],
+   "fix": [
+    "netcheck, open UDP 41641, port mapping"
+   ],
+   "sources": [
+    {
+     "title": "Tailscale docs: troubleshooting",
+     "url": "https://tailscale.com/kb/1023/troubleshooting",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "tailscale #1552",
+     "url": "https://github.com/tailscale/tailscale/issues/1552",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Tailscale subnet router/exit node/CGNAT",
+   "area": "mesh",
+   "level": "L2",
+   "error_text": "routes advertised but unreachable; ISP 100.64/10 conflict",
+   "frequency_signal": "",
+   "root_causes": [
+    "routes not approved",
+    "--accept-routes off on Linux",
+    "ip_forward",
+    "CGNAT overlap"
+   ],
+   "fix": [
+    "approve, accept-routes, sysctl"
+   ],
+   "sources": [
+    {
+     "title": "Tailscale docs: CGNAT conflicts",
+     "url": "https://tailscale.com/docs/reference/troubleshooting/network-configuration/cgnat-conflicts",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "tailscale #1227",
+     "url": "https://github.com/tailscale/tailscale/issues/1227",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Headscale behind reverse proxy",
+   "area": "mesh",
+   "level": "L3",
+   "error_text": "clients stuck; websocket upgrade fails",
+   "frequency_signal": "",
+   "root_causes": [
+    "Upgrade: tailscale-control-protocol not passed",
+    "Cloudflare proxy",
+    "UDP 3478"
+   ],
+   "fix": [
+    "proxy config",
+    "server_url"
+   ],
+   "sources": [
+    {
+     "title": "Headscale docs: reverse proxy",
+     "url": "https://headscale.net/stable/ref/integration/reverse-proxy/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "headscale #3415",
+     "url": "https://github.com/juanfont/headscale/issues/3415",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "NetBird relayed / resources unreachable",
+   "area": "mesh",
+   "level": "L2-L3",
+   "error_text": "Relayed; route not working",
+   "frequency_signal": "",
+   "root_causes": [
+    "routing peer forwarding",
+    "ACL",
+    "overlap"
+   ],
+   "fix": [
+    "status -d, debug bundle, ip_forward"
+   ],
+   "sources": [
+    {
+     "title": "NetBird docs: client troubleshooting",
+     "url": "https://docs.netbird.io/help/troubleshooting-client",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "netbird #1633",
+     "url": "https://github.com/netbirdio/netbird/issues/1633",
+     "type": "github",
+     "verified": true
+    },
+    {
+     "title": "netbird #743",
+     "url": "https://github.com/netbirdio/netbird/issues/743",
+     "type": "github",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "PMTUD black hole",
+   "area": "mtu",
+   "level": "L2-L3",
+   "error_text": "SSH login works, big output hangs; TLS handshake stalls",
+   "frequency_signal": "",
+   "root_causes": [
+    "ICMP frag-needed blocked",
+    "tunnel overhead"
+   ],
+   "fix": [
+    "MSS clamping",
+    "allow ICMP",
+    "lower MTU"
+   ],
+   "sources": [
+    {
+     "title": "Cloudflare: IP fragmentation is broken",
+     "url": "https://blog.cloudflare.com/ip-fragmentation-is-broken/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Cloudflare: dynamic PMTUD",
+     "url": "https://blog.cloudflare.com/client-dynamic-path-mtu-discovery/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Overlay/dind MTU",
+   "area": "mtu",
+   "level": "L3",
+   "error_text": "pulls hang in dind/k8s pods on VXLAN/OpenStack/VPN",
+   "frequency_signal": "",
+   "root_causes": [
+    "inner MTU 1500 > path"
+   ],
+   "fix": [
+    "dockerd --mtu, CNI MTU"
+   ],
+   "sources": [
+    {
+     "title": "GitLab docs: Docker executor",
+     "url": "https://docs.gitlab.com/runner/executors/docker/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "IPv6 slow fallback",
+   "area": "ipv6",
+   "level": "L1-L2",
+   "error_text": "apt hangs on Connecting to ... (2001:...)",
+   "frequency_signal": "",
+   "root_causes": [
+    "AAAA preferred, IPv6 path broken"
+   ],
+   "fix": [
+    "fix RA/route, gai.conf precedence temporarily"
+   ],
+   "sources": [
+    {
+     "title": "Server Fault search",
+     "url": "https://serverfault.com/search?q=apt+hangs+ipv6",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "IPv6 bypasses firewall",
+   "area": "ipv6",
+   "level": "L2-L3",
+   "error_text": "service closed on IPv4 open on IPv6",
+   "frequency_signal": "",
+   "root_causes": [
+    "UFW IPV6=no",
+    "ip6tables empty",
+    "Docker ip6tables"
+   ],
+   "fix": [
+    "UFW IPV6=yes, nft inet family"
+   ],
+   "sources": [
+    {
+     "title": "Server Fault search",
+     "url": "https://serverfault.com/search?q=ufw+ipv6+open+ports",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  }
+ ],
+ "listing_pages": [
+  {
+   "title": "Let's Encrypt community: top topics of all time",
+   "url": "https://community.letsencrypt.org/top?period=all",
+   "type": "forum",
+   "verified": true,
+   "notes": "Top: DST Root CA X3 expiration help thread (665 replies, 171k views); 'Client with the currently selected authenticator does not support any combination of challenges' (274k views); nginx ACME challenge on all vhosts (251k views); DNS providers for DNS validation (349k views); IP address certificates (35k views); shortening the chain of trust; new intermediates; ACME profiles proposal; IPv6-only hosts"
+  },
+  {
+   "title": "tailscale/tailscale issues by reactions",
+   "url": "https://github.com/tailscale/tailscale/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+   "type": "github",
+   "verified": true,
+   "notes": "#1227 bypass subnet router when a local route exists (155 reactions); #1552 exclude interfaces from endpoint advertisement (68); #1543 custom records in MagicDNS (105); #7650 CNAME to MagicDNS names; #183 multiple tailnets"
+  },
+  {
+   "title": "juanfont/headscale issues by reactions",
+   "url": "https://github.com/juanfont/headscale/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+   "type": "github",
+   "verified": true,
+   "notes": "#3415 macOS/iOS no exit nodes available (bug, closed); #1873 retry when OIDC provider unavailable; #2695 multiple replicas (HA); #234 web UI; #1921 tailscale serve HTTPS"
+  },
+  {
+   "title": "netbirdio/netbird issues by reactions",
+   "url": "https://github.com/netbirdio/netbird/issues?q=is%3Aissue+sort%3Areactions-%2B1-desc",
+   "type": "github",
+   "verified": true,
+   "notes": "#1633 configure the NetBird network range (overlap with 100.64.0.0/10 CGNAT); #743 MTU configuration; #1096 ISP blocking / obfuscation; #2232 DoH/DoT; #1584 management HA"
+  },
+  {
+   "title": "Let's Encrypt community: top topics of the past year",
+   "url": "https://community.letsencrypt.org/top?period=yearly",
+   "type": "forum",
+   "verified": true,
+   "notes": "Gen Y chain issues (YE/YR under Linux distributions; pfSense invalid chains after Y generation; strongSwan IKEv2 fails with YR2 chain; certbot fullchain missing intermediates), validation timeouts from validation servers (PMTUD), secondary SERVFAIL running certbot, 'some domains suddenly failing renewal', sunsetting client EKU, Gmail opportunistic TLS, expiration emails gone, IP certificates, dns-persist-01"
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "netplan",
+   "what": "YAML front end that renders systemd-networkd or NetworkManager config on Ubuntu",
+   "gotchas": [
+    "netplan try for remote changes",
+    "gateway4 deprecated -> routes to: default",
+    "files must be 0600",
+    "cloud-init owns 50-cloud-init.yaml on cloud images"
+   ],
+   "official_docs": "https://netplan.readthedocs.io/"
+  },
+  {
+   "tool": "systemd-resolved",
+   "what": "local stub resolver at 127.0.0.53 with per-link DNS and routing domains",
+   "gotchas": [
+    "resolv.conf must symlink to stub-resolv.conf",
+    "containers can't reach 127.0.0.53",
+    "DNSStubListener=no to free port 53"
+   ],
+   "official_docs": "https://www.freedesktop.org/software/systemd/man/latest/systemd-resolved.service.html"
+  },
+  {
+   "tool": "Let's Encrypt / certbot",
+   "what": "free ACME CA and the EFF reference client",
+   "current_version_notes": "2026: Gen Y roots default on classic profile from 2026-05-13; client auth EKU gone; 45-day opt-in via tlsserver; default 64 days in 2027, 45 in 2028; no expiry emails; IP certs via shortlived; ARI renewals exempt from limits",
+   "official_docs": "https://letsencrypt.org/docs/"
+  },
+  {
+   "tool": "Docker firewalling",
+   "what": "dockerd writes iptables (or nftables in 29+) rules",
+   "current_version_notes": "28: unpublished ports blocked from routed access; 28.3.3 CVE-2025-54388 fix; 29: experimental nftables backend",
+   "official_docs": "https://docs.docker.com/engine/network/packet-filtering-firewalls/"
+  },
+  {
+   "tool": "WireGuard",
+   "what": "kernel VPN with static keys; silent by design (no reply to unauthenticated packets)",
+   "gotchas": [
+    "AllowedIPs is both ACL and routing table",
+    "no handshake = no reply",
+    "MTU default 1420"
+   ],
+   "official_docs": "https://www.wireguard.com/quickstart/"
+  },
+  {
+   "tool": "Tailscale",
+   "what": "WireGuard mesh with coordination server, DERP relays, MagicDNS",
+   "gotchas": [
+    "100.64.0.0/10 CGNAT range",
+    "Linux needs --accept-routes",
+    "prefers systemd-resolved stub mode"
+   ],
+   "official_docs": "https://tailscale.com/kb/"
+  },
+  {
+   "tool": "Headscale",
+   "what": "self-hosted Tailscale control server",
+   "gotchas": [
+    "reverse proxy must pass Upgrade: tailscale-control-protocol on POST",
+    "Cloudflare proxy/tunnel unsupported",
+    "embedded DERP needs UDP 3478"
+   ],
+   "official_docs": "https://headscale.net/stable/"
+  },
+  {
+   "tool": "NetBird",
+   "what": "WireGuard mesh with management, signal and relay servers, ACL groups and routing peers",
+   "gotchas": [
+    "status -d shows P2P vs Relayed",
+    "routing peer needs ip_forward"
+   ],
+   "official_docs": "https://docs.netbird.io/"
+  },
+  {
+   "tool": "OPNsense/pfSense",
+   "what": "FreeBSD firewalls with Unbound, NAT, WireGuard/OpenVPN",
+   "gotchas": [
+    "NAT reflection off by default",
+    "DNS rebind protection",
+    "Unbound DNSSEC after upgrades"
+   ],
+   "official_docs": "https://docs.opnsense.org/"
+  }
+ ],
+ "learning_signals": [
+  "Let's Encrypt helpers repeatedly point people at the staging environment and at --dry-run before touching production limits.",
+  "Most HTTP-01 failures are reachability problems that are visible from outside only: people learn to test from an outside vantage point (a phone on mobile data, a cloud VM) rather than from the server itself.",
+  "WireGuard is silent by design, so practitioners learn to read 'latest handshake' and tcpdump on UDP 51820 instead of expecting error messages.",
+  "Mesh VPN users learn NAT types through 'relayed vs direct' (tailscale netcheck, netbird status -d).",
+  "OPNsense forum threads show that DNS (split horizon, rebind protection, DNSSEC) is behind many problems that look like NAT or firewall bugs.",
+  "Docker + UFW surprises are learned the hard way, often after an exposed database; seniors bind admin ports to 127.0.0.1 and use DOCKER-USER.",
+  "Expiration emails ending in 2025 pushed people to build their own expiry monitoring (blackbox exporter, Uptime Kuma, small scripts)."
+ ],
+ "verified_sources": {
+  "le_gen_y_chain": "https://community.letsencrypt.org/t/chain-validation-issues-with-ye-yr-under-linux-distributions/247836",
+  "le_upcoming_changes": "https://community.letsencrypt.org/t/upcoming-changes-to-let-s-encrypt-certificates/243873",
+  "le_client_eku_end": "https://community.letsencrypt.org/t/ending-tls-client-authentication-certificate-support-in-2026/237403",
+  "le_sunset_client_eku": "https://community.letsencrypt.org/t/sunsetting-of-client-eku/244801",
+  "le_pfsense_y_chain": "https://community.letsencrypt.org/t/pfsense-invalid-chains-after-y-generation-cert/247667",
+  "le_strongswan_yr2": "https://community.letsencrypt.org/t/ikev2-strongswan-fails-with-lets-encrypt-yr2-chain-works-with-other-servers-chain-mismatch-suspected/247614",
+  "le_fullchain_missing": "https://community.letsencrypt.org/t/certbot-fullchain-missing-intermediates/247897",
+  "le_validation_timeouts_pmtud": "https://community.letsencrypt.org/t/https-connection-failures-timeouts-from-validation-servers/243673",
+  "le_secondary_servfail": "https://community.letsencrypt.org/t/secondary-servfail-dns-error-running-certbot/244512",
+  "le_sudden_renewal_fail": "https://community.letsencrypt.org/t/some-domains-suddenly-failing-renewal-or-new-cert-issue/245797",
+  "le_webroot_fail": "https://community.letsencrypt.org/t/certbot-failed-to-authenticate-some-domains-authenticator-webroot/246763",
+  "le_not_trusted_intermediate": "https://community.letsencrypt.org/t/the-certificate-is-not-trusted-in-all-web-browsers-you-may-need-to-install-an-intermediate-chain-certificate-to-link-it-to-a-trusted-root-certificate/242371",
+  "le_dst_root_x3_help": "https://community.letsencrypt.org/t/help-thread-for-dst-root-ca-x3-expiration-september-2021/149190",
+  "le_authenticator_no_challenges": "https://community.letsencrypt.org/t/solution-client-with-the-currently-selected-authenticator-does-not-support-any-combination-of-challenges-that-will-satisfy-the-ca/49983",
+  "le_nginx_acme_all_vhosts": "https://community.letsencrypt.org/t/how-to-nginx-configuration-to-enable-acme-challenge-support-on-all-http-virtual-hosts/5622",
+  "le_dns_providers": "https://community.letsencrypt.org/t/dns-providers-who-easily-integrate-with-lets-encrypt-dns-validation/86438",
+  "le_expiry_monitor_thread": "https://community.letsencrypt.org/t/built-a-rust-based-monitor-for-those-missing-the-old-expiration-emails/244532",
+  "le_rate_limits_docs": "https://letsencrypt.org/docs/rate-limits/",
+  "docker28_hardening_blog": "https://www.docker.com/blog/docker-engine-28-hardening-container-networking-by-default/",
+  "docker28_release_notes": "https://docs.docker.com/engine/release-notes/28/",
+  "docker_packet_filtering": "https://docs.docker.com/engine/network/packet-filtering-firewalls/",
+  "docker_forum_28_2_2_breaks_bridge": "https://forums.docker.com/t/update-to-docker-ce-28-2-2-breaks-bridge-networking-to-container/148399/10",
+  "docker_forum_v29_nftables": "https://forums.docker.com/t/how-to-block-ports-inusing-nftables-with-docker-v29/151450",
+  "tailscale_linux_dns": "https://tailscale.com/docs/reference/linux-dns",
+  "tailscale_issue_7816_al2023_dns": "https://github.com/tailscale/tailscale/issues/7816",
+  "tailscale_issue_1227": "https://github.com/tailscale/tailscale/issues/1227",
+  "tailscale_troubleshooting": "https://tailscale.com/kb/1023/troubleshooting",
+  "headscale_reverse_proxy": "https://headscale.net/stable/ref/integration/reverse-proxy/",
+  "headscale_issue_3415": "https://github.com/juanfont/headscale/issues/3415",
+  "netbird_troubleshooting": "https://docs.netbird.io/help/troubleshooting-client",
+  "netbird_issue_1633": "https://github.com/netbirdio/netbird/issues/1633",
+  "netbird_issue_743": "https://github.com/netbirdio/netbird/issues/743",
+  "opnsense_nat_reflection_16783": "https://forum.opnsense.org/index.php?topic=16783.0",
+  "opnsense_nat_reflection_41838": "https://forum.opnsense.org/index.php?topic=41838.0",
+  "opnsense_core_5941": "https://github.com/opnsense/core/issues/5941",
+  "lp_wait_online_2063331": "https://bugs.launchpad.net/bugs/2063331",
+  "lp_wait_online_2036358": "https://bugs.launchpad.net/bugs/2036358",
+  "systemd_27724_wait_online_bridge": "https://github.com/systemd/systemd/issues/27724",
+  "conntrack_majorio": "https://major.io/p/nf-conntrack-table-full-dropping-packet/",
+  "conntrack_suse_kb": "https://www.suse.com/support/kb/doc/?id=000020149"
+ },
+ "facts": [
+  "LE Gen Y hierarchy: available for tlsserver/shortlived profiles 2026-01-07; default classic profile switched 2026-05-13. Roots YE/YR cross-signed by X1/X2; YE/YR not yet in Mozilla root program, so Debian 13 / Ubuntu 26.04 / Fedora 44 fail with 'unable to get local issuer certificate' if the server does not send the cross-signed root; fix: serve the full chain including the cross-sign.",
+  "LE client auth EKU: classic profile stopped including it 2026-02-11; tlsclient profile ended May 2026; none after 2026-07-08 (search result). Breaks mTLS/XMPP s2s that used LE certs as client certs.",
+  "LE lifetimes: 45-day opt-in on tlsserver from 2026-05-13; default 64 days in 2027; 45 days in 2028. Expiration emails ended (2025). IP address certs GA 2026-01-07 via shortlived profile.",
+  "LE rate limits: 50 new certs per registered domain per 7 days; 5 per exact set of identifiers per 7 days (no overrides); 5 authorization failures per identifier per account per hour; 300 new orders per account per 3 hours; ARI renewals exempt. Error: 'too many ... in the last ..., retry after TIMESTAMP'.",
+  "LE validation timeout case (NZ, 2025): PMTUD failure; workaround MTU 1280 / DNS-01; error 'Timeout after connect (your server may be slow or overloaded)'.",
+  "Docker 28: unpublished container ports blocked from direct routing; 28.3.3 fixed CVE-2025-54388 (firewalld reload exposed loopback-published ports). Docker 29: experimental nftables backend (firewall-backend: nftables) creating ip docker-bridges tables.",
+  "Tailscale on Linux: best with systemd-resolved stub mode (/etc/resolv.conf -> stub-resolv.conf); otherwise it overwrites resolv.conf and proxies DNS via 100.100.100.100; AL2023 loop issue #7816.",
+  "Headscale behind proxy: WebSocket upgrade with Upgrade: tailscale-control-protocol over POST; Cloudflare proxy/tunnel unsupported; STUN UDP 3478 must be public for embedded DERP; gRPC not proxied; set server_url and trusted_proxies.",
+  "NetBird: netbird status -d shows P2P vs Relayed, ICE candidate types; netbird debug bundle; routing peer needs ip_forward=1 and ACL rules.",
+  "OPNsense NAT reflection: Firewall > Settings > Advanced reflection for port forwards; or split DNS instead.",
+  "systemd-networkd-wait-online: 'A start job is running for Wait for Network to be Configured' ~120 s; fix optional: true on unused interfaces or --any."
+ ]
+}

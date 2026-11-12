@@ -1,0 +1,100 @@
+{
+ "id": "l0-milestone-fresher",
+ "title": "Milestone: the server handover",
+ "level": "L0",
+ "map_node": "milestone-fresher",
+ "path": "fresher",
+ "order": 12,
+ "minutes": 40,
+ "difficulty": "medium",
+ "source": {
+  "title": "Docker for Windows: entrypoint \"no such file\" although the file exists (Stack Overflow)",
+  "url": "https://stackoverflow.com/questions/76085121/docker-for-windows-entrypoint-no-such-file-exists-even-though-it-does/76087946",
+  "note": "adapted"
+ },
+ "brief": "**HANDOVER · web-07 · from the contractor, last day yesterday**\n\n> \"web-07 is ready: nginx serves shop.example.com from `/srv/shop/public`, and a health probe runs every minute from cron and writes `/var/lib/shop/health.txt`. I wrote the probe on my laptop and copied it over. Everything works, good luck!\"\n\nMonitoring disagrees: the shop is down and the health file was never written.\n\nThis is your L0 exit test. Use what you practised: read errors before changing anything, find the file that matters, fix the cause with the smallest safe change, and make it survive a reboot. No `chmod 777`, no running services as root. Hints are there if you need them; try without first. Suggested timer: 30 minutes.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Bring the web server back",
+   "text": "nginx is not running. Find out why from nginx itself, fix the configuration the contractor left behind, and make sure the web server comes back after a reboot. Keep the shop site enabled.\n\nDone when the configuration test passes, nginx is running and enabled, and the shop's server block answers (any status for now).",
+   "points": 30,
+   "hints": [
+    "`systemctl status nginx` and `sudo nginx -t` name the file and line. A directive without its closing `;` swallows the next line.",
+    "Add the missing `;` after `root /srv/shop/public` in `/etc/nginx/sites-available/shop`, then `sudo nginx -t && sudo systemctl enable --now nginx`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which command tests the nginx configuration and names the bad line?",
+     "format": "command with option, without sudo",
+     "answer_sha256": "dbbf133c09f0e7ffa75aba01eb3470f13f0ce1ce45fad63a5461671548bde7d6"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "nginx -t passes with the shop site loaded; nginx is active and enabled",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "403 for everyone",
+   "text": "Now the shop answers `curl -sI -H 'Host: shop.example.com' http://127.0.0.1/` with an error. Use the error log and the permissions of every directory on the path to find out what the nginx workers can't do.\n\nGive the workers exactly the access they need: they stay unprivileged, and nothing becomes world-writable. Done when the shop page answers 200.",
+   "points": 30,
+   "hints": [
+    "`sudo tail /var/log/nginx/error.log` shows `(13: Permission denied)`. `namei -l /srv/shop/public/index.html` shows that others have no `r`/`x`.",
+    "`sudo chmod 755 /srv/shop /srv/shop/public && sudo chmod 644 /srv/shop/public/index.html`, or give the www-data group read access with `chgrp` and `chmod g+rX`."
+   ],
+   "questions": [
+    {
+     "id": "q2",
+     "prompt": "As which user do the nginx worker processes run on Ubuntu?",
+     "format": "user name",
+     "answer_sha256": "81f4496c4a42bf27c5c0c294d6b3d6fdac57b09b451c7626fe9f0f4a8421cdfe"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the shop answers 200; workers run as www-data; nothing under /srv/shop is world-writable",
+     "script": "checks/t2.sh"
+    }
+   ]
+  },
+  {
+   "id": "t3",
+   "title": "The probe that never ran",
+   "text": "The cron job is there and cron is running, yet `/var/lib/shop/health.txt` never appears. Run the probe exactly as cron would. The file exists, yet the shell says \"not found\". Something in its first line is wrong: inspect the file's bytes (`cat -A`, `file`).\n\nRepair the script itself, not just one run, so the next scheduled run works. Done when the probe, run in cron's environment, records `200`.",
+   "points": 40,
+   "hints": [
+    "In a root shell, `/usr/local/bin/shop-health` says `cannot execute: required file not found`: the interpreter on line 1 is missing. `cat -A` shows `#!/bin/bash^M$`, so the kernel looks for `/bin/bash` plus a carriage return. `file` reports \"with CRLF line terminators\".",
+    "`sudo sed -i 's/\\r$//' /usr/local/bin/shop-health` (or `dos2unix` where installed), then run it again and `cat /var/lib/shop/health.txt`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which invisible character at the end of each line broke the script?",
+     "format": "two words",
+     "answer_sha256": "609c910edd6ac11d5f645aa85ea023d56abea29aa4ca523e8daf5890ba9ef218"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which command reports a file's type, including \"with CRLF line terminators\"?",
+     "format": "command name",
+     "answer_sha256": "3b9c358f36f0a31b6ad3e14f309c7cf198ac9246e8316f9ce543d5b19ac02b80"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "the probe has LF line endings and, run in cron's environment, records 200; cron is active and enabled",
+     "script": "checks/t3.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **nginx down:** `root /srv/shop/public` had no `;`, so nginx read `index index.html;` as more arguments: `invalid number of arguments in \"root\" directive`. The service was also disabled.\n2. **403:** `/srv/shop` and `public` were 0750 and the page 0640, owned by deploy. The `www-data` workers could not traverse or read them: `(13: Permission denied)`.\n3. **Probe:** the script was saved with Windows line endings (CRLF). The kernel read the interpreter as `/bin/bash\\r`, which doesn't exist, so the shell reports `not found` (bash 5.2: `cannot execute: required file not found`; older bash: `bad interpreter`), although the file is right there.\n\n### Task 1\n```bash\nsystemctl status nginx                 # inactive (dead), disabled\nsudo nginx -t                          # invalid number of arguments in \"root\" directive in /etc/nginx/sites-enabled/shop:6\nsudo nano /etc/nginx/sites-available/shop   # root /srv/shop/public;\nsudo nginx -t && sudo systemctl enable --now nginx\n```\n\n### Task 2\n```bash\ncurl -sI -H 'Host: shop.example.com' http://127.0.0.1/ | head -1   # 403\nsudo tail -2 /var/log/nginx/error.log                              # (13: Permission denied)\nnamei -l /srv/shop/public/index.html\nsudo chmod 755 /srv/shop /srv/shop/public ; sudo chmod 644 /srv/shop/public/index.html\n```\n\n### Task 3\n```bash\nsudo env -i PATH=/usr/bin:/bin /bin/sh -c /usr/local/bin/shop-health   # /bin/sh: 1: /usr/local/bin/shop-health: not found\nfile /usr/local/bin/shop-health        # ... with CRLF line terminators\ncat -A /usr/local/bin/shop-health | head -2   # ...^M$\nsudo sed -i 's/\\r$//' /usr/local/bin/shop-health\nsudo /usr/local/bin/shop-health; cat /var/lib/shop/health.txt   # 2026-... 200\n```\n*Why:* prevent it at the source. A `.gitattributes` line such as `*.sh text eol=lf` makes Git check scripts out with LF on every OS.\n\n### Exit test self-check\n- Did you read the error message before changing anything?\n- Did each fix survive a reboot (`enable`, files on disk, not one-off commands)?\n- Did you grant the least access that works?\n\n**Source (adapted):** [Docker for Windows: entrypoint \"no such file\" although the file exists](https://stackoverflow.com/questions/76085121/docker-for-windows-entrypoint-no-such-file-exists-even-though-it-does/76087946): the author traced the failure to Windows CRLF line endings in a shell script and fixed it by converting the file to LF. The nginx syntax and permission faults reuse rooms 01 and 02."
+}

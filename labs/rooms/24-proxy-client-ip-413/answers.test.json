@@ -1,0 +1,5 @@
+{
+ "q1": "$remote_addr",
+ "q2": "$proxy_add_x_forwarded_for",
+ "q3": "1m"
+}

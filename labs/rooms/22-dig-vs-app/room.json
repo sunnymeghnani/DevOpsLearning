@@ -1,0 +1,81 @@
+{
+ "id": "l2-dig-vs-app",
+ "title": "dig works, the app doesn't",
+ "level": "L2",
+ "map_node": "dns-deep",
+ "path": "mid",
+ "order": 22,
+ "minutes": 30,
+ "difficulty": "medium",
+ "source": {
+  "title": "Some ways DNS can break: the /etc/hosts entry you forgot, and search domains with ndots (Julia Evans)",
+  "url": "https://jvns.ca/blog/2022/01/15/some-ways-dns-can-break/",
+  "note": "adapted"
+ },
+ "brief": "**#oncall 10:12 · app-05 · after the API migration**\n\n> \"The orders API moved to its new host last night and DNS was updated. On app-05 the `orders-sync` worker still fails with *Network is unreachable*, and the nightly `report-export` job failed too. I ran `dig api.internal.example.com` on the box and it gives the new address, so DNS is fine and it must be the network. Can you check before I open a ticket with the network team?\"\n\nIn this lab the company DNS is a dnsmasq on `127.0.0.2`, and the new API host lives on the loopback address `127.0.10.20`, port 8080. Compare what `dig` asks with what applications ask, then fix the box, not the DNS server.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Same name, two answers",
+   "text": "`dig` talks to a DNS server and nothing else. Applications call `getaddrinfo()`, which follows the `hosts:` line of the Name Service Switch config and may answer from a local file before DNS is ever asked. `getent ahosts NAME` resolves the way applications do.\n\nCompare both for the API's name, then read the worker's log (`journalctl -u orders-sync`). Find every local override of the name and remove it. Keep the rest of the file and the lookup order as they are: other entries are still needed.\n\nDone when `getent` and `dig` agree and the worker's request succeeds.",
+   "points": 50,
+   "hints": [
+    "`dig +short api.internal.example.com` versus `getent ahosts api.internal.example.com`; `grep hosts: /etc/nsswitch.conf`; `grep -n api.internal /etc/hosts`. The name may also hide as an alias at the end of a line.",
+    "`/etc/hosts` is a Docker bind mount, so `sed -i` fails with *Device or resource busy*: use `sudoedit /etc/hosts` and delete the lines that end in `api.internal.example.com`. Then `getent ahosts` again and `journalctl -u orders-sync -n 3`. See [42 §2.2](42-problems-network-dns-tls-vpn.md#22-dig-answers-the-application-cant-resolve)."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which address did applications get for api.internal.example.com before your fix?",
+     "format": "IPv4 address",
+     "answer_sha256": "1a17a4b9dec75a663e54e523037f05b0e5a5e13d023247a6b0f9774cc80829a2"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which file decides that /etc/hosts is read before DNS?",
+     "format": "/path/to/file",
+     "answer_sha256": "a42629617a16e4fea0486435eb0d4924ee109613684cf5c5e6674fc6a65370d9"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "no /etc/hosts pin for the API name; getent and dig both give 127.0.10.20; the worker's request succeeds",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "The short name",
+   "text": "`report-export` still fails, and `getent` for its host gives a public address. Its config uses a short name and trusts the resolver to complete it. Read `/etc/resolv.conf`: the `search` list and an option decide which full names are tried, and in which order. Note that `dig api` does not use the search list unless you ask it to (`+search`).\n\nOther jobs on this box rely on the search list, so leave `resolv.conf` alone. Make report-export independent of it instead.\n\nDone when report-export uses the API's fully qualified name and a run of `sudo systemctl start report-export` succeeds.",
+   "points": 50,
+   "hints": [
+    "`journalctl -u report-export -n 5`, `getent ahosts api`, `dig +search api`. A name with fewer dots than `ndots` is tried with each search domain first.",
+    "`sudoedit /etc/report-export.conf`: `API_URL=http://api.internal.example.com.:8080/health` (the trailing dot means \"already complete\"). Then `sudo systemctl start report-export && journalctl -u report-export -n 3`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which full name did the short name `api` become?",
+     "format": "host name",
+     "answer_sha256": "d0c43d3885064d9aeb470214a914a43baec40e1d66dbd46375136b6ac15d2e63"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which resolv.conf option sets how many dots a name needs before it is tried as-is first?",
+     "format": "option name",
+     "answer_sha256": "e84f9a5bf6bf4943847477998c8f27c73374b0b0ad568f79333e01d90fd34495"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "report-export uses a fully qualified name that resolves to 127.0.10.20; resolv.conf search list unchanged; the job succeeds",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **A forgotten /etc/hosts pin.** During an old migration someone pinned `api.internal.example.com` to `192.0.2.44`, once as an alias after `api-old…` and once after `staging-api…`. `nsswitch.conf` says `hosts: files dns`, so getaddrinfo answered from the file and never asked DNS. `dig` ignores both files, so it showed the new address and made DNS look fine.\n2. **A short name and a search list.** `API_URL=http://api:8080` relies on `search example.com`. With `ndots:1`, `api` (no dots) is tried with the search domains first, became `api.example.com` and reached a different, public host.\n\n### Task 1\n```bash\ndig +short api.internal.example.com              # 127.0.10.20 (DNS)\ngetent ahosts api.internal.example.com | head -1 # 192.0.2.44 (what apps get)\ngrep '^hosts:' /etc/nsswitch.conf               # files dns\ngrep -n 'api.internal' /etc/hosts                # two lines carry the name\nsudoedit /etc/hosts                              # delete both\ngetent ahosts api.internal.example.com | head -1 # 127.0.10.20\njournalctl -u orders-sync -n 2 --no-pager        # sync ok\n```\n*Why:* when tools disagree, ask the same path the application uses: `getent` (or `resolvectl query` on hosts with systemd-resolved) goes through NSS; `dig`/`nslookup` don't. Runtimes with their own resolver (Go's pure resolver, Java's cache, musl in Alpine) add more paths.\n\n### Task 2\n```bash\ngetent ahosts api | head -1          # 203.0.113.80 … api.example.com\ndig +search +short api               # same; plain `dig api` asks for \"api.\"\nsudoedit /etc/report-export.conf      # API_URL=http://api.internal.example.com.:8080/health\nsudo systemctl start report-export\n```\n*Why:* configs should name services by their full name. A trailing dot makes it absolute, so no search domain is ever appended (with TLS, check that the client also accepts the dotted name in SNI). The same mechanism with `ndots:5` makes every external lookup in Kubernetes pods try the cluster search domains first.\n\n**Source (adapted):** [Some ways DNS can break](https://jvns.ca/blog/2022/01/15/some-ways-dns-can-break/) by Julia Evans, who collected readers' DNS incidents: an `/etc/hosts` entry someone forgot overrides DNS and `dig` doesn't notice, and search domains with `ndots` make lookups try unexpected names first. Handbook: 42 §2.2."
+}

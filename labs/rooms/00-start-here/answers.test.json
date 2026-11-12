@@ -1,0 +1,8 @@
+{
+  "q-hostname": "lab",
+  "q-codename": "noble",
+  "q-note-path": "/srv/ops/shift-notes/2026-10-19/handover.txt",
+  "q-ticket": "OPS-4127",
+  "q-port": "80",
+  "q-enable": "enable"
+}

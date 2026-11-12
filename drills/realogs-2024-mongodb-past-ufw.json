@@ -1,0 +1,72 @@
+{
+  "id": "realogs-2024-mongodb-past-ufw",
+  "title": "The firewall that wasn't in the way",
+  "level": "L0",
+  "track": "security",
+  "topics": ["docker-firewall", "host-firewall", "sockets-ports"],
+  "minutes": 6,
+  "role": "You run a rented VPS for side projects. MongoDB runs in Docker from the official image. The provider offers no outside firewall, so UFW on the box is your only one.",
+  "source": {
+    "label": "RealOGs blog: Lessons from a Hack: securing systems properly when using UFW with Docker",
+    "url": "https://blog.realogs.in/docker-ufw-config/",
+    "org": "RealOGs",
+    "date": "2024-06-07",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You open MongoDB Compass and your databases are gone. In their place is one new database holding a note: send 0.005 BTC within 48 hours or the data gets published.",
+  "steps": [
+    {
+      "situation": "Someone got in. The container is still running and still reachable.",
+      "choices": [
+        {"text": "Close the hole first (stop the container), but keep the volume, the container logs and the auth log", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 5}, "why": "Stopping the container ends the exposure. The logs tell you how they got in and what else they tried."},
+        {"text": "Pay: the data is worth more than 0.005 BTC", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": -20}, "why": "Nothing proves the attacker kept a copy, and the hole stays open for the next scanner."},
+        {"text": "Delete everything and redeploy the same compose file", "verdict": "bad", "effect": {"service": 5, "time": -5, "evidence": -20, "trust": -5}, "why": "You wipe the evidence and recreate the exact same exposure within minutes."}
+      ]
+    },
+    {
+      "situation": "\"But UFW denies 27017,\" you think. You check.",
+      "evidence": "$ sudo ufw status\nStatus: active\nTo        Action  From\n22/tcp    ALLOW   Anywhere\n80,443/tcp ALLOW  Anywhere\n$ docker ps --format '{{.Names}} {{.Ports}}'\nmongo  0.0.0.0:27017->27017/tcp\n# from a laptop outside\n$ nc -vz 203.0.113.20 27017\nConnection to 203.0.113.20 27017 port [tcp/*] succeeded!",
+      "evidence_cmd": "sudo ufw status",
+      "choices": [
+        {"text": "Believe the outside test, then read the rules Docker added: iptables -t nat -L DOCKER -n", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "`-p 27017:27017` makes Docker write its own iptables rules, and they bypass UFW. `ufw status` only lists UFW's rules."},
+        {"text": "Trust ufw status: they must have come in another way", "verdict": "bad", "effect": {"service": -5, "time": -10, "evidence": -10, "trust": 0}, "why": "The test from outside just connected. Believe the packet, not the config summary."},
+        {"text": "Add ufw deny 27017 and move on", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": 0}, "why": "The new rule lands in UFW's chains, which the Docker traffic never meets. Run `nc` again and it still connects."}
+      ]
+    },
+    {
+      "situation": "Only your app on this same host needs the database. How do you publish it?",
+      "choices": [
+        {"text": "Publish on 127.0.0.1:27017:27017 and set Docker's default bind IP to 127.0.0.1 in daemon.json", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "The author's fix. Docker makes no public rule for a port bound to localhost, and the daemon setting protects the next container you forget."},
+        {"text": "Drop ports: and let the app reach Mongo over the Compose network", "verdict": "good", "effect": {"service": 15, "time": 0, "evidence": 0, "trust": 5}, "why": "Also closed, if the app runs in the same Compose project. Fine, but you lose host access for tools like Compass, unless you use a tunnel."},
+        {"text": "Move Mongo to an unusual port, 47017", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": -5}, "why": "The author also avoids default ports, but only on top of a real fix. Scanners sweep every port; obscurity alone is not a firewall."}
+      ]
+    },
+    {
+      "situation": "The auth log shows another thing: someone has been guessing SSH passwords for days. The provider had password login enabled.",
+      "evidence": "$ sudo grep -c 'Failed password' /var/log/auth.log\n18342\n$ sudo sshd -T | grep -i passwordauthentication\npasswordauthentication yes",
+      "evidence_cmd": "sudo sshd -T | grep -i passwordauthentication",
+      "choices": [
+        {"text": "Keys only (PasswordAuthentication no), open only 80/443 and SSH, or log in over Tailscale SSH", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 5, "trust": 15}, "why": "What the author changed. Tailscale SSH runs over a WireGuard tunnel, so no OpenSSH port has to face the internet."},
+        {"text": "Install fail2ban and keep password login", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": 0, "trust": 0}, "why": "It slows the guessing, but a botnet keeps bringing new addresses, and a password stays something that can be guessed."},
+        {"text": "Ignore it: the database was the hole, not SSH", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -15}, "why": "Two open doors at once. The next attacker picks the one you left."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "The author ran MongoDB in Docker on a VPS, published with `-p 27017:27017`. The provider had no outside firewall, so the author set up UFW and assumed it protected the port. One day the databases in Compass were replaced by a single database with a ransom note (0.005 BTC in 48 hours, or the data would be published). The logs also showed SSH password brute-forcing, because the provider had password login on. The cause: Docker's `-p` opens the port in iptables and bypasses UFW. The fixes in the post: publish to `127.0.0.1`, set the daemon's default IP to 127.0.0.1 in `/etc/docker/daemon.json`, avoid default ports, keep only 80/443 and SSH open, turn off SSH passwords, use Tailscale SSH, and use the provider's outside firewall where there is one. The author called the data non-critical; the post does not say whether it came back.",
+    "lessons": ["UFW does not filter ports that Docker publishes: check with a scan from outside.", "Bind database ports to 127.0.0.1, or don't publish them at all.", "Set a safe default bind IP in daemon.json so a forgotten -p stays local.", "Key-only SSH on every internet-facing box, from day one."],
+    "commands": ["docker ps --format '{{.Names}} {{.Ports}}'", "sudo iptables -t nat -L DOCKER -n", "nc -vz 203.0.113.20 27017", "sudo ufw status verbose", "sudo sshd -T | grep -i passwordauthentication"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "3.1 Docker publishes ports past UFW"},
+      {"file": "30-learn-docker.md", "heading": "DOCKER-USER, UFW and the firewall"},
+      {"file": "45-dokploy-and-self-hosted-paas.md", "heading": "13.2 Panel and databases open past UFW"}
+    ],
+    "sites": [
+      {"label": "iximiuz Labs: restrict access to a Docker-published port (free account)", "url": "https://labs.iximiuz.com/challenges/docker-networking-prevent-unexpected-access-to-published-port"},
+      {"label": "Killercoda: network exposure lab, 127.0.0.1 vs 0.0.0.0 (free account)", "url": "https://killercoda.com/kelseycreate/scenario/network-exposure-lab"}
+    ]
+  }
+}

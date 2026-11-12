@@ -1,0 +1,6 @@
+{
+ "q1": "+L1",
+ "q2": "metrics-agent.service",
+ "q3": "copytruncate",
+ "q4": "-d"
+}

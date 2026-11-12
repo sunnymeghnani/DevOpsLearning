@@ -1,0 +1,33 @@
+# Only what build_site.py and the tests read goes into the build context.
+.git
+.claude
+.codex
+.agents
+**/__pycache__
+**/*.pyc
+
+# generated in the image
+index.html
+artifact.html
+*.html.gz
+
+# notes that are not part of the site
+PROJECT-SUMMARY.md
+recent_updated.md
+DOCKER.md
+
+# research: keep the saved JSON catalogs the source index is built from; drop backups,
+# briefs, partial downloads and old roadmap snapshots
+research/*
+!research/*.json
+research/roadmap.before-*.json
+research/practice.before-*.json
+
+# Docker files themselves
+Dockerfile
+compose.yaml
+.dockerignore
+
+# deep-research notes and reports (not part of the site)
+research_notes/
+reports/

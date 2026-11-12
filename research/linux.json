@@ -1,0 +1,1312 @@
+{
+ "domain": "linux",
+ "problems": [
+  {
+   "title": "apt/dpkg lock held (Could not get lock /var/lib/dpkg/lock-frontend)",
+   "error_text": "E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process 1234 (unattended-upgr)",
+   "context": "fresh boot, cloud-init, CI provisioning, Ansible",
+   "tool": "apt/dpkg",
+   "area": "packages",
+   "level": "L1",
+   "frequency_signal": "one of the most searched Ubuntu errors; many blog posts and Launchpad bugs",
+   "root_causes": [
+    "apt-daily/apt-daily-upgrade timers running unattended-upgrades after boot",
+    "cloud-init apt run",
+    "crashed apt left dpkg half-configured"
+   ],
+   "diagnosis": [
+    "ps -o pid,etime,cmd -C apt,apt-get,dpkg,unattended-upgr",
+    "systemctl list-timers 'apt*'",
+    "sudo lsof /var/lib/dpkg/lock-frontend"
+   ],
+   "fix": [
+    "wait; apt-get -o DPkg::Lock::Timeout=600",
+    "systemd-run --property=After=apt-daily.service ... or systemctl stop apt-daily* in images",
+    "never rm lock files; if dpkg interrupted: dpkg --configure -a"
+   ],
+   "prevention": "set DPkg::Lock::Timeout in automation; schedule unattended-upgrades windows",
+   "sources": [
+    {
+     "title": "Launchpad bug 1260041 unattended-upgrades crashes with dpkg error",
+     "url": "https://bugs.launchpad.net/ubuntu/+source/unattended-upgrades/+bug/1260041",
+     "type": "bug",
+     "verified": true
+    },
+    {
+     "title": "DEV: Resolving dpkg lock contention in Ubuntu deployments",
+     "url": "https://dev.to/yulin/resolving-dpkg-lock-contention-in-ubuntu-deployments-5fkk",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "systemd unit restart loop: Start request repeated too quickly",
+   "error_text": "app.service: Start request repeated too quickly. / Failed with result 'exit-code'",
+   "context": "custom units with Restart=always",
+   "tool": "systemd",
+   "area": "systemd",
+   "level": "L1",
+   "frequency_signal": "classic; systemd#30804 proposes warning",
+   "root_causes": [
+    "service exits immediately (bad config, missing env, wrong user)",
+    "StartLimitBurst=5 in 10s exceeded",
+    "RestartSec too short"
+   ],
+   "diagnosis": [
+    "systemctl status",
+    "journalctl -u UNIT -b --no-pager -n 50",
+    "systemctl show UNIT -p NRestarts,ExecMainStatus,Result"
+   ],
+   "fix": [
+    "fix root cause; systemctl reset-failed; set RestartSec=5s and StartLimitIntervalSec/Burst in [Unit]"
+   ],
+   "prevention": "systemd-analyze verify; alert on failed units",
+   "sources": [
+    {
+     "title": "systemd#30804 Warn/disallow Restart=always without preventing repeated too quickly loop",
+     "url": "https://github.com/systemd/systemd/issues/30804",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "systemd#39247 D-Bus activated service trips StartLimitBurst",
+     "url": "https://github.com/systemd/systemd/issues/39247",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "systemd#6129 RFE exponentially increasing RestartSec (closed, RestartSteps added)",
+     "url": "https://github.com/systemd/systemd/issues/6129",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Boot drops into emergency mode because of fstab",
+   "error_text": "You are in emergency mode. ... Dependency failed for /data / Timed out waiting for device /dev/disk/by-uuid/...",
+   "context": "removed disk, wrong UUID, NFS in fstab, cloud volume detached",
+   "tool": "systemd/fstab",
+   "area": "storage",
+   "level": "L2",
+   "frequency_signal": "classic; cloud vendors have dedicated docs (Azure, GCP)",
+   "root_causes": [
+    "UUID changed/disk gone",
+    "typo in fstab",
+    "network fs without _netdev/nofail"
+   ],
+   "diagnosis": [
+    "journalctl -xb | grep -iE 'dependency failed|timed out'",
+    "blkid; lsblk -f",
+    "findmnt --verify"
+   ],
+   "fix": [
+    "mount -o remount,rw /; fix fstab; nofail,x-systemd.device-timeout=10s; _netdev for NFS"
+   ],
+   "prevention": "findmnt --verify before reboot; nofail for non-root data disks; serial console access",
+   "sources": [
+    {
+     "title": "Microsoft Learn: troubleshoot Linux VM boot issues due to fstab errors",
+     "url": "https://learn.microsoft.com/en-US/troubleshoot/azure/virtual-machines/linux/linux-virtual-machine-cannot-start-fstab-errors",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "systemd, fstab, and nofail (Nelson's log)",
+     "url": "https://nelsonslog.wordpress.com/2022/08/16/systemd-fstab-and-nofail/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "ArchWiki: fstab",
+     "url": "https://wiki.archlinux.org/title/Fstab",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "systemd.mount man page",
+     "url": "https://www.freedesktop.org/software/systemd/man/latest/systemd.mount.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "apt upgrade keeps packages back (phased updates)",
+   "error_text": "The following packages have been kept back:",
+   "context": "Ubuntu 22.04/24.04 servers, fleet consistency",
+   "tool": "apt",
+   "area": "packages",
+   "level": "L1",
+   "frequency_signal": "very common question; Ubuntu Server docs page and Launchpad bug 1988819",
+   "root_causes": [
+    "phased updates",
+    "new dependencies need dist-upgrade/full-upgrade",
+    "held packages (apt-mark hold)"
+   ],
+   "diagnosis": [
+    "apt-cache policy PKG (phased NN%)",
+    "apt-mark showhold",
+    "apt list --upgradable"
+   ],
+   "fix": [
+    "wait or APT::Get::Always-Include-Phased-Updates for consistency; apt install PKG for new deps"
+   ],
+   "prevention": "decide fleet policy; same snapshot mirror for all hosts",
+   "sources": [
+    {
+     "title": "Ubuntu Server docs: About apt upgrade and phased updates",
+     "url": "https://ubuntu.com/server/docs/explanation/software/about-apt-upgrade-and-phased-updates/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Launchpad bug 1988819: When apt keeps back packages due to phased updates",
+     "url": "https://bugs.launchpad.net/bugs/1988819",
+     "type": "bug",
+     "verified": true
+    },
+    {
+     "title": "Ubuntu Community Help Wiki: PhasedUpdates",
+     "url": "https://help.ubuntu.com/community/PhasedUpdates",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "needrestart interactive prompt blocks automation (22.04+)",
+   "error_text": "Which services should be restarted? / Daemons using outdated libraries",
+   "context": "apt in scripts, Ansible, CI on Ubuntu 22.04+",
+   "tool": "needrestart",
+   "area": "packages",
+   "level": "L1",
+   "frequency_signal": "common since 22.04; wazuh-indexer#769",
+   "root_causes": [
+    "needrestart default interactive mode on 22.04"
+   ],
+   "diagnosis": [
+    "grep nrconf /etc/needrestart/needrestart.conf /etc/needrestart/conf.d/*"
+   ],
+   "fix": [
+    "/etc/needrestart/conf.d/50local.conf: $nrconf{restart}='a' or 'l'; DEBIAN_FRONTEND=noninteractive; NEEDRESTART_MODE=l"
+   ],
+   "prevention": "bake config into images",
+   "sources": [
+    {
+     "title": "wazuh/wazuh-indexer#769 Daemons using outdated libraries pop-up under Ubuntu 22.04",
+     "url": "https://github.com/wazuh/wazuh-indexer/issues/769",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Prevent Ubuntu 22.04 and newer from prompting during updates for restart",
+     "url": "https://www.hydrogen18.com/blog/disable-ubuntu-upgrade-needrestart.html",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "TechRadar: needrestart local privilege escalation flaw",
+     "url": "https://www.techradar.com/pro/security/ubuntu-linux-has-a-worrying-security-flaw-that-may-have-gone-unseen-for-a-decade",
+     "type": "news",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Disk full but du finds nothing: deleted files still open",
+   "error_text": "No space left on device; df 100% vs du much smaller",
+   "area": "storage",
+   "level": "L1",
+   "tool": "coreutils/lsof",
+   "frequency_signal": "classic interview question and blog topic",
+   "root_causes": [
+    "rm on a log still held open by nginx/java/docker",
+    "logrotate without copytruncate/postrotate reload"
+   ],
+   "diagnosis": [
+    "sudo lsof +L1",
+    "ls -l /proc/PID/fd | grep deleted"
+   ],
+   "fix": [
+    "restart/reload the holder; or truncate via : > /proc/PID/fd/N"
+   ],
+   "prevention": "logrotate with postrotate reload; alert at 80%",
+   "sources": [
+    {
+     "title": "DEV: Your disk is full but du says it's empty",
+     "url": "https://dev.to/arthurpro/your-disk-is-full-but-du-says-its-empty-1dhj",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "jensd: find and recover space used by deleted files",
+     "url": "https://jensd.be/326/linux/find-and-recover-space-used-by-deleted-files-shown-by-df-but-not-by-du",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Tarsnap outage 2016: runaway log filled the filesystem",
+     "url": "https://mail.tarsnap.com/tarsnap-announce/msg00035.html",
+     "type": "postmortem",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "No space left on device with free blocks: inode exhaustion",
+   "error_text": "No space left on device; df -i IUse% 100%",
+   "area": "storage",
+   "level": "L1",
+   "tool": "ext4",
+   "frequency_signal": "DigitalOcean community questions with many views",
+   "root_causes": [
+    "millions of small files: php sessions, mail queue, cache, CI artifacts"
+   ],
+   "diagnosis": [
+    "df -i",
+    "find / -xdev -type d -size +1M",
+    "du --inodes -x / | sort -n | tail"
+   ],
+   "fix": [
+    "delete the small files; tmpfiles/cron cleanup; mkfs with -i for future"
+   ],
+   "prevention": "monitor inodes alongside bytes",
+   "sources": [
+    {
+     "title": "DigitalOcean: No space left on device (28)",
+     "url": "https://www.digitalocean.com/community/questions/no-space-left-on-device-28",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "DigitalOcean: PHP fopen /var/lib/php/sessions No space left on device",
+     "url": "https://www.digitalocean.com/community/questions/php-error-message-fopen-var-lib-php-sessions-failed-to-open-stream-no-space-left-on-device",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "DigitalOcean: No space left on device - can't start apache, mysql",
+     "url": "https://www.digitalocean.com/community/questions/no-space-left-on-device-i-can-t-start-apache-mysql-or-install-anything",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "NFS stale file handle and hung mounts",
+   "error_text": "Stale file handle / nfs: server 10.0.1.40 not responding, still trying",
+   "area": "storage",
+   "level": "L2",
+   "tool": "nfs",
+   "frequency_signal": "classic; many RHEL guides and Red Hat KB",
+   "root_causes": [
+    "export re-created/filesystem replaced on server",
+    "server down with hard mount -> D state"
+   ],
+   "diagnosis": [
+    "mount -t nfs4; nfsstat -m; ps -eo stat,pid,cmd | awk '$1 ~ /D/'"
+   ],
+   "fix": [
+    "umount -l / -f; remount; exportfs -ra; fsid= on exports"
+   ],
+   "prevention": "x-systemd.automount, _netdev, fsid, monitoring",
+   "sources": [
+    {
+     "title": "Red Hat: Stale file handle when mounting a NFS exported XFS filesystem",
+     "url": "https://access.redhat.com/solutions/437813",
+     "type": "kb",
+     "verified": true
+    },
+    {
+     "title": "ArchWiki: NFS",
+     "url": "https://wiki.archlinux.org/title/NFS",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "SSH port change ignored on Ubuntu 22.10+/24.04 (ssh.socket)",
+   "error_text": "sshd still listens on 22 after changing Port",
+   "area": "ssh",
+   "level": "L1",
+   "tool": "openssh/systemd",
+   "frequency_signal": "long discourse.ubuntu.com thread (2+ pages), Launchpad bug 2069041",
+   "root_causes": [
+    "socket activation: ssh.socket owns listening sockets; generator reads sshd_config only on daemon-reload"
+   ],
+   "diagnosis": [
+    "systemctl status ssh.socket; ss -ltnp | grep sshd"
+   ],
+   "fix": [
+    "daemon-reload; restart ssh.socket; or disable socket activation"
+   ],
+   "prevention": "test with a second session; open firewall first",
+   "sources": [
+    {
+     "title": "Ubuntu Community Hub: SSHd now uses socket-based activation (22.10 and later)",
+     "url": "https://discourse.ubuntu.com/t/sshd-now-uses-socket-based-activation-ubuntu-22-10-and-later/30189?page=2",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Launchpad bug 2069041: Changing Port in sshd_config requires calling systemctl daemon-reload",
+     "url": "https://bugs.launchpad.net/ubuntu/+source/openssh/+bug/2069041",
+     "type": "bug",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Too many open files: limits.conf ignored by systemd services",
+   "error_text": "accept4(): Too many open files / EMFILE",
+   "area": "kernel-limits",
+   "level": "L2",
+   "tool": "systemd/ulimit",
+   "frequency_signal": "very common; countless blog posts",
+   "root_causes": [
+    "PAM limits.conf only applies to login sessions; systemd services use LimitNOFILE",
+    "fd leak"
+   ],
+   "diagnosis": [
+    "cat /proc/PID/limits",
+    "ls /proc/PID/fd | wc -l",
+    "systemctl show UNIT -p LimitNOFILE"
+   ],
+   "fix": [
+    "drop-in LimitNOFILE=65536; fix leak"
+   ],
+   "prevention": "monitor fd usage",
+   "sources": [
+    {
+     "title": "systemd docs: systemd.exec (LimitNOFILE)",
+     "url": "https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html",
+     "type": "docs",
+     "verified": false
+    },
+    {
+     "title": "moby/moby#45060 container ulimits inherited from containerd",
+     "url": "https://github.com/moby/moby/issues/45060",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "moby/moby PR#45534 normalize RLIMIT_NOFILE",
+     "url": "https://github.com/moby/moby/pull/45534",
+     "type": "github-pr",
+     "verified": true
+    },
+    {
+     "title": "containerd PR#8924 remove LimitNOFILE from containerd.service",
+     "url": "https://github.com/containerd/containerd/pull/8924",
+     "type": "github-pr",
+     "verified": true
+    },
+    {
+     "title": "GitHub: February service disruptions post-incident analysis (systemd capped LimitNOFILE for ProxySQL)",
+     "url": "https://github.blog/news-insights/company-news/february-service-disruptions-post-incident-analysis/",
+     "type": "postmortem",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Unattended-upgrades reboots or restarts services unexpectedly",
+   "error_text": "server rebooted at 04:00 / service restarted after security update",
+   "area": "packages",
+   "level": "L2",
+   "tool": "unattended-upgrades",
+   "frequency_signal": "common sysadmin complaint",
+   "root_causes": [
+    "Automatic-Reboot true",
+    "needrestart restarting daemons (docker/containerd)"
+   ],
+   "diagnosis": [
+    "/var/log/unattended-upgrades/*.log; last -x reboot; journalctl -b -1 -e"
+   ],
+   "fix": [
+    "configure reboot window, Package-Blacklist for docker/containerd, or controlled patching"
+   ],
+   "prevention": "maintenance windows; Livepatch; staged rollout",
+   "sources": [
+    {
+     "title": "Ubuntu Server docs: Automatic updates",
+     "url": "https://ubuntu.com/server/docs/how-to/software/automatic-updates/",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Journal fills /var (journald disk usage)",
+   "error_text": "/var/log/journal is 4G",
+   "area": "logs",
+   "level": "L1",
+   "tool": "journald",
+   "frequency_signal": "common; Fedora discussion thread, systemd#40262 excessive IO",
+   "root_causes": [
+    "defaults 10% capped at 4G; noisy unit"
+   ],
+   "diagnosis": [
+    "journalctl --disk-usage"
+   ],
+   "fix": [
+    "SystemMaxUse=; journalctl --vacuum-size"
+   ],
+   "prevention": "drop-in journald.conf.d; rate limits",
+   "sources": [
+    {
+     "title": "journald.conf man page",
+     "url": "https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Fedora Discussion: /var/log/journal larger than expected",
+     "url": "https://discussion.fedoraproject.org/t/var-log-journal-larger-than-exepected/61357",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "systemd#40262 Excessive IO caused by systemd-journald",
+     "url": "https://github.com/systemd/systemd/issues/40262",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "systemd#6432 Filter mechanism for logs in journald (164 reactions)",
+     "url": "https://github.com/systemd/systemd/issues/6432",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Clock drift / chrony not stepping large offsets",
+   "error_text": "System time : 312.4 seconds slow of NTP time",
+   "area": "time",
+   "level": "L2",
+   "tool": "chrony",
+   "frequency_signal": "common on VMs after suspend/restore",
+   "root_causes": [
+    "makestep 1 3 only steps at start",
+    "NTP blocked UDP 123",
+    "two time daemons"
+   ],
+   "diagnosis": [
+    "chronyc tracking; chronyc sources -v; timedatectl"
+   ],
+   "fix": [
+    "chronyc makestep; allow UDP 123; one daemon"
+   ],
+   "prevention": "alert on offset",
+   "sources": [
+    {
+     "title": "chrony docs: chronyc",
+     "url": "https://chrony-project.org/doc/4.3/chronyc.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "RAID1/5 degraded (mdadm)",
+   "error_text": "[U_] in /proc/mdstat; DegradedArray event",
+   "area": "storage-hw",
+   "level": "L3",
+   "tool": "mdadm",
+   "frequency_signal": "classic bare-metal",
+   "root_causes": [
+    "disk failed or kicked"
+   ],
+   "diagnosis": [
+    "cat /proc/mdstat; mdadm --detail; smartctl -a"
+   ],
+   "fix": [
+    "--fail --remove, replace, copy partition table, --add, install bootloader"
+   ],
+   "prevention": "mdadm MAILADDR, smartd, scrubs",
+   "sources": [
+    {
+     "title": "Linux Raid Wiki: Replacing a failed drive",
+     "url": "https://raid.wiki.kernel.org/index.php/Replacing_a_failed_drive",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "TLDP Software-RAID HOWTO: detecting, querying and testing",
+     "url": "https://tldp.org/HOWTO/Software-RAID-HOWTO-6.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Ubuntu installer root LV uses only half the disk",
+   "error_text": "df shows 48G on a 100G disk",
+   "area": "storage",
+   "level": "L1",
+   "tool": "LVM",
+   "frequency_signal": "very common question; discourse.ubuntu.com thread",
+   "root_causes": [
+    "subiquity leaves VG free space"
+   ],
+   "diagnosis": [
+    "vgs; lvs; lsblk"
+   ],
+   "fix": [
+    "lvextend -r -l +100%FREE"
+   ],
+   "prevention": "decide LV layout at install",
+   "sources": [
+    {
+     "title": "Ubuntu Community Hub: How to expand disk space",
+     "url": "https://discourse.ubuntu.com/t/how-to-expand-disk-space/68505",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Leap second / time step causing CPU spin (postmortem)",
+   "error_text": "futex spin 100% CPU after leap second",
+   "area": "time",
+   "level": "L4",
+   "tool": "kernel",
+   "frequency_signal": "famous 2012 incident (Reddit, LinkedIn, airlines)",
+   "root_causes": [
+    "hrtimer not updated on leap second"
+   ],
+   "diagnosis": [],
+   "fix": [
+    "date -s to reset; modern: leap smear"
+   ],
+   "prevention": "smearing NTP, kernel updates",
+   "sources": [
+    {
+     "title": "LWN: Leaping seconds and looping servers",
+     "url": "https://lwn.net/Articles/504744/",
+     "type": "article",
+     "verified": true
+    },
+    {
+     "title": "HN: Critical Linux bug that leads 100% CPU (leap second)",
+     "url": "https://news.ycombinator.com/item?id=4188412",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "danluu/post-mortems",
+     "url": "https://github.com/danluu/post-mortems",
+     "type": "postmortems",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "SSH key login refused: bad ownership or modes",
+   "error_text": "Authentication refused: bad ownership or modes for directory /home/deploy",
+   "area": "ssh",
+   "level": "L1",
+   "tool": "openssh",
+   "frequency_signal": "classic; many guides",
+   "root_causes": [
+    "StrictModes: home or ~/.ssh group-writable, wrong owner"
+   ],
+   "diagnosis": [
+    "journalctl -u ssh | grep -i refused; namei -l ~/.ssh/authorized_keys"
+   ],
+   "fix": [
+    "chmod go-w ~; chmod 700 ~/.ssh; chmod 600 authorized_keys; chown"
+   ],
+   "prevention": "config management",
+   "sources": [
+    {
+     "title": "nixCraft: Authentication refused: bad ownership or modes",
+     "url": "https://www.cyberciti.biz/faq/openssh-server-authentication-refused-bad-ownership-or-modes/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "fabianlee: fixing bad ownership or modes",
+     "url": "https://fabianlee.org/2023/11/05/bash-fixing-ssh-authentication-error-bad-ownership-or-modes-for-file-directory/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "cron job works by hand but not from cron; timers as replacement",
+   "error_text": "no output; command not found in cron mail",
+   "area": "scheduling",
+   "level": "L1",
+   "tool": "cron/systemd timers",
+   "frequency_signal": "classic SO question",
+   "root_causes": [
+    "minimal PATH/env",
+    "% in crontab",
+    "no newline at end",
+    "wrong user/permissions"
+   ],
+   "diagnosis": [
+    "grep CRON /var/log/syslog; journalctl -u cron"
+   ],
+   "fix": [
+    "absolute paths, env, redirect output, or timer with Persistent=true"
+   ],
+   "prevention": "timers + OnFailure alerts",
+   "sources": [
+    {
+     "title": "ArchWiki: systemd/Timers",
+     "url": "https://wiki.archlinux.org/title/Systemd/Timers",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Amazon Linux 2023: systemd timers replace cron",
+     "url": "https://docs.aws.amazon.com/linux/al2023/ug/cron.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "task blocked for more than 120 seconds (hung tasks, D state)",
+   "error_text": "INFO: task jbd2/sda1-8:312 blocked for more than 120 seconds.",
+   "area": "kernel",
+   "level": "L3",
+   "tool": "kernel",
+   "frequency_signal": "classic kernel log message",
+   "root_causes": [
+    "slow/failing storage, NFS server gone, dirty page writeback stalls"
+   ],
+   "diagnosis": [
+    "dmesg -T | grep -A20 blocked; iostat -x; ps D state"
+   ],
+   "fix": [
+    "fix storage; tune dirty_bytes; not just silence hung_task_timeout_secs"
+   ],
+   "prevention": "storage latency monitoring",
+   "sources": [
+    {
+     "title": "vivani.net: task blocked for more than 120 seconds",
+     "url": "https://vivani.net/2020/02/08/task-blocked-for-more-than-120-seconds/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "/boot full breaks kernel upgrade",
+   "error_text": "update-initramfs: failed for /boot/initrd.img-... with 1; No space left on device",
+   "area": "packages",
+   "level": "L1",
+   "tool": "apt/initramfs",
+   "frequency_signal": "classic on old installs with small /boot",
+   "root_causes": [
+    "old kernels not autoremoved; held kernel metapackages; small /boot"
+   ],
+   "diagnosis": [
+    "df -h /boot; dpkg -l 'linux-image*'"
+   ],
+   "fix": [
+    "apt autoremove --purge; dpkg --configure -a; MODULES=dep"
+   ],
+   "prevention": "unattended-upgrades Remove-Unused-Kernel-Packages",
+   "sources": [
+    {
+     "title": "DEV: free up space in /boot on Ubuntu, remove old kernels",
+     "url": "https://dev.to/mitchellclong/how-to-free-up-more-space-in-boot-on-ubuntu-remove-old-kernels-1ecb?comments_sort=latest",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "dpkg interrupted / returned error code (1)",
+   "error_text": "E: Sub-process /usr/bin/dpkg returned an error code (1)",
+   "area": "packages",
+   "level": "L1",
+   "tool": "dpkg",
+   "frequency_signal": "very common",
+   "root_causes": [
+    "failed maintainer script",
+    "interrupted upgrade",
+    "disk full"
+   ],
+   "diagnosis": [
+    "dpkg --audit; scroll up for the first error; /var/log/apt/term.log"
+   ],
+   "fix": [
+    "dpkg --configure -a; apt -f install; fix the script cause"
+   ],
+   "prevention": "no apt during low disk; screen/tmux for upgrades",
+   "sources": [
+    {
+     "title": "tecmint: Fix Sub-process /usr/bin/dpkg returned an error code (1)",
+     "url": "https://www.tecmint.com/sub-process-usr-bin-dpkg-returned-an-error-in-ubuntu/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Disk SMART warnings on bare metal",
+   "error_text": "Reallocated_Sector_Ct / Current_Pending_Sector non-zero; smartd warnings",
+   "area": "storage-hw",
+   "level": "L3",
+   "tool": "smartmontools",
+   "frequency_signal": "bare-metal routine",
+   "root_causes": [
+    "media wear"
+   ],
+   "diagnosis": [
+    "smartctl -H -A /dev/sda; nvme smart-log"
+   ],
+   "fix": [
+    "replace disk; RAID rebuild"
+   ],
+   "prevention": "smartd -m root; scheduled self-tests",
+   "sources": [
+    {
+     "title": "Thomas-Krenn Wiki: Smartctl Tool",
+     "url": "https://www.thomas-krenn.com/en/wiki/Smartctl_Tool",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Thomas-Krenn Wiki: Analyzing a faulty hard disk using smartctl",
+     "url": "https://www.thomas-krenn.com/en/wiki/Analyzing_a_Faulty_Hard_Disk_using_Smartctl",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Fedora Wiki: Smartctl",
+     "url": "https://fedoraproject.org/wiki/Smartctl",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Cloud disk resized but filesystem still small",
+   "error_text": "EBS volume 100G, df shows 20G",
+   "area": "storage",
+   "level": "L1",
+   "tool": "growpart",
+   "frequency_signal": "very common AWS question",
+   "root_causes": [
+    "partition and filesystem not grown"
+   ],
+   "diagnosis": [
+    "lsblk; df -hT"
+   ],
+   "fix": [
+    "growpart /dev/nvme0n1 1; resize2fs or xfs_growfs"
+   ],
+   "prevention": "runbook",
+   "sources": [
+    {
+     "title": "AWS: Extend the file system after resizing an EBS volume",
+     "url": "https://docs.aws.amazon.com/ebs/latest/userguide/recognize-expanded-volume-linux.html",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "AWS re:Post: Extend a Linux file system for an EBS volume",
+     "url": "https://repost.aws/knowledge-center/extend-linux-file-system",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Boot waits 2 minutes for systemd-networkd-wait-online",
+   "error_text": "A start job is running for Wait for Network to be Configured (1min 50s / 2min)",
+   "area": "systemd",
+   "level": "L2",
+   "tool": "systemd-networkd",
+   "frequency_signal": "systemd#27724, #30345, #25607",
+   "root_causes": [
+    "netplan interface without carrier not optional"
+   ],
+   "diagnosis": [
+    "systemd-analyze blame; networkctl"
+   ],
+   "fix": [
+    "optional: true in netplan; --any; drop-in"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "systemd#27724 wait-online failing with bridge interface, boot pauses two minutes",
+     "url": "https://github.com/systemd/systemd/issues/27724",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "systemd#30345 wait-online fails if an interface not connected",
+     "url": "https://github.com/systemd/systemd/issues/30345",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "systemd#25607 wait-online event loop failed: connection timed out",
+     "url": "https://github.com/systemd/systemd/issues/25607",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "sudo: unable to resolve host after hostname change",
+   "error_text": "sudo: unable to resolve host web02: Name or service not known",
+   "area": "permissions",
+   "level": "L0",
+   "tool": "sudo",
+   "frequency_signal": "classic",
+   "root_causes": [
+    "/etc/hosts not updated"
+   ],
+   "diagnosis": [
+    "hostnamectl; getent hosts $(hostname)"
+   ],
+   "fix": [
+    "127.0.1.1 hostname in /etc/hosts; cloud-init manage_etc_hosts"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "Linux Handbook: sudo unable to resolve host",
+     "url": "https://linuxhandbook.com/sudo-unable-resolve-host/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "SELinux denies access on RHEL (permission denied despite 755)",
+   "error_text": "avc: denied { read } for comm=nginx ... scontext=...httpd_t tcontext=...user_home_t",
+   "area": "permissions",
+   "level": "L2",
+   "tool": "SELinux",
+   "frequency_signal": "classic RHEL",
+   "root_causes": [
+    "wrong file context after mv; non-standard port"
+   ],
+   "diagnosis": [
+    "ausearch -m AVC -ts recent; sealert"
+   ],
+   "fix": [
+    "semanage fcontext + restorecon; semanage port; setsebool"
+   ],
+   "prevention": "never setenforce 0 permanently",
+   "sources": [
+    {
+     "title": "RHEL 9 Using SELinux: Troubleshooting problems related to SELinux",
+     "url": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/using_selinux/troubleshooting-problems-related-to-selinux_using-selinux",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Red Hat: Basic SELinux troubleshooting in CLI",
+     "url": "https://access.redhat.com/articles/2191331",
+     "type": "kb",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "ext4 remounted read-only",
+   "error_text": "EXT4-fs error ... Remounting filesystem read-only; Read-only file system",
+   "area": "storage",
+   "level": "L2",
+   "tool": "ext4",
+   "frequency_signal": "common; Proxmox forum etc.",
+   "root_causes": [
+    "I/O errors, corruption, SAN/hypervisor storage hiccup"
+   ],
+   "diagnosis": [
+    "dmesg -T | grep -iE 'ext4|i/o error'; smartctl"
+   ],
+   "fix": [
+    "find cause; fsck from rescue; replace disk"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "Proxmox forum: no network after EXT4-fs remounting read only fsck repair",
+     "url": "https://forum.proxmox.com/threads/no-network-connection-after-ext4-fs-dm-1-remounting-filesystem-read-only-fsck-repair.174823/",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Broadcom KB: VM shows EXT4-fs remounting filesystem read-only",
+     "url": "https://knowledge.broadcom.com/external/article/419387/usage-meter-vm-shows-ext4fs-remounting-f.html",
+     "type": "kb",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "apt-key deprecated / NO_PUBKEY after 24.04 upgrade",
+   "error_text": "W: ... Key is stored in legacy trusted.gpg keyring; NO_PUBKEY",
+   "area": "packages",
+   "level": "L1",
+   "tool": "apt",
+   "frequency_signal": "common after release upgrades; discourse thread",
+   "root_causes": [
+    "apt-key removed; deb822 sources"
+   ],
+   "diagnosis": [
+    "apt update output; ls /etc/apt/trusted.gpg*"
+   ],
+   "fix": [
+    "download key to /etc/apt/keyrings, signed-by"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "Ubuntu Discourse: apt-key is deprecated and apt sources changed after release-upgrade to 24.04",
+     "url": "https://discourse.ubuntu.com/t/apt-key-is-deprecated-and-apt-sources-changed-after-release-upgrade-to-24-04/53548",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "linuxize: Fix the NO_PUBKEY GPG error",
+     "url": "https://linuxize.com/post/fix-no-pubkey-gpg-error-apt/",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Shutdown hangs: A stop job is running (1min 30s)",
+   "error_text": "A stop job is running for ... (1min 30s)",
+   "area": "systemd",
+   "level": "L2",
+   "tool": "systemd",
+   "frequency_signal": "classic",
+   "root_causes": [
+    "service ignores SIGTERM; NFS unmount; user sessions"
+   ],
+   "diagnosis": [
+    "journalctl -b -1 -e"
+   ],
+   "fix": [
+    "TimeoutStopSec per unit, KillMode, fix ExecStop"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "ubuntuhandbook: slow shutdown stop job running",
+     "url": "https://ubuntuhandbook.org/index.php/2019/12/slow-shutdown-stop-job-running/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "containers/podman#15284",
+     "url": "https://github.com/containers/podman/issues/15284",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Broken sudoers locks out sudo",
+   "error_text": ">>> /etc/sudoers: syntax error near line 28 <<< sudo: no valid sudoers sources found, quitting",
+   "area": "permissions",
+   "level": "L1",
+   "tool": "sudo",
+   "frequency_signal": "classic; AWS and GCP have docs",
+   "root_causes": [
+    "edited without visudo; bad file in sudoers.d"
+   ],
+   "diagnosis": [],
+   "fix": [
+    "pkexec visudo; recovery mode; cloud: serial console/user-data"
+   ],
+   "prevention": "visudo -c in CI; always visudo -f",
+   "sources": [
+    {
+     "title": "AWS re:Post: fix sudo errors in EC2 or Lightsail",
+     "url": "https://repost.aws/knowledge-center/ec2-sudoers-syntax-errors-sudo",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Google Cloud: troubleshooting sudoers file",
+     "url": "https://docs.cloud.google.com/compute/docs/troubleshooting/troubleshooting-sudoers-file",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "kswapd high CPU / swap thrashing",
+   "error_text": "kswapd0 at 100% CPU, system crawls, si/so non-zero",
+   "area": "memory",
+   "level": "L2",
+   "tool": "kernel mm",
+   "frequency_signal": "Linode community, Arch forums",
+   "root_causes": [
+    "working set larger than RAM"
+   ],
+   "diagnosis": [
+    "vmstat 1; cat /proc/pressure/memory"
+   ],
+   "fix": [
+    "reduce memory; MemoryHigh; add RAM"
+   ],
+   "prevention": "PSI alerts",
+   "sources": [
+    {
+     "title": "Linode community: High CPU from kswapd0",
+     "url": "https://www.linode.com/community/questions/18027/high-cpu-from-kswapd0",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Arch forums: kswapd using 100% CPU",
+     "url": "https://bbs.archlinux.org/viewtopic.php?id=144702",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "ACL mask and default ACLs on shared directories",
+   "error_text": "permission denied despite setfacl; #effective:r--",
+   "area": "permissions",
+   "level": "L2",
+   "tool": "acl",
+   "frequency_signal": "ArchWiki talk page discussion",
+   "root_causes": [
+    "mask limits named entries; chmod changes mask"
+   ],
+   "diagnosis": [
+    "getfacl"
+   ],
+   "fix": [
+    "setfacl -m m::rwx; default ACL; setgid"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "ArchWiki: Access Control Lists",
+     "url": "https://wiki.archlinux.org/title/Access_Control_Lists",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "ArchWiki Talk: Access Control Lists",
+     "url": "https://wiki.archlinux.org/title/Talk:Access_Control_Lists",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "setfacl(1) man page",
+     "url": "https://www.man7.org/linux/man-pages/man1/setfacl.1.html",
+     "type": "docs",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "fork: Resource temporarily unavailable (TasksMax/nproc/pid_max)",
+   "error_text": "bash: fork: retry: Resource temporarily unavailable",
+   "area": "kernel-limits",
+   "level": "L2",
+   "tool": "systemd/cgroups",
+   "frequency_signal": "SUSE KB, NixOS/nix#3717",
+   "root_causes": [
+    "TasksMax on unit or user slice",
+    "ulimit -u",
+    "pid_max/threads-max",
+    "thread leak"
+   ],
+   "diagnosis": [
+    "systemctl show UNIT -p TasksMax,TasksCurrent",
+    "cat /sys/fs/cgroup/.../pids.max"
+   ],
+   "fix": [
+    "drop-in TasksMax; fix leak"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "SUSE KB: error fork Resource temporarily unavailable",
+     "url": "https://www.suse.com/support/kb/doc/?id=000020612",
+     "type": "kb",
+     "verified": true
+    },
+    {
+     "title": "NixOS/nix#3717 fork: retry: resource temporarily unavailable",
+     "url": "https://github.com/NixOS/nix/issues/3717",
+     "type": "github-issue",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "inotify watches exhausted",
+   "error_text": "ENOSPC: System limit for number of file watchers reached",
+   "area": "kernel-limits",
+   "level": "L2",
+   "tool": "kernel",
+   "frequency_signal": "GitLab issue 434329, Gentoo forum",
+   "root_causes": [
+    "max_user_watches 8192 on old kernels; many watchers"
+   ],
+   "diagnosis": [
+    "sysctl fs.inotify"
+   ],
+   "fix": [
+    "sysctl.d fs.inotify.max_user_watches=524288"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "GitLab issue 434329: Vite number of file watchers reached",
+     "url": "https://gitlab.com/gitlab-org/gitlab/-/issues/434329",
+     "type": "issue",
+     "verified": true
+    },
+    {
+     "title": "Gentoo forums: System limit for number of file watchers reached",
+     "url": "https://forums.gentoo.org/viewtopic-p-8521685.html?sid=6b4e43d6f34efe7a18ce6ab4802b0a97",
+     "type": "forum",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "Kernel panic: unable to mount root fs after update (missing initramfs)",
+   "error_text": "Kernel panic - not syncing: VFS: Unable to mount root fs on unknown-block(0,0)",
+   "area": "boot",
+   "level": "L3",
+   "tool": "kernel/initramfs",
+   "frequency_signal": "Microsoft Q&A, many forum threads",
+   "root_causes": [
+    "initramfs not generated (full /boot, interrupted upgrade)"
+   ],
+   "diagnosis": [
+    "boot older kernel from GRUB; ls /boot"
+   ],
+   "fix": [
+    "update-initramfs -c -k VERSION; update-grub"
+   ],
+   "prevention": "",
+   "sources": [
+    {
+     "title": "Microsoft Q&A: Kernel panic due to missing initramfs",
+     "url": "https://learn.microsoft.com/en-us/answers/questions/2146821/kernel-panic-due-to-missing-initramfs",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "DEV: fixing VFS unable to mount root fs on unknown-block(0,0)",
+     "url": "https://dev.to/dm8ry/fixing-the-kernel-panic-not-syncing-vfs-unable-to-mount-root-fs-on-unknown-block00-error-3ado",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  },
+  {
+   "title": "OOM killer took the database",
+   "error_text": "Out of memory: Killed process 1874 (postgres)",
+   "area": "memory",
+   "level": "L2",
+   "tool": "kernel OOM",
+   "frequency_signal": "very common",
+   "root_causes": [
+    "global OOM picks highest oom_score",
+    "cgroup MemoryMax/--memory limit"
+   ],
+   "diagnosis": [
+    "journalctl -k | grep oom-kill",
+    "constraint=CONSTRAINT_NONE vs CONSTRAINT_MEMCG"
+   ],
+   "fix": [
+    "MemoryHigh/MemoryMax on the grower",
+    "OOMScoreAdjust=-500 for critical",
+    "small swap"
+   ],
+   "prevention": "limits on all containers; alert on oom_kill",
+   "sources": [
+    {
+     "title": "Last9: Linux OOM killer scores, logs and configuration",
+     "url": "https://last9.io/blog/understanding-the-linux-oom-killer/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Baeldung: Linux memory overcommitment and the OOM killer",
+     "url": "https://www.baeldung.com/linux/memory-overcommitment-oom-killer",
+     "type": "blog",
+     "verified": true
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "load average",
+   "what": "Linux load averages include tasks in uninterruptible sleep (D state), so disk/NFS waits raise load without CPU use",
+   "official_docs": "https://www.brendangregg.com/blog/2017-08-08/linux-load-averages.html"
+  },
+  {
+   "tool": "OOM killer",
+   "what": "kernel kills highest oom_score task; systemd OOMScoreAdjust and MemoryMax (cgroup v2)",
+   "gotchas": [
+    "dmesg/journalctl -k shows Killed process lines",
+    "container cgroup OOM shows memory cgroup out of memory"
+   ]
+  },
+  {
+   "tool": "performance first 60s",
+   "what": "uptime, dmesg|tail, vmstat 1, mpstat -P ALL 1, pidstat 1, iostat -xz 1, free -m, sar -n DEV 1, sar -n TCP,ETCP 1, top",
+   "official_docs": "https://www.brendangregg.com/linuxperf.html"
+  },
+  {
+   "tool": "SELinux",
+   "what": "RHEL MAC; ausearch/sealert/restorecon/semanage",
+   "official_docs": "https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/9/html/using_selinux/troubleshooting-problems-related-to-selinux_using-selinux"
+  },
+  {
+   "tool": "ssh.socket (Ubuntu 22.10+)",
+   "what": "socket-activated sshd; 22.10-23.10 migrated Port to ssh.socket.d/addresses.conf; 24.04 uses a generator reading sshd_config on daemon-reload",
+   "gotchas": [
+    "restart ssh.socket after daemon-reload",
+    "ListenStream= empty line clears port 22",
+    "revert: disable ssh.socket, enable ssh.service, remove 00-socket.conf"
+   ],
+   "official_docs": "https://discourse.ubuntu.com/t/sshd-now-uses-socket-based-activation-ubuntu-22-10-and-later/30189"
+  },
+  {
+   "tool": "apt phased updates",
+   "what": "Ubuntu stages non-security SRUs; apt policy shows (phased N%); APT::Get::Always-Include-Phased-Updates; docs recommend leaving phasing on for fleets",
+   "official_docs": "https://ubuntu.com/server/docs/explanation/software/about-apt-upgrade-and-phased-updates/"
+  },
+  {
+   "tool": "systemd restart limits",
+   "what": "StartLimitIntervalSec=10s, StartLimitBurst=5 defaults in [Unit]; RestartSteps/RestartMaxDelaySec (systemd 254+) for exponential backoff; systemd#30804 asks for warnings on Restart=always without limits"
+  },
+  {
+   "tool": "Linux performance 60s checklist",
+   "what": "Netflix/Brendan Gregg first-60-seconds commands",
+   "official_docs": "https://www.brendangregg.com/blog/2015-12-03/linux-perf-60s-video.html"
+  }
+ ],
+ "learning_signals": [
+  "Practitioners learn disk/inode/deleted-file problems from their first 3am disk-full page; interview questions reuse them",
+  "Netflix 60-second checklist and USE method are the most cited performance starting points",
+  "Many fixes in blogs are wrong-layer (limits.conf for systemd services, rm lock files, setenforce 0, chmod 777); the handbook should say what not to do",
+  "Ubuntu 22.04-24.04 changed defaults (needrestart interactive, ssh socket activation, apt-key removal, deb822) and community threads spike after each LTS",
+  "Postmortems (GitHub 2020 ProxySQL fd cap, Tarsnap 2016 runaway log, 2012 leap second) show host-level limits causing big outages",
+  "Lockout recovery depends on out-of-band access: IPMI/iDRAC/hypervisor console on-prem, serial console/SSM in cloud"
+ ],
+ "coverage_notes": "complete: module 41 written with 40 entries from this catalog (36 catalog problems plus entries from knowledge with search links); ~10 fetches, ~30 searches"
+}

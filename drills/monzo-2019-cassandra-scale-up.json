@@ -1,0 +1,77 @@
+{
+  "id": "monzo-2019-cassandra-scale-up",
+  "title": "More servers, missing data",
+  "level": "L3",
+  "track": "data",
+  "topics": ["db-ha", "change-management", "outage-basics"],
+  "minutes": 8,
+  "role": "You are one of the engineers on call at a mobile bank. Almost every service stores its data in one large shared Cassandra cluster.",
+  "source": {
+    "label": "Monzo: why Monzo wasn't working on July 29th (incident report)",
+    "url": "https://monzo.com/blog/2019/09/08/why-monzo-wasnt-working-on-july-29th",
+    "org": "Monzo",
+    "date": "2019-07-29",
+    "read_on": "2026-11-10"
+  },
+  "brief": "At 13:10 (UK time) a colleague starts adding six servers to the database cluster to gain capacity. A setting is believed to keep new servers inactive until their data has been streamed to them. Each choice below names its rung on the risk ladder.",
+  "steps": [
+    {
+      "situation": "13:14. Alerts: a small share of card payments is failing, and support's in-app chat is broken. The new servers' graphs show no rise in errors and normal read and write rates.",
+      "choices": [
+        {"text": "Declare an incident; keep the scale-up as suspect number one until a direct test clears it", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 10, "trust": 10}, "why": "Rung 1 thinking. It changed four minutes earlier; graphs that look normal are not a test. Monzo declared at 13:15."},
+        {"text": "Rule the scale-up out: its graphs look fine", "verdict": "bad", "effect": {"service": -5, "time": -15, "evidence": -10, "trust": 0}, "why": "This is what happened at 13:24, and it cost almost an hour. The metrics did not measure what had gone wrong."},
+        {"text": "Wait for more alerts before declaring", "verdict": "risky", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": -10}, "why": "Customers can already see it, which is reason enough to declare."}
+      ]
+    },
+    {
+      "situation": "13:48. The configuration service returns 404 for one key, yet metrics show successful reads and writes, and other keys are still there. A fix for a payments bug went out at 13:39 and helped, but not fully.",
+      "evidence": "$ curl -s -o /dev/null -w '%{http_code}\\n' http://config.internal.example.com/keys/edge-routes\n404",
+      "evidence_cmd": "curl -s -o /dev/null -w '%{http_code}\\n' http://config.internal.example.com/keys/edge-routes",
+      "choices": [
+        {"text": "Query the database directly for that key, then ask which server answers", "verdict": "best", "effect": {"service": 5, "time": 15, "evidence": 20, "trust": 0}, "why": "Rung 1: one read-only query settles the conflict. At 14:00 it showed the key missing; at 14:13 a query confirmed a new server was answering."},
+        {"text": "Restart the services that report errors", "verdict": "bad", "effect": {"service": -10, "time": -10, "evidence": -15, "trust": 0}, "why": "Rung 3 on the wrong layer: the services are healthy, the data under them is not."},
+        {"text": "Roll back today's network range change", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": 0}, "why": "Rung 4 against a change no evidence points at. Monzo ruled it out quickly."}
+      ]
+    },
+    {
+      "situation": "14:13. Root cause: the new servers took ownership of part of the data without holding it, so some reads find nothing. How do you undo the scale-up?",
+      "evidence": "$ nodetool status\n--  Address      Load      Tokens  Owns   Rack\nUN  192.0.2.21   412 GiB   256     8.1%   rack1\nUN  192.0.2.27   118 KiB   256     7.9%   rack1",
+      "evidence_cmd": "nodetool status",
+      "choices": [
+        {"text": "Decommission the new servers one at a time, watching the 404s after each", "verdict": "best", "effect": {"service": 20, "time": 0, "evidence": 5, "trust": 5}, "why": "Rung 7, done as rung 7: one member at a time. Each took 8 to 10 minutes; the first removal at 14:28 cut the 404s and the last ended at 15:08."},
+        {"text": "Switch all six off together", "verdict": "bad", "effect": {"service": -15, "time": 10, "evidence": 0, "trust": -5}, "why": "Data ownership changes for all of them at once, with no step to check in between."},
+        {"text": "Change the setting live and let them fill up while serving", "verdict": "risky", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": 0}, "why": "They would keep answering wrongly until the data arrived."}
+      ]
+    },
+    {
+      "situation": "15:08. Most customers see the app working again. Writes made while the new servers were serving landed on servers that are now gone.",
+      "choices": [
+        {"text": "Recover them from the events stored elsewhere and reconcile before saying \"resolved\"", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 15}, "why": "Rung 8, worked from an independent record. Monzo replayed externally stored events and reconciled; by 23:00 everyone could use their money and reach support."},
+        {"text": "Announce \"fully resolved\" now", "verdict": "bad", "effect": {"service": 0, "time": 5, "evidence": -10, "trust": -20}, "why": "Some balances and transactions are still wrong. Customers will find out before you tell them."},
+        {"text": "Restore last night's backup over the cluster", "verdict": "risky", "effect": {"service": -15, "time": -10, "evidence": 0, "trust": -5}, "why": "Rung 8 in place: it throws away today's good writes to fix a few missing ones."}
+      ]
+    },
+    {
+      "situation": "The follow-up review. What removes this class of incident?",
+      "choices": [
+        {"text": "Fix and document the setting, alert on 'row not found', test scale-ups at real size, split the shared cluster", "verdict": "best", "effect": {"service": 5, "time": 0, "evidence": 10, "trust": 10}, "why": "Teach: the scale-up had been tested with one server, not six, and one shared cluster gave one change the whole bank as its reach."},
+        {"text": "Never scale the cluster again without a vendor present", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": 0, "trust": -5}, "why": "It blocks needed capacity and teaches nothing about the setting."},
+        {"text": "Add a line to the checklist and keep everything else", "verdict": "risky", "effect": {"service": 0, "time": 5, "evidence": 0, "trust": 0}, "why": "\"Be more careful\" in checklist form. The blast radius stays the same."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "On 29 July 2019 Monzo began adding six servers to its production Cassandra cluster at 13:10 to gain capacity. Since an October 2018 scale-up, `auto_bootstrap` had been set to false to speed up restoring lost servers from backups; the team did not know it also decides whether new servers join active. They joined active and served reads and writes for data they did not hold. Card payments failed from 13:14, an incident was declared at 13:15, and the scale-up was discounted at 13:24 because its metrics looked normal. A direct query at 14:13 found a new server answering. From 14:18 the servers were decommissioned one at a time, the last at 15:08. Writes from that window were recovered from externally stored events, and by 23:00 everything worked. Follow-ups: the setting corrected and documented, more metrics and alerts, and a plan to split the single cluster to shrink the reach of changes.",
+    "lessons": ["Adding a member to a stateful cluster is a data change, not a low-risk capacity tweak.", "Keep the most recent change on the suspect list until a direct test clears it.", "Undo a risky step the same careful way: one member at a time.", "A shared cluster gives every change the whole company as its blast radius."],
+    "commands": ["nodetool status", "nodetool decommission", "grep auto_bootstrap /etc/cassandra/cassandra.yaml"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "57-method-protect-risk-ladder.md", "heading": "4. The risk ladder"},
+      {"file": "38-learn-databases-ops.md", "heading": "Failover, fencing and Patroni"},
+      {"file": "39-learn-senior-architecture.md", "heading": "Change management and CAB-lite"}
+    ],
+    "sites": []
+  }
+}

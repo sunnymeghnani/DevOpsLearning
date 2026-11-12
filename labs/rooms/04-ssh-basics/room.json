@@ -1,0 +1,81 @@
+{
+ "id": "l0-ssh-basics",
+ "title": "The deploy key that SSH ignores",
+ "level": "L0",
+ "map_node": "ssh-basics",
+ "path": "fresher",
+ "order": 4,
+ "minutes": 25,
+ "difficulty": "easy",
+ "source": {
+  "title": "ssh \"permissions are too open\" error (Stack Overflow)",
+  "url": "https://stackoverflow.com/questions/9270734/ssh-permissions-are-too-open-error",
+  "note": "adapted"
+ },
+ "brief": "**PAGE 07:40 · release blocked · cannot reach app server**\n\nThe old jump host was retired. Its `ops` account was rebuilt on this machine, and the deploy key `deploy.pem` was copied over from a zip file. Now `ssh app` (an alias for `deploy@127.0.0.1` in ops's `~/.ssh/config`) shows a big warning and then **Permission denied (publickey)**.\n\nTo make things worse, on Friday someone \"fixed\" an upload error on the app side with `chmod -R a+rwX /home/deploy`.\n\nWork as ops (`sudo -iu ops`) and as root for the server side. Make key login work again. Don't turn off sshd's safety checks, and don't switch to passwords.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "UNPROTECTED PRIVATE KEY FILE",
+   "text": "As ops, run `ssh app` and read the client's warning carefully: it names the file and the mode it doesn't accept. The OpenSSH client refuses to use a private key that other accounts can read, because anyone who can read it can log in as you.\n\nFix the key so ssh loads it again. It must stay owned by ops and remain the key the `app` alias uses. Done when `ssh-keygen -y -f ~/.ssh/deploy.pem` (as ops) prints the public key without a warning.",
+   "points": 50,
+   "hints": [
+    "`ls -l ~/.ssh/` as ops: a private key must not be readable by group or others. `ssh -v app` shows which key is offered and why it is skipped.",
+    "`chmod 600 ~/.ssh/deploy.pem` (400 also works). Public keys may be 644; `~/.ssh` should be 700."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "Which mode did ssh report as \"too open\" for the private key?",
+     "format": "4 octal digits, as ssh prints them",
+     "answer_sha256": "3ed69525e7786aea123072900caf9bdcd64d97af9bd8dab106ab6cf06fc0f5e2"
+    },
+    {
+     "id": "q2",
+     "prompt": "Which ssh client option prints debug output, including which keys are offered?",
+     "format": "-x",
+     "answer_sha256": "81c36ccd44ef18baabad6e2d87038b72d606263bd6a3432b964a872023654fff"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "ops's private key is private to ops, loads again and is still used by the app alias",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Authentication refused: bad ownership or modes",
+   "text": "The key is offered now, but the server still says `Permission denied (publickey)`. The reason is only in the **server's** log. With `StrictModes yes`, sshd ignores `authorized_keys` if the file, `~/.ssh` or the home directory can be written by anyone other than the user.\n\nRead the server's view, then repair the modes on deploy's side. Keep StrictModes on, and keep `authorized_keys` owned by deploy. Done when `ssh app whoami` (as ops) prints `deploy` without a password.",
+   "points": 50,
+   "hints": [
+    "`sudo journalctl -u ssh -n 20` shows the refusal. You can also start a one-shot debug server with `sudo /usr/sbin/sshd -d -p 2222`, then run `ssh -p 2222 app` as ops.",
+    "`sudo chmod 755 /home/deploy`, `sudo chmod 700 /home/deploy/.ssh`, `sudo chmod 600 /home/deploy/.ssh/authorized_keys`."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which sshd_config setting makes sshd refuse files with unsafe modes?",
+     "format": "keyword",
+     "answer_sha256": "13d7733ae97ba3ed9fb868bbaaa87e59ba156828c9fbba0fddf7eafce568624d"
+    },
+    {
+     "id": "q4",
+     "prompt": "Which path did sshd name first in \"bad ownership or modes for ...\"?",
+     "format": "/absolute/path",
+     "answer_sha256": "2bcfe5fc2b594d28728189219eb3d008c2204a10126bda7de3e50baaa273cbd2"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "ssh app logs in as deploy with the key, modes are safe and StrictModes is still on",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. **Client:** the private key `deploy.pem` was unpacked with mode 0644. The OpenSSH client checks the mode of private keys, prints `WARNING: UNPROTECTED PRIVATE KEY FILE!`, and **ignores** the key, so the server never sees it. (With a new-format OpenSSH key, ssh can offer the public half first and only shows the warning once the server accepts it, so the order of the errors can differ.)\n2. **Server:** `chmod -R a+rwX /home/deploy` made the home directory, `~/.ssh` and `authorized_keys` world-writable. With `StrictModes yes` (the default), sshd refuses an `authorized_keys` that another account could have edited: `Authentication refused: bad ownership or modes`.\n\n### Task 1 (as ops)\n```bash\nsudo -iu ops\nssh app                         # WARNING ... Permissions 0644 ... are too open\nls -l ~/.ssh/\nchmod 600 ~/.ssh/deploy.pem\nssh-keygen -y -f ~/.ssh/deploy.pem   # loads silently now\nssh -v app 2>&1 | grep -i offering       # the key is offered\n```\n*Why:* `ssh -v` shows each step: config file read, key loaded or skipped, key offered, server's answer. Read it top to bottom before changing anything.\n\n### Task 2 (server side)\n```bash\nsudo journalctl -u ssh -n 20 --no-pager  # Authentication refused: bad ownership or modes for file ...\n# or a one-shot debug server on another port:\nsudo /usr/sbin/sshd -d -p 2222           # then, as ops:  ssh -p 2222 app\nnamei -l /home/deploy/.ssh/authorized_keys\nsudo chmod 755 /home/deploy\nsudo chmod 700 /home/deploy/.ssh\nsudo chmod 600 /home/deploy/.ssh/authorized_keys\nsudo -iu ops ssh app whoami              # deploy\n```\n*Why:* sshd checks the file and each directory above it. Group or world write on any of them means someone else could plant a key. Turning `StrictModes` off would hide the symptom and keep the hole. (Ubuntu's sshd accepts group write only when the group has no other members.)\n\n### Lessons\n- Client-side problems show up in `ssh -v`; server-side reasons appear only in the server log.\n- Don't \"fix\" permissions with `chmod -R 777`. Here it broke SSH, and on other servers it opens them up.\n- Keep a second session open when you change SSH on a remote machine.\n\n**Source (adapted):** [ssh \"permissions are too open\" error](https://stackoverflow.com/questions/9270734/ssh-permissions-are-too-open-error): a private key with group/other read access is refused. The accepted fix is `chmod 600` (or 400) on the key. The server-side counterpart is the `bad ownership or modes` refusal ([cyberciti.biz](https://www.cyberciti.biz/faq/openssh-server-authentication-refused-bad-ownership-or-modes/))."
+}

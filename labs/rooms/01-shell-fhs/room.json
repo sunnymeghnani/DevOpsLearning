@@ -1,0 +1,81 @@
+{
+ "id": "l0-shell-fhs",
+ "title": "The edit that changed nothing",
+ "level": "L0",
+ "map_node": "shell-fhs",
+ "path": "fresher",
+ "order": 1,
+ "minutes": 20,
+ "difficulty": "easy",
+ "source": {
+  "title": "sites-enabled and sites-available confusion (Linode/Akamai community)",
+  "url": "https://www.akamai.com/cloud/community/questions/6592/sites-enabled-and-sites-available-confusion",
+  "note": "adapted"
+ },
+ "brief": "**PAGE 09:04 · shop.example.com · P3**\n\nThe 09:00 maintenance window started, but customers still see the normal shop page and can reach checkout. Sam edited `/etc/nginx/sites-available/shop` (new banner page and a `/healthz` endpoint), ran `nginx -t` and reloaded. No errors, no change.\n\nThe runbook then says to run `sudo shopctl status`. It prints an HTTP code nobody recognises, and `shopctl version` says `1.0`, although the vendor package installed 2.3.1 last week.\n\nThis box is `lab`; you have sudo. Find out which files the system **really** uses, and make the edited ones the live ones. Don't delete the vendor install.",
+ "tasks": [
+  {
+   "id": "t1",
+   "title": "Which file does nginx really load?",
+   "text": "nginx only reads what `nginx.conf` includes. Find the file that defines `shop.example.com` in the **loaded** configuration and compare it with the one Sam edited. `ls -l`, `stat` and `nginx -T` are your friends.\n\nFix it the Debian/Ubuntu way, so that the next edit of `sites-available/shop` takes effect after a reload. Test the config before you reload. Done when `curl http://127.0.0.1/` shows the maintenance banner, `/healthz` answers 200, and nginx still starts at boot.",
+   "points": 50,
+   "hints": [
+    "`ls -l /etc/nginx/sites-enabled/` shows an arrow (`->`) for a link. No arrow means a separate file that nobody edits any more.",
+    "Remove the stale copy, then `sudo ln -s /etc/nginx/sites-available/shop /etc/nginx/sites-enabled/shop`, `sudo nginx -t` and `sudo systemctl reload nginx`."
+   ],
+   "questions": [
+    {
+     "id": "q1",
+     "prompt": "What file type does `stat -c %F /etc/nginx/sites-enabled/shop` print before your fix?",
+     "format": "the words stat prints",
+     "answer_sha256": "d8d43d525d1bed49352799a892bc413a8183d459cfe95eccf3d32ea7a14af475"
+    },
+    {
+     "id": "q2",
+     "prompt": "From which directory does Ubuntu's nginx.conf include site files (besides conf.d)?",
+     "format": "/absolute/path without trailing slash",
+     "answer_sha256": "6e99944f3beec0cb51bb801c9269419e6ae188f81aa6b3ca7c7f7f9445607d2d"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "sites-enabled/shop links to sites-available/shop, nginx serves the banner and /healthz, and starts at boot",
+     "script": "checks/t1.sh"
+    }
+   ]
+  },
+  {
+   "id": "t2",
+   "title": "Which shopctl runs?",
+   "text": "When you type a command, the shell searches the directories in `$PATH` from left to right and runs the **first** match. `sudo` uses its own `secure_path`. Find every `shopctl` the shell can see and where the vendor's 2.3.1 lives (its README is under `/opt/shop/share`).\n\nMake `shopctl` mean the vendor binary for every user and for sudo, without copying it, so the next package upgrade is picked up automatically. Done when `shopctl version` prints `shopctl 2.3.1` everywhere.",
+   "points": 50,
+   "hints": [
+    "`type -a shopctl` lists every match in PATH order; `echo $PATH` and `sudo grep -r secure_path /etc/sudoers /etc/sudoers.d` show the search lists.",
+    "Remove the hand-copied file in `/usr/local/sbin`, then link the vendor binary into a standard directory: `sudo ln -s /opt/shop/bin/shopctl /usr/local/bin/shopctl`. Run `hash -r` in an open shell."
+   ],
+   "questions": [
+    {
+     "id": "q3",
+     "prompt": "Which bash builtin and option list every `shopctl` the shell can find, in PATH order?",
+     "format": "command -option",
+     "answer_sha256": "5e3c9a2b9e4318c2a567e64b9be927081274000b3065f260bd18ee6eac5e7d79"
+    },
+    {
+     "id": "q4",
+     "prompt": "In which directory was the stale `shopctl` 1.0?",
+     "format": "/absolute/path without trailing slash",
+     "answer_sha256": "5b5ab248e318ac63b4c0071f31c0ff044e978182d65a006a8a70f32834cdd63d"
+    }
+   ],
+   "checks": [
+    {
+     "id": "c1",
+     "describe": "every shopctl on the user and sudo PATH resolves to /opt/shop/bin/shopctl (2.3.1)",
+     "script": "checks/t2.sh"
+    }
+   ]
+  }
+ ],
+ "walkthrough": "### What was broken\n1. `/etc/nginx/sites-enabled/shop` was a **regular file**, a copy made months ago with `cp`, not a symlink. nginx includes `sites-enabled/*`, so it kept loading the copy and never saw Sam's edit in `sites-available/shop`.\n2. An old `shopctl` 1.0 sat in `/usr/local/sbin`, which comes **before** `/usr/bin` in PATH. The vendor's 2.3.1 lives in `/opt/shop/bin`, which is on nobody's PATH.\n\n### Task 1: the config that is really loaded\n```bash\nnginx -T | grep -n '^# configuration file'   # every file nginx loaded, in order\nls -l /etc/nginx/sites-enabled/              # no \"->\" arrow: a copy, not a link\nstat -c %F /etc/nginx/sites-enabled/shop     # \"regular file\"\ndiff /etc/nginx/sites-enabled/shop /etc/nginx/sites-available/shop\n```\n*Why:* `nginx -T` prints the effective config with the file each block came from, so you stop guessing which file matters.\n```bash\nsudo rm /etc/nginx/sites-enabled/shop\nsudo ln -s /etc/nginx/sites-available/shop /etc/nginx/sites-enabled/shop\nsudo nginx -t && sudo systemctl reload nginx\ncurl -s http://127.0.0.1/ | grep MAINTENANCE ; curl -i http://127.0.0.1/healthz\n```\n*Why:* on Debian/Ubuntu, `sites-available` holds every site, and `sites-enabled` holds **links** to the enabled ones. A link means there is exactly one file to edit.\n\n### Task 2: which binary runs\n```bash\ntype -a shopctl          # /usr/local/sbin/shopctl first: the 1.0 copy\necho \"$PATH\" ; sudo grep -r secure_path /etc/sudoers   # user PATH and sudo's secure_path\ncat /opt/shop/share/README\nsudo rm /usr/local/sbin/shopctl\nsudo ln -s /opt/shop/bin/shopctl /usr/local/bin/shopctl\nhash -r ; shopctl version ; sudo shopctl status\n```\n*Why:* `/usr/local/bin` is the FHS place for locally added admin tools and is on every PATH, including sudo's `secure_path`. A link (not a copy) follows the vendor's upgrades. `hash -r` clears bash's remembered command locations.\n\n### Lessons\n- When a change \"does nothing\", first prove which file the program loads (`nginx -T`, `apachectl -S`, `systemctl cat`).\n- Prefer links to copies for config and binaries; copies drift silently.\n\n**Source (adapted):** [sites-enabled and sites-available confusion](https://www.akamai.com/cloud/community/questions/6592/sites-enabled-and-sites-available-confusion): a real file in `sites-enabled` instead of a link. The fix was to move it to `sites-available` and enable it with a link."
+}

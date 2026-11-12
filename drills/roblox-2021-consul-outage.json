@@ -1,0 +1,80 @@
+{
+  "id": "roblox-2021-consul-outage",
+  "title": "When the monitoring depends on the thing that's down",
+  "level": "L3",
+  "track": "observability",
+  "topics": ["perf-deep-dive", "alerting", "availability-dr", "prometheus-grafana"],
+  "minutes": 9,
+  "role": "You are a senior SRE on a gaming platform. Service discovery, locks, config and secrets all go through one Consul cluster; Nomad and Vault depend on it.",
+  "source": {
+    "label": "Roblox: return to service, 28-31 October 2021 (post-mortem)",
+    "url": "https://about.roblox.com/newsroom/2022/01/roblox-return-to-service-10-28-10-31-2021",
+    "org": "Roblox",
+    "date": "2021-10-28",
+    "read_on": "2026-11-07"
+  },
+  "brief": "Thursday afternoon. Consul is getting slower by the minute. Services can't register, Nomad can't schedule, and players start dropping off. It's the busiest season of the year.",
+  "steps": [
+    {
+      "situation": "Consul's servers look busy. One suggestion in the call: the hardware is too weak, so move the cluster onto bigger machines.",
+      "evidence": "$ consul operator raft list-peers\nNode       Address            State     Voter\nconsul-01  192.0.2.11:8300    leader    true\nconsul-02  192.0.2.12:8300    follower  true\nconsul-03  192.0.2.13:8300    follower  true\n# kv write latency p50: 2.1 s (normal: well under 300 ms)",
+      "evidence_cmd": "consul operator raft list-peers",
+      "choices": [
+        {"text": "Profile a Consul server first: where does a slow write spend its time?", "verdict": "best", "effect": {"service": 0, "time": 5, "evidence": 20, "trust": 0}, "why": "Bigger hardware only helps if you're short of CPU or memory. Roblox went from 64 to 128 cores and Consul stayed slow, because the bottleneck was contention and the disk store."},
+        {"text": "Move Consul onto 128-core machines now", "verdict": "risky", "effect": {"service": 0, "time": -15, "evidence": -5, "trust": 0}, "why": "Roblox tried exactly this, and it cost hours without helping. A guess without a profile is expensive at this scale."},
+        {"text": "Restart all Consul servers at once", "verdict": "bad", "effect": {"service": -20, "time": -10, "evidence": -10, "trust": -5}, "why": "The cluster loses quorum and every client reconnects at once into a store that's still slow."}
+      ]
+    },
+    {
+      "situation": "You open the dashboards to compare with yesterday. They are blank.",
+      "evidence": "grafana: datasource 'prom-main' error: Post \"http://prometheus.service.consul:9090/api/v1/query\": dial tcp: lookup prometheus.service.consul: i/o timeout",
+      "choices": [
+        {"text": "Get data from outside the broken path: host tools on the servers, and Consul's own debug output", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 15, "trust": 5}, "why": "Your telemetry finds its own backends through Consul, so it's down too. Go to the source with `consul debug`, `perf`, `iostat` and the raw logs."},
+        {"text": "Wait for monitoring to recover before deciding anything", "verdict": "bad", "effect": {"service": -15, "time": -20, "evidence": 0, "trust": -5}, "why": "It won't recover until Consul does. You're waiting on the patient to diagnose itself."},
+        {"text": "Rebuild the monitoring stack on new hosts mid-incident", "verdict": "risky", "effect": {"service": 0, "time": -15, "evidence": 5, "trust": 0}, "why": "A big side project during the outage, and the new stack would still need service discovery."}
+      ]
+    },
+    {
+      "situation": "Profiles point at lock contention in a new Consul **streaming** feature, enabled the day before on a high-traffic service, plus 50% more nodes for that service. The Raft log store is also huge for the data it holds.",
+      "evidence": "$ ls -lh /opt/consul/data/raft/raft.db\n-rw------- 1 consul consul 4.2G raft.db\n# bolt stats: 489 MB of live data, freelist 7.8 MB, rewritten on every commit",
+      "evidence_cmd": "ls -lh /opt/consul/data/raft/raft.db",
+      "choices": [
+        {"text": "Turn streaming off again, then deal with the bloated log store", "verdict": "best", "effect": {"service": 20, "time": 5, "evidence": 5, "trust": 5}, "why": "Undo the most recent risky change first. With streaming off, KV write p50 fell from about 2 s to 300 ms; compacting the store fixed the second cause."},
+        {"text": "Keep streaming; it's meant to reduce load", "verdict": "bad", "effect": {"service": -15, "time": -10, "evidence": 0, "trust": 0}, "why": "In theory, yes. In practice it was the trigger under this read and write load."},
+        {"text": "Delete old KV keys to shrink the store", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": -5}, "why": "Deleting data from a sick cluster is risky, and with BoltDB it doesn't shrink the file: the freelist grows."}
+      ]
+    },
+    {
+      "situation": "Consul is healthy. Fifty million daily players want back in, and the caches are cold.",
+      "choices": [
+        {"text": "Admit players in steps of about 10%, checking health at each step", "verdict": "best", "effect": {"service": 15, "time": 0, "evidence": 5, "trust": 10}, "why": "Roblox steered traffic through DNS in roughly 10% steps. Cold caches and stale scheduler data are easiest to fix while load is small."},
+        {"text": "Open the doors to everyone at once", "verdict": "bad", "effect": {"service": -20, "time": 5, "evidence": 0, "trust": -10}, "why": "A thundering herd hits cold caches and a freshly healed Consul. You could be back at the start."},
+        {"text": "Stay closed until every dashboard is green", "verdict": "risky", "effect": {"service": -10, "time": -10, "evidence": 0, "trust": -5}, "why": "Some problems only show under real load. Small, watched steps find them faster than waiting."}
+      ]
+    },
+    {
+      "situation": "73 hours after it started, the platform is back. What is the most important structural change?",
+      "choices": [
+        {"text": "Make telemetry independent of the systems it watches, split Consul by workload, add a second site", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 10, "trust": 10}, "why": "One shared Consul was a single point of failure, and it also blinded you. Each change reduces the blast radius of the next failure."},
+        {"text": "Replace Consul with another tool", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": 0, "trust": 0}, "why": "Any shared control plane fails the same way if everything depends on it and so does your monitoring."},
+        {"text": "Freeze all Consul upgrades forever", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -5, "trust": -5}, "why": "You'd keep the BoltDB problem and lose fixes. Test changes at scale instead."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "From 28 October 2021 Roblox was down for 73 hours. Consul handled service discovery, health checks, locking and KV, and Nomad and Vault depended on it. Roblox had enabled Consul's new streaming feature on a traffic-routing service the day before and added 50% more of its nodes; under heavy load streaming caused lock contention. BoltDB, which stores Consul's Raft log, had a freelist problem: a 4.2 GB file holding 489 MB of data, with a large freelist written on every commit. Bigger servers, a snapshot reset and lower load didn't help, and monitoring was down because it depended on Consul. Disabling streaming dropped KV write p50 from about 2 s to 300 ms, and compaction fixed BoltDB. Players returned in roughly 10% steps. Afterwards Roblox made telemetry independent, split critical services into their own Consul clusters and built a second data centre.",
+    "lessons": ["Your monitoring must not depend on the systems it monitors.", "Profile before you buy bigger hardware.", "Roll back the most recent change early, even one that looked safe.", "Restore load in measured steps after a long outage."],
+    "commands": ["consul operator raft list-peers", "consul debug -duration=2m", "consul members", "iostat -x 1", "perf top -p <pid>"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "49-observability-stack-problems.md", "heading": "Monitoring the monitoring"},
+      {"file": "39-learn-senior-architecture.md", "heading": "Dependency maps [L1 · Junior]"}
+    ],
+    "sites": [
+      {"label": "Grafana Play: dashboards to practise reading", "url": "https://play.grafana.org/"},
+      {"label": "PromLabs demo Prometheus (in the browser)", "url": "https://demo.promlabs.com/"}
+    ]
+  }
+}

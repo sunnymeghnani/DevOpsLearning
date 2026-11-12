@@ -1,0 +1,75 @@
+{
+  "id": "cloudflare-2015-latency-spike",
+  "title": "One packet in thousands waits a second",
+  "level": "L4",
+  "track": "network",
+  "topics": ["packet-capture", "network-speed", "kernel-boot", "perf-deep-dive"],
+  "minutes": 9,
+  "role": "You are a performance engineer at a CDN. Your Linux edge servers sit behind routers in each data centre and run NGINX.",
+  "source": {
+    "label": "Cloudflare blog: the story of one latency spike (November 2015)",
+    "url": "https://blog.cloudflare.com/the-story-of-one-latency-spike/",
+    "org": "Cloudflare",
+    "date": "2015-11-19",
+    "read_on": "2026-11-10"
+  },
+  "brief": "A customer says some HTTP requests through you are extremely slow, as slow as 30 seconds. It's rare and hard to reproduce, your monitoring doesn't see it, and NGINX logs show no long-running requests.",
+  "steps": [
+    {
+      "situation": "Over a couple of hours you send thousands of test requests at one server. Nearly all finish in milliseconds; 5 take up to 1,000 ms. NGINX says it answered fast.",
+      "choices": [
+        {"text": "Bisect the path: long ping runs to the router, and to a server behind it", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "If the application isn't slow, the delay is somewhere on the path. Comparing two hops tells you which side of the router it lives on."},
+        {"text": "Tune NGINX keepalive and buffer settings", "verdict": "risky", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "NGINX reports no slow requests. You'd be changing a component with no evidence against it."},
+        {"text": "Tell the customer it's their network", "verdict": "bad", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": -20}, "why": "You reproduced slow requests yourself. It's yours."}
+      ]
+    },
+    {
+      "situation": "About 115,000 pings each way, from an outside machine.",
+      "evidence": "$ ping -i 0.1 -c 114890 router.example.net | tail -1\nrtt min/avg/max/mdev = 10.432/11.025/122.768/... ms\n$ ping -i 0.1 -c 114931 edge-41.example.net | tail -1\nrtt min/avg/max/mdev = 10.434/11.607/1868.110/22.703 ms",
+      "evidence_cmd": "ping -i 0.1 -c 114931 edge-41.example.net",
+      "choices": [
+        {"text": "The spike is between router and server: capture on the server and compare arrival and reply times", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "The router path is flat; the server shows 1.8-second outliers. A capture on the server shows whether the packet arrives late or is answered late."},
+        {"text": "Replace the router", "verdict": "bad", "effect": {"service": -10, "time": -20, "evidence": -5, "trust": -5}, "why": "The router hop was the clean one."},
+        {"text": "Swap the server's NIC", "verdict": "risky", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": 0}, "why": "Possible, but a guess. Measure on the box first."}
+      ]
+    },
+    {
+      "situation": "A capture on the server catches one slow ping.",
+      "evidence": "$ sudo tcpdump -ttt -ni eth2 icmp and host 198.51.100.20\n 00:00:00.000000 IP 198.51.100.20 > 203.0.113.41: ICMP echo request, seq 4177\n 00:00:01.297048 IP 203.0.113.41 > 198.51.100.20: ICMP echo reply, seq 4177",
+      "evidence_cmd": "tcpdump -ttt -ni eth2 icmp",
+      "choices": [
+        {"text": "The packet arrived on time and the kernel answered 1.3 s later: trace where the kernel stalls", "verdict": "best", "effect": {"service": 0, "time": 10, "evidence": 20, "trust": 0}, "why": "ICMP echo is answered by the kernel itself, so no application is involved. Flame graphs and SystemTap histograms of kernel functions show where the time goes."},
+        {"text": "Copy a list of network sysctls from a tuning blog", "verdict": "risky", "effect": {"service": 0, "time": 0, "evidence": -10, "trust": 0}, "why": "You might hit the right one by luck, but you won't know which, or what you broke."},
+        {"text": "Reboot the server to clear it", "verdict": "bad", "effect": {"service": -5, "time": -5, "evidence": -15, "trust": 0}, "why": "A rare spike disappears for a while and you lose the state that causes it."}
+      ]
+    },
+    {
+      "situation": "Tracing points at packet receive processing, and inside it at TCP collapsing receive buffers.",
+      "evidence": "# stap histograms, function latency\nnet_rx_action   30 s:  3,685,271 calls  max 23 ms\ntcp_collapse   300 s:      1,552 calls  avg 3 ms  max 21 ms\n$ sysctl net.ipv4.tcp_rmem\nnet.ipv4.tcp_rmem = 4096 5242880 33554432",
+      "evidence_cmd": "sysctl net.ipv4.tcp_rmem",
+      "choices": [
+        {"text": "Lower the tcp_rmem maximum on one server, measure both functions again, then choose a value that keeps throughput", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 15, "trust": 5}, "why": "Huge buffers full of small packets get collapsed under memory pressure, and that blocks packet processing. Measure the fix on a canary, and remember large buffers exist for fast long-distance connections."},
+        {"text": "Set the maximum to 2 MiB on every server now", "verdict": "risky", "effect": {"service": 5, "time": 5, "evidence": 0, "trust": -5}, "why": "It removes the stalls, but the article warns 2 MiB can hurt high-throughput, high-latency connections. Fleet-wide without a canary is a gamble."},
+        {"text": "Raise the buffers further so they never fill", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": -5, "trust": 0}, "why": "Bigger buffers mean more to collapse and longer stalls."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In November 2015 Cloudflare described chasing a customer report of very slow requests. In tests, 5 of thousands of requests took up to 1,000 ms while NGINX logged nothing slow. About 115,000 pings showed the router path stable (max 122.8 ms) but a server behind it peaking at 1,868 ms, so the delay was inside the server. tcpdump showed an ICMP echo request arriving on time and the reply leaving about 1.3 s later. SystemTap flame graphs and histograms led to `net_rx_action`, the soft-interrupt packet handler (max 23 ms), and inside it to `tcp_collapse` (max 21 ms): with `tcp_rmem` allowing up to 32 MiB, large receive buffers full of small packets were being collapsed under memory pressure, stalling packet processing. A 2 MiB maximum cut `tcp_collapse` to 3 ms and `net_rx_action` from 23 ms to 3 ms. Because 2 MiB could hurt fast long-distance transfers, Cloudflare settled on 4 MiB as a compromise.",
+    "lessons": ["When the app says it was fast, bisect the network path hop by hop.", "Capture on the host to tell \"arrived late\" from \"answered late\".", "Measure kernel functions before tuning sysctls, and change one at a time on a canary.", "Bigger buffers are not free: they trade latency for throughput."],
+    "commands": ["ping -i 0.1 -c 100000 edge-41.example.net", "mtr -rwc 200 edge-41.example.net", "tcpdump -ttt -ni eth2 icmp", "sysctl net.ipv4.tcp_rmem", "perf top -g", "nstat -az | grep -i collapse"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "24-playbook-network-speed.md", "heading": "Scenario E — Intermittent latency spikes"},
+      {"file": "28-learn-networking.md", "heading": "tcpdump fundamentals and filters"},
+      {"file": "23-playbook-slow-system.md", "heading": "Scenario: high softirq and interrupts"}
+    ],
+    "sites": [
+      {"label": "Killercoda KubeDojo: network debugging with tcpdump", "url": "https://killercoda.com/kubedojo/scenario/linux-6.4-network-debugging"},
+      {"label": "Killercoda: network latency triage", "url": "https://killercoda.com/wisnu-dibimbing-devops-bootcamp/scenario/lab05-network-latency"},
+      {"label": "Wireshark sample captures", "url": "https://wiki.wireshark.org/SampleCaptures"}
+    ]
+  }
+}

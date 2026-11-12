@@ -1,0 +1,71 @@
+{
+  "id": "moby-2018-compose-subnet-lan",
+  "title": "The Compose network that swallowed the office",
+  "level": "L1",
+  "track": "containers",
+  "topics": ["docker-networking", "network-problems"],
+  "minutes": 6,
+  "role": "You run a physical Ubuntu 18.04 server in an office. It sits on its own subnet behind a router, and the router forwards traffic to the staff network on another subnet.",
+  "source": {
+    "label": "moby/moby #37823: a Compose bridge takes the office network's range (GitHub issue)",
+    "url": "https://github.com/moby/moby/issues/37823",
+    "org": "Docker (Moby)",
+    "date": "2018-09-11",
+    "read_on": "2026-11-10"
+  },
+  "brief": "You run `docker-compose up` for a new project. Minutes later the staff say the server has vanished: no web pages, no SSH. From a machine on the server's own subnet it still answers. (Addresses below are samples.)",
+  "steps": [
+    {
+      "situation": "Server 192.0.2.10, router 192.0.2.1, staff network 198.51.100.0/24 behind the router. Nothing changed on the router.",
+      "evidence": "$ ip route\ndefault via 192.0.2.1 dev eno1\n192.0.2.0/24 dev eno1 proto kernel scope link src 192.0.2.10\n198.51.100.0/24 dev br-3c9f2a1d7e44 proto kernel scope link src 198.51.100.1",
+      "evidence_cmd": "ip route",
+      "choices": [
+        {"text": "Compare the routing table with what it should be, and look for a new br- interface", "verdict": "best", "effect": {"service": 5, "time": 10, "evidence": 20, "trust": 0}, "why": "The new Compose bridge owns the staff network's range. Replies to staff now go into the bridge instead of to the router."},
+        {"text": "It's the firewall: flush the iptables rules", "verdict": "bad", "effect": {"service": -15, "time": -10, "evidence": -10, "trust": -5}, "why": "You'd wipe Docker's NAT rules and your own, and the route that steals the traffic stays."},
+        {"text": "Ask someone to restart the office router", "verdict": "risky", "effect": {"service": -5, "time": -10, "evidence": 0, "trust": -5}, "why": "The whole office loses the network for a minute, and the router was never the problem."}
+      ]
+    },
+    {
+      "situation": "Why did Docker pick a range that's in use? It checks for overlaps with its own networks and the host's routes, but the staff network is behind the router, so the host has no route for it. Fix?",
+      "choices": [
+        {"text": "Set default-address-pools in /etc/docker/daemon.json to a range unused anywhere on your network", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 5}, "why": "The fix from the thread: tell Docker which ranges it may use, cut into /24s, so no project picks the staff range again."},
+        {"text": "Add a static route for the staff range via the router", "verdict": "good", "effect": {"service": 10, "time": 5, "evidence": 0, "trust": 0}, "why": "A user's workaround in the thread: with a route, Docker sees the range as used and skips it. It fixes this range only, not the next clash."},
+        {"text": "Set only bip in daemon.json", "verdict": "risky", "effect": {"service": 0, "time": -5, "evidence": 0, "trust": 0}, "why": "`bip` changes `docker0`. Compose networks are other bridges and still come from the default pools, as one user found."},
+        {"text": "Delete the br- interface with ip link", "verdict": "bad", "effect": {"service": 0, "time": -10, "evidence": -5, "trust": 0}, "why": "The network still exists in Docker, which recreates the bridge with the same subnet."}
+      ]
+    },
+    {
+      "situation": "daemon.json is edited. Existing networks keep their subnets, so the project's network has to be recreated.",
+      "choices": [
+        {"text": "Plan a short window, tell people, compose down, restart Docker, compose up, check the new subnet", "verdict": "best", "effect": {"service": 15, "time": 5, "evidence": 5, "trust": 15}, "why": "Users in the thread had to stop every container on the network and restart Docker. Do it once, on purpose, and verify with `docker network inspect`."},
+        {"text": "Restart the Docker daemon with everything running", "verdict": "bad", "effect": {"service": -10, "time": -5, "evidence": 0, "trust": -10}, "why": "All containers bounce, and the old network comes back with its old subnet."},
+        {"text": "docker network prune -f on the server", "verdict": "risky", "effect": {"service": -5, "time": 0, "evidence": 0, "trust": -5}, "why": "It removes only unused networks, so not this one. And it may delete networks other projects expect."}
+      ]
+    },
+    {
+      "situation": "The staff can reach the server again. Other Docker hosts in the company still run with the defaults.",
+      "choices": [
+        {"text": "Put the address pools into every Docker host's base config and write Docker's ranges into the IP plan", "verdict": "best", "effect": {"service": 10, "time": 0, "evidence": 5, "trust": 10}, "why": "Docker's defaults include the 172.17 to 172.31 /16s and 192.168/16, which many offices and VPNs use. Write down what you give Docker."},
+        {"text": "Pin a subnet in each project's compose file instead", "verdict": "risky", "effect": {"service": 5, "time": -5, "evidence": 0, "trust": 0}, "why": "It works per project, until someone forgets it in the next one."},
+        {"text": "Nothing: it was a one-off", "verdict": "bad", "effect": {"service": -5, "time": 0, "evidence": 0, "trust": -10}, "why": "The next `up` on another host can take another range the network is using."}
+      ]
+    }
+  ],
+  "debrief": {
+    "what_happened": "In September 2018 a user ran `docker-compose up` (Docker 18.06.1-ce, Compose 1.21.2) on a physical Ubuntu 18.04 server that sat on its own /24 behind a router, which forwarded to the office network. Docker created the project's bridge as the first address of a /20 inside 192.168, the very range of that office network, and the server stopped answering it. Maintainer thaJeztah explained that the daemon looks for private ranges it sees as unused; contributor selansen added that the default pools include 172.17 to 172.31 and 192.168/16, and that the overlap check only covers Docker's own networks and local routes. The fix from the thread is `default-address-pools` in `/etc/docker/daemon.json` (one suggestion: a 172.17 /16 base cut into size-24 networks). A static route for the office range was an early workaround, and setting only `bip` changes `docker0` but not other bridges. Existing networks keep their subnets: users had to stop the containers, recreate the networks and restart Docker. The issue was closed on 2 October 2018 as a question; comments ran on until 2023.",
+    "lessons": ["After a deploy, \"unreachable from one subnet\" often means a route: read ip route.", "Docker can't see networks behind your router: give it address pools you've reserved.", "Pool changes apply to new networks only: plan the recreate.", "Keep Docker's ranges in the company IP plan."],
+    "commands": ["ip route", "ip -br addr show type bridge", "docker network ls", "docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}' <network>", "cat /etc/docker/daemon.json", "sudo systemctl restart docker"]
+  },
+  "practise": {
+    "labs": [],
+    "handbook": [
+      {"file": "42-problems-network-dns-tls-vpn.md", "heading": "1.5 Docker's subnets collide with a real network"},
+      {"file": "30-learn-docker.md", "heading": "Address pools and subnet clashes"},
+      {"file": "44-problems-docker-swarm-registry.md", "heading": "4.5 Docker subnets collide with the LAN or VPN"}
+    ],
+    "sites": [
+      {"label": "iximiuz Labs: container networking from scratch (free tutorial)", "url": "https://labs.iximiuz.com/tutorials/container-networking-from-scratch"},
+      {"label": "SadServers: Bern, web container can't reach the db container (free account)", "url": "https://sadservers.com/scenario/bern"}
+    ]
+  }
+}

@@ -1,0 +1,1941 @@
+{
+ "domain": "k8s",
+ "problems": [
+  {
+   "title": "kubectl: The connection to the server localhost:8080 was refused",
+   "area": "kubectl / kubeconfig",
+   "tool": "kubectl, kubeadm, k3s, Helm",
+   "level": "L0",
+   "context": "First command after kubeadm init, after sudo -i, on a worker node, in a CI job, or with Helm on k3s. kubectl found no kubeconfig and fell back to its built-in default of http://localhost:8080.",
+   "error_text": "The connection to the server localhost:8080 was refused - did you specify the right host or port? | couldn't get current server API group list: Get \"http://localhost:8080/api?timeout=32s\": dial tcp 127.0.0.1:8080: connect: connection refused | Error: Kubernetes cluster unreachable: Get \"http://localhost:8080/version\"",
+   "frequency_signal": "Most-viewed topic of all time on discuss.kubernetes.io (about 842k views, 76 replies). The API-group-list variant has about 160k views. k3s issue #1126 (Helm 3 'cluster unreachable') has 46 +1 reactions.",
+   "root_causes": [
+    "No kubeconfig for this user: kubeadm writes /etc/kubernetes/admin.conf, but it was never copied to ~/.kube/config, or you are now root or another user.",
+    "kubectl run on a worker node, which has no admin kubeconfig.",
+    "KUBECONFIG not exported in the shell, under sudo, in cron or in the CI job.",
+    "k3s and RKE2 write a root-only kubeconfig to /etc/rancher/k3s/k3s.yaml or /etc/rancher/rke2/rke2.yaml. Helm and a separately installed kubectl don't look there."
+   ],
+   "diagnosis": [
+    "kubectl config view --minify    # empty output means no kubeconfig was loaded",
+    "echo $KUBECONFIG; ls -l ~/.kube/config",
+    "sudo ls -l /etc/kubernetes/admin.conf /etc/rancher/k3s/k3s.yaml /etc/rancher/rke2/rke2.yaml",
+    "kubectl get nodes -v=6    # prints which config file and server URL it uses"
+   ],
+   "fix": [
+    "kubeadm: mkdir -p $HOME/.kube && sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config && sudo chown $(id -u):$(id -g) $HOME/.kube/config",
+    "k3s: mkdir -p ~/.kube && sudo cp /etc/rancher/k3s/k3s.yaml ~/.kube/config && sudo chown $USER: ~/.kube/config && chmod 600 ~/.kube/config. Use --write-kubeconfig-mode 644 only on a lab box.",
+    "For remote use, copy the file and change server: https://127.0.0.1:6443 to the node or VIP address.",
+    "CI: store the kubeconfig as a file-type CI variable and export KUBECONFIG in the job."
+   ],
+   "prevention": "Give each admin their own kubeconfig instead of sharing admin.conf, name contexts clearly, and show the current context in the shell prompt (kube-ps1 or kubectx).",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: The connection to the server localhost:8080 was refused",
+     "url": "https://discuss.kubernetes.io/t/the-connection-to-the-server-localhost-8080-was-refused-did-you-specify-the-right-host-or-port/1464",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "discuss.kubernetes.io: Couldn't get current server API group list (localhost:8080)",
+     "url": "https://discuss.kubernetes.io/t/couldnt-get-current-server-api-group-list-get-http-localhost-8080-api-timeout-32s-dial-tcp-127-0-0-1-connect-connection-refused/25471",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "k3s #1126: Error: Kubernetes cluster unreachable with helm 3.0",
+     "url": "https://github.com/k3s-io/k3s/issues/1126",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22connection+to+the+server+localhost%3A8080+was+refused%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "kubeadm init fails or the control plane keeps restarting: containerd has CRI disabled or the wrong cgroup driver",
+   "area": "containerd / kubeadm",
+   "tool": "containerd, kubeadm, kubelet",
+   "level": "L1",
+   "context": "Fresh Ubuntu 22.04/24.04 node with containerd.io from Docker's apt repo or Ubuntu's containerd package. The packaged /etc/containerd/config.toml is written for Docker, not for Kubernetes.",
+   "error_text": "[ERROR CRI]: container runtime is not running: ... rpc error: code = Unimplemented desc = unknown service runtime.v1.RuntimeService | later: kube-apiserver, etcd and the scheduler restart every few minutes, and 'The connection to the server <IP>:6443 was refused' comes and goes",
+   "frequency_signal": "Classic in CKA labs and homelabs. The Kubernetes container-runtimes page warns that containerd installed from a package may ship with the CRI plugin disabled.",
+   "root_causes": [
+    "The packaged config.toml contains disabled_plugins = [\"cri\"], so kubeadm and kubelet cannot talk CRI to containerd.",
+    "kubelet uses the systemd cgroup driver (the kubeadm default since v1.22) while containerd runs runc with SystemdCgroup = false (cgroupfs). On cgroup v2 hosts (Ubuntu 22.04+) this leads to sandbox restarts and a flapping control plane.",
+    "Old cgroup v1 hosts: according to the v1.35+ release notes, recent kubelets refuse to start on cgroup v1 by default (failCgroupV1)."
+   ],
+   "diagnosis": [
+    "sudo crictl --runtime-endpoint unix:///run/containerd/containerd.sock info | head",
+    "grep -nE 'disabled_plugins|SystemdCgroup' /etc/containerd/config.toml",
+    "stat -fc %T /sys/fs/cgroup    # cgroup2fs means cgroup v2",
+    "sudo journalctl -u kubelet -b --no-pager | grep -iE 'cgroup|sandbox' | tail -20",
+    "sudo crictl ps -a | grep -E 'kube-apiserver|etcd'    # a high attempt count means flapping"
+   ],
+   "fix": [
+    "sudo mkdir -p /etc/containerd && containerd config default | sudo tee /etc/containerd/config.toml",
+    "Set SystemdCgroup = true in the runc options of the file you just generated. containerd 1.7 uses config version 2 (plugins.\"io.containerd.grpc.v1.cri\"...runtimes.runc.options). containerd 2.x uses version 3 with different plugin names, so don't paste old snippets into a v3 file.",
+    "sudo systemctl restart containerd && sudo systemctl restart kubelet",
+    "If kubeadm init already half-ran: sudo kubeadm reset -f, then run init again."
+   ],
+   "prevention": "Template config.toml with Ansible, pin the containerd version, and keep kubelet cgroupDriver: systemd. Plan the move to containerd 2.x now: the current Kubernetes docs say kubelet's fallback for containerd 1.x (which lacks the RuntimeConfig RPC) is dropped in v1.38.",
+   "sources": [
+    {
+     "title": "Kubernetes docs: Container Runtimes (cgroup drivers, containerd CRI plugin note)",
+     "url": "https://kubernetes.io/docs/setup/production-environment/container-runtimes/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes docs: Troubleshooting kubeadm",
+     "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22unknown+service+runtime.v1.RuntimeService%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=SystemdCgroup+apiserver+restarting&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Node NotReady and CoreDNS Pending: cni plugin not initialized",
+   "area": "CNI / kubeadm",
+   "tool": "kubelet, Flannel, Calico, Cilium",
+   "level": "L1",
+   "context": "Right after kubeadm init or join, or after upgrading or removing a CNI.",
+   "error_text": "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:Network plugin returns error: cni plugin not initialized | failed to find plugin \"flannel\" in path [/opt/cni/bin] | coredns-xxxx 0/1 Pending",
+   "frequency_signal": "kubeadm issue #1031 'runtime network not ready' has 72 comments. The kubeadm troubleshooting docs say CoreDNS stays Pending until a network add-on is installed.",
+   "root_causes": [
+    "No CNI installed yet. kubeadm doesn't pick one, so CoreDNS stays Pending by design.",
+    "The CNI DaemonSet pod is failing on that node: image pull, RBAC, a pod CIDR mismatch or a missing kernel module.",
+    "Binaries missing from /opt/cni/bin (flannel, bridge, loopback, portmap), or leftover config from a previous CNI in /etc/cni/net.d."
+   ],
+   "diagnosis": [
+    "kubectl get nodes -o wide; kubectl describe node NODE | grep -A6 Conditions",
+    "kubectl get pods -A -o wide | grep -Ei 'flannel|calico|cilium|coredns'    # Flannel runs in kube-flannel, operator-installed Calico in calico-system",
+    "ls /etc/cni/net.d /opt/cni/bin",
+    "sudo journalctl -u kubelet -b --no-pager | grep -i cni | tail -20"
+   ],
+   "fix": [
+    "Install exactly one CNI whose pod CIDR matches kubeadm init --pod-network-cidr. Flannel's default is 10.244.0.0/16.",
+    "If binaries are missing, install the CNI plugins into /opt/cni/bin (Ubuntu package containernetworking-plugins, or the upstream release tarball).",
+    "When switching CNIs: delete the old DaemonSet, remove stale /etc/cni/net.d/* files on every node, then restart containerd and kubelet or reboot."
+   ],
+   "prevention": "Choose pod and service CIDRs before kubeadm init, write them down, and install the CNI as part of the bootstrap playbook.",
+   "sources": [
+    {
+     "title": "kubeadm #1031: runtime network not ready: NetworkReady=false",
+     "url": "https://github.com/kubernetes/kubeadm/issues/1031",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes docs: Troubleshooting kubeadm (coredns Pending, network add-on)",
+     "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22cni+plugin+not+initialized%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "The connection to the server <IP>:6443 was refused: the API server is down after a reboot or a change",
+   "area": "kubeadm / control plane",
+   "tool": "kubelet, kube-apiserver static pod, etcd, containerd",
+   "level": "L2",
+   "context": "The cluster worked yesterday. After a reboot, power cut, OS update, full disk or IP change, kubectl is refused on 6443. On a homelab with one control-plane node, everything stops.",
+   "error_text": "The connection to the server 192.0.2.10:6443 was refused - did you specify the right host or port?",
+   "frequency_signal": "Second most-viewed topic on discuss.kubernetes.io (about 592k views, 81 replies). kubeadm issue #1026 'kubelet won't restart after reboot' has 67 comments.",
+   "root_causes": [
+    "kubelet isn't running, and it is what starts the static pods. Typical reasons: swap turned back on by /etc/fstab, containerd down, or a broken kubelet config.",
+    "etcd won't start (disk full, corrupt data, slow disk), so the API server crashes too.",
+    "Control-plane certificates expired after about a year, or the node IP changed (DHCP or a netplan edit), so the advertise address and certificates no longer match.",
+    "A cgroup driver mismatch makes the static pods restart over and over."
+   ],
+   "diagnosis": [
+    "sudo systemctl status kubelet containerd --no-pager",
+    "sudo journalctl -u kubelet -b -n 100 --no-pager",
+    "sudo crictl ps -a | grep -E 'kube-apiserver|etcd'; sudo crictl logs CONTAINER_ID",
+    "sudo ss -ltnp | grep 6443; swapon --show; df -h /var/lib/etcd; ip -4 addr",
+    "sudo kubeadm certs check-expiration"
+   ],
+   "fix": [
+    "Swap: sudo swapoff -a and comment out the swap line in /etc/fstab, unless you have configured NodeSwap on purpose.",
+    "Start the runtime before kubelet: sudo systemctl restart containerd kubelet",
+    "Expired certificates: sudo kubeadm certs renew all, restart the control-plane static pods, then copy /etc/kubernetes/admin.conf to ~/.kube/config again.",
+    "Changed IP: give control-plane nodes static IPs (netplan or a DHCP reservation) and use a DNS name or VIP as controlPlaneEndpoint. Otherwise the certificates and manifests have to be regenerated."
+   ],
+   "prevention": "Use static IPs or DHCP reservations for nodes, set controlPlaneEndpoint to a DNS name from day one, alert on certificate expiry and disk usage, and write down a shutdown and startup order (drain, stop kubelet, then power off).",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: The connection to the server <host>:6443 was refused",
+     "url": "https://discuss.kubernetes.io/t/the-connection-to-the-server-host-6443-was-refused-did-you-specify-the-right-host-or-port/552",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "kubeadm #1026: kubelet won't restart after reboot - connection refused",
+     "url": "https://github.com/kubernetes/kubeadm/issues/1026",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes docs: Troubleshooting kubeadm",
+     "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Server Fault search",
+     "url": "https://serverfault.com/search?q=%22connection+to+the+server%22+6443+refused",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Nodes register with the wrong IP (multi-NIC servers, Vagrant 10.0.2.15): kubectl logs/exec fail and cross-node traffic breaks",
+   "area": "kubeadm / node networking",
+   "tool": "kubelet, Flannel, Calico",
+   "level": "L2",
+   "context": "Vagrant/VirtualBox labs, where every VM has the same NAT address 10.0.2.15 on eth0, and on-prem servers with separate management, storage or backup NICs.",
+   "error_text": "kubectl get nodes -o wide shows the same INTERNAL-IP on every node | Error from server: error dialing backend: dial tcp 10.0.2.15:10250: connect: connection refused | pods on different nodes cannot reach each other",
+   "frequency_signal": "The kubeadm troubleshooting docs give it two sections: the default NIC flannel picks under Vagrant, and a non-public IP being used for containers.",
+   "root_causes": [
+    "kubelet takes the IP of the interface that holds the default route, which may not be the cluster network.",
+    "Flannel and Calico autodetect the first interface and build their tunnels over the wrong network."
+   ],
+   "diagnosis": [
+    "kubectl get nodes -o wide",
+    "ip -4 route get 1.1.1.1; ip -br addr",
+    "kubectl -n kube-flannel logs ds/kube-flannel-ds | grep -i 'using interface'"
+   ],
+   "fix": [
+    "Set the kubelet node IP on Ubuntu: echo 'KUBELET_EXTRA_ARGS=--node-ip=192.0.2.21' | sudo tee /etc/default/kubelet && sudo systemctl restart kubelet",
+    "Pass kubeadm init --apiserver-advertise-address=CLUSTER_NIC_IP, and set node-ip under nodeRegistration.kubeletExtraArgs in the kubeadm config file.",
+    "Flannel: add --iface=enp0s8 (or --iface-regex) to the kube-flannel container args. Calico: set nodeAddressAutodetectionV4 (see the cross-node traffic problem)."
+   ],
+   "prevention": "Keep node-ip in the kubeadm config you store in Git. In Vagrantfiles, give every VM a private_network IP and template node-ip from it.",
+   "sources": [
+    {
+     "title": "Kubernetes docs: Troubleshooting kubeadm (Default NIC with flannel in Vagrant; Non-public IP used for containers)",
+     "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubernetes+node+internal+ip+10.0.2.15+vagrant",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=node-ip+wrong+interface&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Remote kubectl fails with x509: certificate is valid for X, not Y",
+   "area": "kubeconfig / API server certificate",
+   "tool": "kubectl, kubeadm, k3s",
+   "level": "L1",
+   "context": "kubeconfig copied to a laptop or CI and pointed at a VIP, DNS name or public IP that is not in the API server certificate SANs; or a kubeconfig from an old cluster after kubeadm reset.",
+   "error_text": "Unable to connect to the server: x509: certificate is valid for 10.96.0.1, 10.20.0.10, not 203.0.113.10 | x509: certificate signed by unknown authority",
+   "frequency_signal": "Classic after kubeadm/k3s installs; k3s exposes --tls-san for exactly this.",
+   "root_causes": [
+    "The apiserver serving cert only lists the advertise address, the service IP and node names.",
+    "certificate-authority-data in the kubeconfig belongs to a previous cluster (kubeadm reset regenerates the CA).",
+    "A proxy or load balancer in front of 6443 terminates TLS."
+   ],
+   "diagnosis": [
+    "kubectl config view --minify --raw -o jsonpath='{.clusters[0].cluster.server}'",
+    "openssl s_client -connect HOST:6443 </dev/null 2>/dev/null | openssl x509 -noout -ext subjectAltName"
+   ],
+   "fix": [
+    "kubeadm: add certSANs to ClusterConfiguration, move apiserver.crt/key away, kubeadm init phase certs apiserver --config, restart the static pod.",
+    "k3s: --tls-san NAME in /etc/rancher/k3s/config.yaml, restart k3s (the serving cert is regenerated).",
+    "Never set insecure-skip-tls-verify."
+   ],
+   "prevention": "Decide the API endpoint name (VIP + DNS) before kubeadm init and put it in controlPlaneEndpoint and certSANs.",
+   "sources": [
+    {
+     "title": "Kubernetes docs: Troubleshooting kubeadm",
+     "url": "https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/troubleshooting-kubeadm/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "k3s docs: server CLI (--tls-san)",
+     "url": "https://docs.k3s.io/cli/server",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubectl+x509+%22certificate+is+valid+for%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Forbidden: RBAC denies a user or ServiceAccount",
+   "area": "RBAC",
+   "tool": "kubectl, RBAC",
+   "level": "L1",
+   "context": "CI ServiceAccount deploying to another namespace, a new admin with a cert-based user, Helm in a namespace-scoped role.",
+   "error_text": "Error from server (Forbidden): deployments.apps is forbidden: User \"system:serviceaccount:ci:deployer\" cannot list resource \"deployments\" in API group \"apps\" in the namespace \"shop\"",
+   "frequency_signal": "Daily occurrence; RBAC is a CKA topic and a KodeKloud troubleshooting scenario.",
+   "root_causes": [
+    "Role bound in the wrong namespace, or a Role used where a ClusterRole is needed.",
+    "Wrong apiGroup (deployments are in apps, not core).",
+    "Subject name/namespace typo in the RoleBinding."
+   ],
+   "diagnosis": [
+    "kubectl auth can-i list deployments -n shop --as system:serviceaccount:ci:deployer",
+    "kubectl get rolebinding,clusterrolebinding -A -o wide | grep deployer"
+   ],
+   "fix": [
+    "Create a Role with the right apiGroups/resources/verbs in the target namespace and bind the SA from its home namespace."
+   ],
+   "prevention": "Keep RBAC in Git, test with kubectl auth can-i in CI, avoid cluster-admin for CI.",
+   "sources": [
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22cannot+list+resource%22+forbidden+serviceaccount",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=rbac+forbidden+serviceaccount&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "kubeadm join fails: token expired, CA hash or preflight errors",
+   "area": "kubeadm join",
+   "tool": "kubeadm, kubelet",
+   "level": "L1",
+   "context": "Adding a worker a day after init, or on a cloned VM.",
+   "error_text": "couldn't validate the identity of the API Server: ... token id is invalid for this cluster or it has expired | [ERROR Port-10250]: Port 10250 is in use | [ERROR FileContent--proc-sys-net-ipv4-ip_forward]: contents are not set to 1 | a Node with name \"wk-1\" and status \"Ready\" already exists",
+   "frequency_signal": "discuss.kubernetes.io 'Not able to join node to Master' (31k views), 'Kubeadm init fails' (33k), 'kubeadm init failed api server not healthy' (14k).",
+   "root_causes": [
+    "Bootstrap tokens expire after 24h.",
+    "Node previously joined (leftover /etc/kubernetes, kubelet running).",
+    "ip_forward/br_netfilter not set; swap on.",
+    "Cloned VMs with the same hostname, machine-id or product_uuid.",
+    "Firewall blocks 6443 from the worker."
+   ],
+   "diagnosis": [
+    "kubeadm token list",
+    "nc -vz 10.20.0.10 6443",
+    "cat /etc/machine-id; sudo cat /sys/class/dmi/id/product_uuid",
+    "sysctl net.ipv4.ip_forward"
+   ],
+   "fix": [
+    "kubeadm token create --print-join-command on the control plane.",
+    "kubeadm reset -f + clean /etc/cni/net.d on the worker; remove stale node object.",
+    "Regenerate machine-id on clones; set unique hostnames."
+   ],
+   "prevention": "Golden image without machine-id; join via Ansible that creates a fresh token each run.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: Not able to join node to Master",
+     "url": "https://discuss.kubernetes.io/t/not-able-to-join-node-to-master/7123",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "discuss.kubernetes.io: Kubeadm init fails",
+     "url": "https://discuss.kubernetes.io/t/kubeadm-init-fails/16888",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "discuss.kubernetes.io: Kubeadm init failed api server not healthy",
+     "url": "https://discuss.kubernetes.io/t/kubeadm-init-failed-api-server-not-healthy/28097",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubeadm+join+%22token+id+is+invalid%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Images: crictl/ctr confusion and Harbor private CA x509 on pull",
+   "area": "containerd / registry",
+   "tool": "containerd, crictl, ctr, k3s, Harbor",
+   "level": "L1",
+   "context": "Image built with docker on the node is invisible to Kubernetes; Harbor with an internal CA; k3s needs registries.yaml.",
+   "error_text": "Failed to pull image \"harbor.example.com/shop/web:1.4.2\": ... tls: failed to verify certificate: x509: certificate signed by unknown authority | ErrImageNeverPull | crictl: WARN[0000] runtime connect using default endpoints ... deprecated",
+   "frequency_signal": "k3s #145 'Insecure Registry Support' (33 reactions, 39 comments); KodeKloud Image Pull Errors scenario; Docker vs containerd lessons in CKA.",
+   "root_causes": [
+    "Docker and containerd have separate image stores; ctr defaults to namespace 'default' while Kubernetes uses k8s.io.",
+    "containerd does not read /etc/docker/certs.d; it needs /etc/containerd/certs.d/HOST/hosts.toml with config_path set (kubeadm) or /etc/rancher/k3s/registries.yaml (k3s).",
+    "CA trusted by the OS store but containerd not restarted."
+   ],
+   "diagnosis": [
+    "sudo crictl --runtime-endpoint unix:///run/containerd/containerd.sock images",
+    "sudo ctr -n k8s.io images ls | grep shop",
+    "kubectl describe pod POD | sed -n '/Events/,$p'",
+    "openssl s_client -connect harbor.example.com:443 -showcerts </dev/null"
+   ],
+   "fix": [
+    "/etc/crictl.yaml runtime-endpoint.",
+    "hosts.toml with ca = '/etc/containerd/certs.d/harbor.example.com/ca.crt' and config_path in config.toml; restart containerd.",
+    "k3s: registries.yaml configs.'harbor.example.com'.tls.ca_file; restart k3s/k3s-agent on every node.",
+    "imagePullSecrets for private projects."
+   ],
+   "prevention": "Distribute the CA and registry config with Ansible to every node, including new ones.",
+   "sources": [
+    {
+     "title": "k3s #145: Insecure Registry Support",
+     "url": "https://github.com/k3s-io/k3s/issues/145",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "k3s docs: Private Registry Configuration",
+     "url": "https://docs.k3s.io/installation/private-registry",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=containerd+harbor+x509+%22certificate+signed+by+unknown+authority%22",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=containerd+private+registry+x509&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Node NotReady or flapping: kubelet, PLEG, NIC failures",
+   "area": "node",
+   "tool": "kubelet, containerd, k3s",
+   "level": "L2",
+   "context": "Busy nodes, after NIC/link flaps, k3s on small hardware.",
+   "error_text": "PLEG is not healthy: pleg was last seen active 3m0s ago | Kubelet stopped posting node status | use of closed network connection",
+   "frequency_signal": "kubernetes/kubernetes #45419 PLEG flapping (249 comments), #87615 kubelet won't reconnect after NIC failure (163), k3s #294 high load average (71 comments).",
+   "root_causes": [
+    "containerd slow/hung (too many containers, disk IO).",
+    "kubelet stopped; swap; expired kubelet client cert.",
+    "Network path to API broken; long-lived HTTP/2 connection stale after NIC failure."
+   ],
+   "diagnosis": [
+    "kubectl describe node NODE | grep -A8 Conditions",
+    "sudo journalctl -u kubelet --since -30min | grep -iE 'pleg|not ready|certificate|closed network'",
+    "sudo crictl ps | wc -l; iostat -x 2 3"
+   ],
+   "fix": [
+    "Restart containerd then kubelet; fix disk/IO; renew kubelet cert; upgrade to versions with the HTTP/2 health-check fix."
+   ],
+   "prevention": "Alert on node Ready flaps; reserve resources (systemReserved/kubeReserved); keep pods per node moderate.",
+   "sources": [
+    {
+     "title": "kubernetes #45419: Node flapping Ready/NotReady with PLEG issues",
+     "url": "https://github.com/kubernetes/kubernetes/issues/45419",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "kubernetes #87615: Kubelet won't reconnect to Apiserver after NIC failure",
+     "url": "https://github.com/kubernetes/kubernetes/issues/87615",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "k3s #294: k3s causes a high load average",
+     "url": "https://github.com/k3s-io/k3s/issues/294",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22PLEG+is+not+healthy%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "DiskPressure: evictions and image garbage collection",
+   "area": "node storage",
+   "tool": "kubelet, containerd",
+   "level": "L2",
+   "context": "Small root disks, /var/lib/containerd or /var/lib/rancher on root, log-heavy pods.",
+   "error_text": "The node had condition: [DiskPressure] | Evicted: The node was low on resource: ephemeral-storage | node.kubernetes.io/disk-pressure:NoSchedule taint",
+   "frequency_signal": "k3s #14729 DiskPressure latches after recovery (2026); evictions are a daily ops topic.",
+   "root_causes": [
+    "imagefs/nodefs below evictionHard (default nodefs.available<10%, imagefs.available<15%).",
+    "Container logs and emptyDir growth.",
+    "Unused images not collected because imageGCHighThresholdPercent not reached."
+   ],
+   "diagnosis": [
+    "df -h /var/lib/containerd /var/lib/kubelet",
+    "sudo crictl rmi --prune",
+    "kubectl get pods -A --field-selector=status.phase=Failed"
+   ],
+   "fix": [
+    "Free space (crictl rmi --prune, journal vacuum), delete evicted pods, grow disk or move /var/lib/containerd to its own volume; set ephemeral-storage limits."
+   ],
+   "prevention": "Separate volume for containerd, log rotation (containerLogMaxSize), alerts at 80%.",
+   "sources": [
+    {
+     "title": "k3s #14729: DiskPressure latches True after nodefs recovers",
+     "url": "https://github.com/k3s-io/k3s/issues/14729",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubernetes+DiskPressure+evicted+ephemeral-storage",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Pods or namespaces stuck Terminating",
+   "area": "finalizers",
+   "tool": "kubectl, API aggregation",
+   "level": "L2",
+   "context": "Deleting a namespace with CRDs/APIServices whose backend is down (metrics-server, Rancher), or pods on a dead node.",
+   "error_text": "namespace \"monitoring\" ... Terminating for hours | NamespaceDeletionDiscoveryFailure: unable to retrieve the complete list of server APIs: metrics.k8s.io/v1beta1: the server is currently unable to handle the request | pod Terminating forever",
+   "frequency_signal": "kubernetes #60807 namespace stuck Terminating (180 comments, 119 reactions), #51835 pods stuck terminating (191 comments, 151 reactions).",
+   "root_causes": [
+    "Unavailable APIService blocks namespace discovery.",
+    "Finalizers on resources whose controller was uninstalled first.",
+    "Pods on an unreachable node cannot confirm deletion; volumes still mounted."
+   ],
+   "diagnosis": [
+    "kubectl get ns NS -o jsonpath='{.status.conditions}'",
+    "kubectl get apiservice | grep False",
+    "kubectl api-resources --verbs=list --namespaced -o name | xargs -n1 kubectl get -n NS --ignore-not-found"
+   ],
+   "fix": [
+    "Fix or delete the broken APIService; remove the stuck resource's finalizer only after confirming its controller is gone; kubectl delete pod --grace-period=0 --force only when the node is truly dead."
+   ],
+   "prevention": "Uninstall operators after their CRs, not before; monitor APIService availability.",
+   "sources": [
+    {
+     "title": "kubernetes #60807: deleting namespace stuck at Terminating",
+     "url": "https://github.com/kubernetes/kubernetes/issues/60807",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "kubernetes #51835: Pods stuck on terminating",
+     "url": "https://github.com/kubernetes/kubernetes/issues/51835",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=namespace+stuck+terminating+finalizers",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Pods on different nodes cannot talk: VXLAN, MTU, Calico autodetection",
+   "area": "CNI data plane",
+   "tool": "Flannel, Calico, Cilium",
+   "level": "L2",
+   "context": "Multi-node homelab with UFW, Proxmox/VMware, VPN or VLAN with smaller MTU, Calico 3.29 VXLAN.",
+   "error_text": "curl to a pod on another node times out while same-node works | calico/node is not ready: BIRD is not ready: BGP not established | CNI plugin: error getting ClusterInformation: connection is unauthorized: Unauthorized",
+   "frequency_signal": "discuss 'Cannot access pod services from another pod' (40k views); calico #9433 VXLAN in 3.29 breaks connectivity except ICMP (46 comments); calico #5712 Unauthorized (40); #7555 projectcalico.org/v3 unable to handle request (53).",
+   "root_causes": [
+    "UDP 8472 (Flannel VXLAN) / 4789 (Calico VXLAN) / TCP 179 BGP / IP-in-IP protocol 4 blocked by host firewall or security group.",
+    "Overlay MTU larger than the path MTU.",
+    "Calico picked the wrong interface.",
+    "NIC checksum offload bug with VXLAN.",
+    "calico-node token expired/CA changed after cert renewal."
+   ],
+   "diagnosis": [
+    "kubectl get pods -o wide; kubectl exec POD -- ping -c2 OTHER_POD_IP",
+    "sudo tcpdump -ni any udp port 8472 or udp port 4789",
+    "kubectl -n calico-system logs ds/calico-node -c calico-node | grep -iE 'autodetect|bird|unauthorized'",
+    "ip -d link show flannel.1 | grep mtu"
+   ],
+   "fix": [
+    "Open overlay ports between nodes only.",
+    "Set Calico nodeAddressAutodetectionV4 interface/CIDR; Flannel --iface.",
+    "Lower the MTU in CNI config.",
+    "ethtool -K flannel.1 tx-checksum-ip-generic off as workaround on affected kernels."
+   ],
+   "prevention": "Document CNI ports in the firewall inventory; test cross-node connectivity after each node add or CNI upgrade.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: Cannot access pod services from another pod",
+     "url": "https://discuss.kubernetes.io/t/cannot-access-pod-services-from-another-pod/11944",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "calico #9433: VXLAN in 3.29 breaks any connectivity except ICMP",
+     "url": "https://github.com/projectcalico/calico/issues/9433",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "calico #5712: error getting ClusterInformation: Unauthorized",
+     "url": "https://github.com/projectcalico/calico/issues/5712",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "calico #7555: projectcalico.org/v3 unable to handle the request",
+     "url": "https://github.com/projectcalico/calico/issues/7555",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubernetes+pods+different+nodes+cannot+communicate+flannel",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Pods have no internet access",
+   "area": "CNI egress / NAT",
+   "tool": "kubelet, Flannel, Calico, UFW",
+   "level": "L2",
+   "context": "Ubuntu with UFW, ip_forward off, br_netfilter missing.",
+   "error_text": "wget: bad address 'github.com' | dial tcp 140.82.x.x:443: i/o timeout from pods while the node itself works",
+   "frequency_signal": "discuss 'Kubernetes Pods do not have internet access' (60k views).",
+   "root_causes": [
+    "net.ipv4.ip_forward=0.",
+    "UFW default FORWARD policy DROP.",
+    "Masquerade missing (natOutgoing false / wrong cluster CIDR).",
+    "DNS rather than routing (see CoreDNS)."
+   ],
+   "diagnosis": [
+    "sysctl net.ipv4.ip_forward net.bridge.bridge-nf-call-iptables",
+    "sudo iptables -S FORWARD | head -3",
+    "kubectl run t --rm -it --image=busybox:1.36 -- wget -qO- -T5 http://1.1.1.1"
+   ],
+   "fix": [
+    "sysctl persist ip_forward and br_netfilter; ufw route allow from pod CIDR or DEFAULT_FORWARD_POLICY=ACCEPT; Calico IPPool natOutgoing true."
+   ],
+   "prevention": "Bake sysctls and modules in the node bootstrap.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: Kubernetes Pods do not have internet access",
+     "url": "https://discuss.kubernetes.io/t/kubernetes-pods-do-not-have-internet-access/5252",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubernetes+pods+no+internet+access+ufw",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "NetworkPolicy ignored, or default deny breaks DNS",
+   "area": "NetworkPolicy",
+   "tool": "Flannel, Calico, Cilium, k3s kube-router",
+   "level": "L2",
+   "context": "Policies on Flannel (no enforcement), default-deny without DNS egress.",
+   "error_text": "Policy applied but traffic still flows | after default-deny: nslookup: ;; connection timed out; no servers could be reached",
+   "frequency_signal": "KodeKloud 'Unreachable Pods + Leaky Network Policies'; k3s #14711 kube-router netpol default deny at pod startup.",
+   "root_causes": [
+    "Flannel alone does not implement NetworkPolicy (k3s ships kube-router's netpol controller).",
+    "Egress default deny blocks UDP/TCP 53 to kube-dns.",
+    "namespaceSelector uses labels the namespace lacks (kubernetes.io/metadata.name)."
+   ],
+   "diagnosis": [
+    "kubectl get netpol -A",
+    "kubectl get pods -n kube-system -l k8s-app=kube-dns -o wide",
+    "kubectl exec -n shop POD -- nslookup kubernetes.default"
+   ],
+   "fix": [
+    "Allow egress to kube-dns on 53 TCP/UDP; use kubernetes.io/metadata.name labels; use a CNI that enforces policies."
+   ],
+   "prevention": "Policy tests in CI; start with namespace default-deny + explicit DNS rule.",
+   "sources": [
+    {
+     "title": "k3s #14711: kube-router netpol default deny",
+     "url": "https://github.com/k3s-io/k3s/issues/14711",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=networkpolicy+default+deny+dns+egress",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=networkpolicy+not+working+flannel&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "CoreDNS loop detected or upstream timeouts",
+   "area": "CoreDNS",
+   "tool": "CoreDNS, systemd-resolved",
+   "level": "L2",
+   "context": "Ubuntu nodes with systemd-resolved stub 127.0.0.53; corporate DNS blocking; firewalled UDP 53.",
+   "error_text": "[FATAL] plugin/loop: Loop (127.0.0.1:44222 -> :53) detected for zone \".\" | [ERROR] plugin/errors: 2 example.com. A: read udp 10.244.1.5:43201->10.20.0.1:53: i/o timeout",
+   "frequency_signal": "discuss 'CoreDNS [ERROR] plugin/errors: 2' (38k views); k3s #1606 CoreDNS replica count (26 reactions).",
+   "root_causes": [
+    "kubelet resolvConf points at /etc/resolv.conf with 127.0.0.53, so CoreDNS forwards to itself.",
+    "Upstream DNS unreachable from pod network.",
+    "Single CoreDNS replica overloaded."
+   ],
+   "diagnosis": [
+    "kubectl -n kube-system logs -l k8s-app=kube-dns --tail=20",
+    "kubectl -n kube-system get cm coredns -o yaml | grep forward",
+    "grep -i resolvConf /var/lib/kubelet/config.yaml"
+   ],
+   "fix": [
+    "resolvConf: /run/systemd/resolve/resolv.conf; or forward . to explicit upstreams; restart CoreDNS."
+   ],
+   "prevention": "Monitor coredns_forward_requests_total and errors; two replicas with anti-affinity.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: CoreDNS [ERROR] plugin/errors: 2",
+     "url": "https://discuss.kubernetes.io/t/coredns-error-plugin-errors-2/16106",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "k3s #1606: CoreDNS replica count",
+     "url": "https://github.com/k3s-io/k3s/issues/1606",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=coredns+%22loop+detected%22+systemd-resolved",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "ndots:5, conntrack races and DNS latency storms",
+   "area": "CoreDNS at scale",
+   "tool": "CoreDNS, kube-proxy, conntrack",
+   "level": "L3",
+   "context": "Busy clusters; Alpine/musl images; external names resolved through search domains.",
+   "error_text": "5-second DNS delays; spikes in NXDOMAIN for api.example.com.shop.svc.cluster.local; CoreDNS OOMKilled; conntrack insert_failed",
+   "frequency_signal": "k8s.af: Zalando total DNS outage (CoreDNS OOM, ndots:5), Preply DNS postmortem (conntrack, autoscaler), Toyota Connected DNS storm (ndots:5, musl).",
+   "root_causes": [
+    "ndots:5 multiplies each external lookup by search domains.",
+    "UDP conntrack race on parallel A/AAAA queries.",
+    "CoreDNS memory limits too low under storm."
+   ],
+   "diagnosis": [
+    "kubectl exec POD -- cat /etc/resolv.conf",
+    "sudo conntrack -S | grep -o 'insert_failed=[0-9]*'",
+    "CoreDNS metrics coredns_dns_responses_total by rcode"
+   ],
+   "fix": [
+    "Trailing dot FQDNs or dnsConfig ndots:2; NodeLocal DNSCache; autoscale CoreDNS; raise CoreDNS memory."
+   ],
+   "prevention": "DNS SLO dashboards, load test DNS before launches.",
+   "sources": [
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem-collection",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubernetes+ndots+5+dns+latency",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=ndots+conntrack+dns+timeout&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "failed calling webhook: admission webhooks block apply",
+   "area": "admission webhooks",
+   "tool": "ingress-nginx, cert-manager, MetalLB, Longhorn",
+   "level": "L2",
+   "context": "Installing manifests while the webhook pod is not ready, NetworkPolicies, leftover ValidatingWebhookConfiguration after uninstall, private clusters where the API server cannot reach the webhook port.",
+   "error_text": "Internal error occurred: failed calling webhook \"validate.nginx.ingress.kubernetes.io\": ... context deadline exceeded | failed calling webhook \"webhook.cert-manager.io\": ... x509 / TLS handshake timeout | failed calling webhook \"ipaddresspoolvalidationwebhook.metallb.io\"",
+   "frequency_signal": "ingress-nginx #5401 (307 reactions, 177 comments, top issue), cert-manager #2319 (86 comments) and #2602 (71), MetalLB #1597 (63) and #1540 (43); Jetstack GKE webhook outage on k8s.af.",
+   "root_causes": [
+    "Webhook service has no ready endpoints.",
+    "API server cannot reach the pod network (EKS/GKE private clusters: control plane security group blocks port 8443/10250/9443).",
+    "Stale webhook configuration after uninstall.",
+    "caBundle not injected yet."
+   ],
+   "diagnosis": [
+    "kubectl get validatingwebhookconfigurations,mutatingwebhookconfigurations",
+    "kubectl -n ingress-nginx get endpoints ingress-nginx-controller-admission",
+    "kubectl get --raw /readyz?verbose | tail"
+   ],
+   "fix": [
+    "Wait for/repair the webhook pods; open control-plane-to-node webhook port; delete stale webhook configs whose service no longer exists; failurePolicy Ignore only as a temporary measure."
+   ],
+   "prevention": "Install order with readiness waits (helm --wait), alerts on webhook latency (apiserver_admission_webhook_*).",
+   "sources": [
+    {
+     "title": "ingress-nginx #5401: failed calling webhook validate.nginx.ingress.kubernetes.io",
+     "url": "https://github.com/kubernetes/ingress-nginx/issues/5401",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "cert-manager #2319: context deadline exceeded relating to the webhook",
+     "url": "https://github.com/cert-manager/cert-manager/issues/2319",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "cert-manager #2602: failed calling webhook with TLS handshake timeout",
+     "url": "https://github.com/cert-manager/cert-manager/issues/2602",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metallb #1597: Webhook issues ipaddresspoolvalidationwebhook",
+     "url": "https://github.com/metallb/metallb/issues/1597",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metallb #1540",
+     "url": "https://github.com/metallb/metallb/issues/1540",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22failed+calling+webhook%22+%22context+deadline+exceeded%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Ingress returns 404: ingress class, two controllers on k3s, Traefik HelmChartConfig",
+   "area": "ingress controllers",
+   "tool": "Traefik (k3s), ingress-nginx",
+   "level": "L1",
+   "context": "k3s ships Traefik + ServiceLB; users add ingress-nginx; ingressClassName missing; Traefik customised by editing the Deployment (reverted).",
+   "error_text": "404 page not found (Traefik) or nginx 404 | svclb-ingress-nginx-controller pods Pending: 0/1 nodes are available: 1 node(s) didn't have free ports for the requested pod ports",
+   "frequency_signal": "k3s #1141 Traefik 2.0 integration (63 reactions), #817 drop traefik for nginx (55); k3s docs on HelmChartConfig.",
+   "root_causes": [
+    "No ingressClassName and no default IngressClass, or two controllers both claim it.",
+    "ServiceLB binds 80/443 on nodes for the first LoadBalancer.",
+    "Manual edits to the packaged Traefik are overwritten by the Helm controller."
+   ],
+   "diagnosis": [
+    "kubectl get ingressclass; kubectl get ingress -A",
+    "kubectl get svc -A | grep LoadBalancer",
+    "kubectl -n kube-system get pods | grep svclb"
+   ],
+   "fix": [
+    "Set ingressClassName; pick one controller (disable traefik in config.yaml or don't install ingress-nginx); customise Traefik with HelmChartConfig in /var/lib/rancher/k3s/server/manifests."
+   ],
+   "prevention": "One ingress controller per cluster unless deliberate; IngressClass default annotation.",
+   "sources": [
+    {
+     "title": "k3s #1141: Traefik 2.0 integration",
+     "url": "https://github.com/k3s-io/k3s/issues/1141",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "k3s #817: Drop traefik and go to nginx controller",
+     "url": "https://github.com/k3s-io/k3s/issues/817",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "k3s docs: Networking Services",
+     "url": "https://docs.k3s.io/networking/networking-services",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "k3s docs: Helm (HelmChartConfig)",
+     "url": "https://docs.k3s.io/helm",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=k3s+traefik+404+ingress&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "413, 504 and annotations that break ingress-nginx after an upgrade",
+   "area": "ingress-nginx behaviour",
+   "tool": "ingress-nginx, Traefik",
+   "level": "L2",
+   "context": "Uploads and long requests through the controller; controller upgrades tightening validation; retirement and migration.",
+   "error_text": "413 Request Entity Too Large | 504 Gateway Time-out | controller CrashLoop after setting proxy-busy-buffers-size | path ... cannot be used with pathType Prefix (strict-validate-path-type)",
+   "frequency_signal": "ingress-nginx #13598 proxy-busy-buffers-size keeps NGINX from starting (79 reactions), #11176 strict path validation (43), #9569 duplicated location (53), #14178 retirement (216); Kubernetes blog announced retirement Nov 2025, no fixes after March 2026.",
+   "root_causes": [
+    "Default body size 1m and timeouts 60s.",
+    "Newer versions validate annotations and paths strictly; snippets disabled by default.",
+    "Retired controller: no security fixes."
+   ],
+   "diagnosis": [
+    "kubectl -n ingress-nginx logs deploy/ingress-nginx-controller | grep -E 'emerg|error'",
+    "kubectl get ingress -A -o yaml | grep nginx.ingress"
+   ],
+   "fix": [
+    "proxy-body-size / proxy-read-timeout annotations, or Traefik middlewares; fix invalid paths; plan migration per 43 \u00a78.5."
+   ],
+   "prevention": "Annotation inventory, CI checks with curl assertions, ingress controller upgrade calendar.",
+   "sources": [
+    {
+     "title": "ingress-nginx #13598",
+     "url": "https://github.com/kubernetes/ingress-nginx/issues/13598",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "ingress-nginx #11176",
+     "url": "https://github.com/kubernetes/ingress-nginx/issues/11176",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "ingress-nginx #14178: So long, and thanks for all the fish",
+     "url": "https://github.com/kubernetes/ingress-nginx/issues/14178",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes blog: Ingress NGINX Retirement",
+     "url": "https://www.kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/",
+     "type": "blog",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=ingress-nginx+413+proxy-body-size",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "cert-manager HTTP-01 self check fails",
+   "area": "cert-manager ACME",
+   "tool": "cert-manager, ingress, NAT",
+   "level": "L2",
+   "context": "On-prem behind a router: the cluster cannot reach its own public IP (no hairpin NAT), proxy protocol on the LB, redirect or auth on the challenge path, wrong ingress class on the solver.",
+   "error_text": "Waiting for HTTP-01 challenge propagation: failed to perform self check GET request 'http://app.example.com/.well-known/acme-challenge/...': Get ...: dial tcp 203.0.113.10:80: connect: connection timed out | wrong status code '404', expected '200'",
+   "frequency_signal": "cert-manager #656 (68 comments), #2517 (86), #466 proxy_protocol (83), #1292 skip self-check (122 comments, 87 reactions).",
+   "root_causes": [
+    "Hairpin NAT missing, so pods cannot reach the public IP.",
+    "Solver ingress uses a class no controller serves \u2192 404.",
+    "Global HTTPS redirect or auth middleware on the challenge path.",
+    "Proxy protocol expected by the controller but the self-check sends plain HTTP."
+   ],
+   "diagnosis": [
+    "kubectl get challenges -A; kubectl describe challenge NAME",
+    "kubectl run c --rm -it --image=curlimages/curl -- curl -sv http://app.example.com/.well-known/acme-challenge/test"
+   ],
+   "fix": [
+    "Split-horizon DNS or CoreDNS rewrite/hosts so app.example.com resolves to the MetalLB IP internally; set solver ingressClassName; exclude the challenge path from redirects; or use DNS-01."
+   ],
+   "prevention": "Use staging issuer first; alert on certificate expiry; document NAT hairpin.",
+   "sources": [
+    {
+     "title": "cert-manager #656: http-01 self check failed",
+     "url": "https://github.com/cert-manager/cert-manager/issues/656",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "cert-manager #2517: wrong status code 404 expected 200",
+     "url": "https://github.com/cert-manager/cert-manager/issues/2517",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "cert-manager #466: proxy_protocol breaks HTTP01",
+     "url": "https://github.com/cert-manager/cert-manager/issues/466",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "cert-manager #1292: skip self-check",
+     "url": "https://github.com/cert-manager/cert-manager/issues/1292",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=cert-manager+%22failed+to+perform+self+check%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "cert-manager DNS-01 stuck: DNS record not yet propagated",
+   "area": "cert-manager DNS-01",
+   "tool": "cert-manager, Cloudflare/Route 53, split-horizon DNS",
+   "level": "L3",
+   "context": "Internal DNS server answers for example.com so the propagation check queries the wrong servers.",
+   "error_text": "Waiting for DNS-01 challenge propagation: DNS record for \"app.example.com\" not yet propagated",
+   "frequency_signal": "cert-manager #5917 (64 comments, open).",
+   "root_causes": [
+    "Self-check uses cluster DNS which returns internal zone.",
+    "API token lacks Zone:DNS:Edit.",
+    "CNAME delegation of _acme-challenge not followed."
+   ],
+   "diagnosis": [
+    "kubectl -n cert-manager logs deploy/cert-manager | grep -i propagat",
+    "dig +short TXT _acme-challenge.app.example.com @1.1.1.1"
+   ],
+   "fix": [
+    "--dns01-recursive-nameservers-only --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53; fix token scopes."
+   ],
+   "prevention": "Separate public and internal zones deliberately; monitor Certificate Ready.",
+   "sources": [
+    {
+     "title": "cert-manager #5917: Waiting for DNS-01 challenge propagation",
+     "url": "https://github.com/cert-manager/cert-manager/issues/5917",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=cert-manager+dns01+%22not+yet+propagated%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Certificate not Ready: issuer, rate limits or the secret in another namespace",
+   "area": "cert-manager",
+   "tool": "cert-manager, private CA",
+   "level": "L2",
+   "context": "Issuer vs ClusterIssuer mix-ups, Let's Encrypt rate limits from retry loops, wanting the same secret in several namespaces, internal names that need the private CA.",
+   "error_text": "Issuer not ready / issuer.cert-manager.io \"letsencrypt\" not found | 429 urn:ietf:params:acme:error:rateLimited: too many certificates already issued | secret \"app-tls\" not found in namespace shop",
+   "frequency_signal": "cert-manager #407 hits Let's Encrypt too aggressively (69 comments), #494 syncing secrets between namespaces (60).",
+   "root_causes": [
+    "Issuer is namespaced; Ingress annotation names a ClusterIssuer with the wrong key.",
+    "Repeated failed orders with production endpoint.",
+    "TLS secret must live in the Ingress namespace."
+   ],
+   "diagnosis": [
+    "kubectl get certificate,certificaterequest,order -n shop",
+    "kubectl describe certificate app-tls -n shop",
+    "kubectl get clusterissuer -o wide"
+   ],
+   "fix": [
+    "cert-manager.io/cluster-issuer annotation; staging first; one Certificate per namespace or a secret-sync tool; CA ClusterIssuer for internal names."
+   ],
+   "prevention": "Staging-first runbook; alert on certmanager_certificate_expiration_timestamp_seconds.",
+   "sources": [
+    {
+     "title": "cert-manager #407: hits Let's Encrypt too aggressively",
+     "url": "https://github.com/cert-manager/cert-manager/issues/407",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "cert-manager #494: syncing secrets between namespaces",
+     "url": "https://github.com/cert-manager/cert-manager/issues/494",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=cert-manager+certificate+not+ready+issuer",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "LoadBalancer EXTERNAL-IP stays pending",
+   "area": "load balancers",
+   "tool": "MetalLB, k3s ServiceLB, AWS Load Balancer Controller",
+   "level": "L1",
+   "context": "kubeadm on-prem has no cloud provider; EKS needs the AWS Load Balancer Controller and tagged subnets.",
+   "error_text": "EXTERNAL-IP <pending> for hours",
+   "frequency_signal": "Classic; discuss 'Addon: MetalLB' (15k views); MetalLB #5 'Do you use MetalLB' (252 comments).",
+   "root_causes": [
+    "No LB implementation on bare metal.",
+    "MetalLB installed but no IPAddressPool/L2Advertisement (CRD config since 0.13).",
+    "EKS: subnets missing kubernetes.io/role/elb tags or controller IAM."
+   ],
+   "diagnosis": [
+    "kubectl describe svc NAME | tail",
+    "kubectl -n metallb-system get ipaddresspools,l2advertisements"
+   ],
+   "fix": [
+    "Create IPAddressPool + L2Advertisement from a range excluded from DHCP; on EKS install AWS LBC and tag subnets."
+   ],
+   "prevention": "Reserve the range in IPAM/DHCP; one LB per service class.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: Addon: MetalLB",
+     "url": "https://discuss.kubernetes.io/t/addon-metallb/11790",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "metallb #5",
+     "url": "https://github.com/metallb/metallb/issues/5",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=loadbalancer+external-ip+pending+bare+metal",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "MetalLB IP assigned but unreachable",
+   "area": "MetalLB L2",
+   "tool": "MetalLB, kube-proxy IPVS",
+   "level": "L2",
+   "context": "IPVS mode without strictARP, Wi-Fi/bridged VMs, memberlist secret missing, slow failover.",
+   "error_text": "IP shows on the Service but curl times out; arping gets no reply; failover takes minutes",
+   "frequency_signal": "MetalLB #1154 no ARP (31 comments), #153 kube-proxy IPVS breaks MetalLB IPs (40), #298 L2 failover slow (44), #888 memberlist secret not created (49).",
+   "root_causes": [
+    "kube-proxy IPVS without strictARP answers ARP from every node.",
+    "Speaker not running on node with the interface; nodeSelector/taints.",
+    "Switch/hypervisor port security drops gratuitous ARP; Wi-Fi.",
+    "Memberlist secret missing so speakers can't elect."
+   ],
+   "diagnosis": [
+    "arping -I eth0 10.20.0.200",
+    "kubectl -n metallb-system logs ds/speaker | grep -i announc",
+    "kubectl -n kube-system get cm kube-proxy -o yaml | grep -E 'mode|strictARP'"
+   ],
+   "fix": [
+    "strictARP: true; allow MAC changes on hypervisor; check speaker pods everywhere; use BGP for faster failover."
+   ],
+   "prevention": "Synthetic probe from outside the cluster to each LB IP.",
+   "sources": [
+    {
+     "title": "metallb #1154: IPs assigned but no ARP",
+     "url": "https://github.com/metallb/metallb/issues/1154",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metallb #153: kube-proxy IPVS breaks MetalLB IPs",
+     "url": "https://github.com/metallb/metallb/issues/153",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metallb #298: Failover time very high in layer2",
+     "url": "https://github.com/metallb/metallb/issues/298",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metallb #888: MemberList Secret not Created",
+     "url": "https://github.com/metallb/metallb/issues/888",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/homelab search",
+     "url": "https://www.reddit.com/r/homelab/search/?q=metallb+arp+not+reachable&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "PVC Pending, or a pod pinned to a dead node's local-path volume",
+   "area": "storage provisioning",
+   "tool": "local-path-provisioner, NFS, EBS CSI",
+   "level": "L1",
+   "context": "No default StorageClass on kubeadm; WaitForFirstConsumer; local-path PV has node affinity; NFS without nfs-common.",
+   "error_text": "persistentvolumeclaim \"data\" is Pending: waiting for first consumer to be created before binding | no persistent volumes available for this claim and no storage class is set | 0/3 nodes are available: 1 node(s) had volume node affinity conflict",
+   "frequency_signal": "discuss 'Use NFS for persistent volumes' (31k views); PVC Pending is a CKA Storage staple.",
+   "root_causes": [
+    "kubeadm has no provisioner.",
+    "WaitForFirstConsumer binds only when a pod is scheduled (normal).",
+    "local-path PV lives on one node; if it dies the pod can't move.",
+    "NFS client utils missing on nodes."
+   ],
+   "diagnosis": [
+    "kubectl get sc; kubectl describe pvc data",
+    "kubectl get pv -o custom-columns=NAME:.metadata.name,NODE:.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]"
+   ],
+   "fix": [
+    "Install local-path or Longhorn/NFS provisioner and mark default; for dead node: restore from backup to a new PVC."
+   ],
+   "prevention": "Choose replicated storage for stateful apps; backups with Velero.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: Use NFS for Persistent Volumes on MicroK8s",
+     "url": "https://discuss.kubernetes.io/t/use-nfs-for-persistent-volumes-on-microk8s/19035",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=pvc+pending+%22waiting+for+first+consumer%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Longhorn volume won't attach or mount: multipathd, iSCSI, RWX, upgrades",
+   "area": "Longhorn",
+   "tool": "Longhorn, open-iscsi, nfs-common, multipathd",
+   "level": "L2",
+   "context": "Ubuntu nodes with multipathd enabled by default, missing open-iscsi or nfs-common, after upgrading Longhorn.",
+   "error_text": "MountVolume.SetUp failed for volume \"pvc-...\" : mount failed: exit status 32 ... /dev/longhorn/pvc-... is apparently in use by the system; will not make a filesystem here! | AttachVolume.Attach failed | RWX: mount.nfs: Protocol not supported",
+   "frequency_signal": "longhorn #6188 PVC mount timeout (74 comments), #5456 RWX attachment failed (76), #5183 RWX broken in 1.4.0 (133), #6857 (67), #6259 1.5.0 conversion webhook (72), #6866 manager 20GB RAM (125); Longhorn KB on multipathd.",
+   "root_causes": [
+    "multipathd claims /dev/sdX Longhorn devices.",
+    "iscsid not installed/running.",
+    "RWX needs NFSv4 client on nodes.",
+    "Upgrades skipping versions or engine upgrade stuck."
+   ],
+   "diagnosis": [
+    "systemctl is-active iscsid multipathd",
+    "kubectl -n longhorn-system get volumes.longhorn.io",
+    "lsblk; multipath -ll"
+   ],
+   "fix": [
+    "Blacklist devnode ^sd[a-z0-9]+ in /etc/multipath.conf or disable multipathd; install open-iscsi/nfs-common; follow upgrade path one minor at a time."
+   ],
+   "prevention": "Run longhornctl/environment check before install; pin chart versions; backups to S3 target.",
+   "sources": [
+    {
+     "title": "Longhorn KB: MountVolume.SetUp failed due to multipathd",
+     "url": "https://longhorn.io/kb/troubleshooting-volume-with-multipath/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Longhorn KB: Failure to attach volumes after upgrade to v1.5.x",
+     "url": "https://longhorn.io/kb/troubleshooting-volume-cannot-attach-due-to-orphan-pending-node-id-or-longhorn-ui-ad-ticket/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "longhorn #6188: PVC Mount timeout",
+     "url": "https://github.com/longhorn/longhorn/issues/6188",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "longhorn #5456: RWX volume attachment failed",
+     "url": "https://github.com/longhorn/longhorn/issues/5456",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "longhorn #6866: manager pods 20GB RAM",
+     "url": "https://github.com/longhorn/longhorn/issues/6866",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/homelab search",
+     "url": "https://www.reddit.com/r/homelab/search/?q=longhorn+multipath+mount+failed&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Multi-Attach error after a node dies",
+   "area": "RWO volumes",
+   "tool": "kube-controller-manager attach/detach, CSI",
+   "level": "L2",
+   "context": "StatefulSet or Deployment with RWO volume, node powered off without drain.",
+   "error_text": "Multi-Attach error for volume \"pvc-...\" Volume is already exclusively attached to one node and can't be attached to another",
+   "frequency_signal": "discuss Multi-Attach error thread; kubernetes #65392 AttachDetachController fails to force detach (124 comments); KodeKloud Multi-Attach Volume Errors scenario.",
+   "root_causes": [
+    "VolumeAttachment still bound to unreachable node; 6-minute force detach not happening for safety.",
+    "Deployment RollingUpdate with RWO creates new pod before old one goes."
+   ],
+   "diagnosis": [
+    "kubectl get volumeattachment | grep pvc-",
+    "kubectl get node wk-2"
+   ],
+   "fix": [
+    "Confirm node is truly off, then add taint node.kubernetes.io/out-of-service=nodeshutdown:NoExecute (non-graceful node shutdown) or delete the node; use strategy Recreate for RWO Deployments."
+   ],
+   "prevention": "Recreate strategy for RWO; graceful node shutdown config.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: Multi-Attach error for volume",
+     "url": "https://discuss.kubernetes.io/t/multi-attach-error-for-volume-pvc-volume-is-already-exclusively-attached-to-one-node-and-cant-be-attached-to-another/18951",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "kubernetes #65392: AttachDetachController fails to force detach",
+     "url": "https://github.com/kubernetes/kubernetes/issues/65392",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=%22Multi-Attach+error+for+volume%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "metrics-server not working and HPA shows unknown",
+   "area": "metrics",
+   "tool": "metrics-server, HPA",
+   "level": "L1",
+   "context": "kubeadm with self-signed kubelet serving certs; hostnames not resolvable; firewall on 10250.",
+   "error_text": "unable to fully scrape metrics ... x509: cannot validate certificate for 10.20.0.21 because it doesn't contain any IP SANs | error: Metrics API not available | HPA TARGETS <unknown>/70%",
+   "frequency_signal": "metrics-server #133 x509 (65 comments), #196 no IP SANs (44), #131 hostname resolution (73), #247 metrics not available yet (42), #1282 Metrics API not available (36).",
+   "root_causes": [
+    "Kubelet serving certs are self-signed; metrics-server verifies them.",
+    "Node hostnames not in DNS.",
+    "HPA target lacks CPU requests."
+   ],
+   "diagnosis": [
+    "kubectl -n kube-system logs deploy/metrics-server | tail",
+    "kubectl get apiservice v1beta1.metrics.k8s.io",
+    "kubectl describe hpa web"
+   ],
+   "fix": [
+    "serverTLSBootstrap: true + approve kubelet CSRs (proper fix) or --kubelet-insecure-tls (lab only); --kubelet-preferred-address-types=InternalIP; set requests."
+   ],
+   "prevention": "Approve CSRs automatically with a controller you trust; requests mandatory via LimitRange.",
+   "sources": [
+    {
+     "title": "metrics-server #133",
+     "url": "https://github.com/kubernetes-sigs/metrics-server/issues/133",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metrics-server #196",
+     "url": "https://github.com/kubernetes-sigs/metrics-server/issues/196",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metrics-server #131",
+     "url": "https://github.com/kubernetes-sigs/metrics-server/issues/131",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "metrics-server #1282",
+     "url": "https://github.com/kubernetes-sigs/metrics-server/issues/1282",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=metrics-server+%22doesn%27t+contain+any+IP+SANs%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Helm: another operation is in progress / has no deployed releases",
+   "area": "Helm release state",
+   "tool": "Helm 3/4",
+   "level": "L2",
+   "context": "Interrupted helm upgrade (CI cancelled, timeout), first install failed.",
+   "error_text": "Error: UPGRADE FAILED: another operation (install/upgrade/rollback) is in progress | Error: UPGRADE FAILED: \"web\" has no deployed releases",
+   "frequency_signal": "helm #5595 has no deployed releases (123 comments, 94 reactions), #3353 upgrade --install after failed first install (87 reactions).",
+   "root_causes": [
+    "Release stuck in pending-upgrade/pending-install because the client died.",
+    "Only failed revisions exist."
+   ],
+   "diagnosis": [
+    "helm history web -n shop",
+    "kubectl -n shop get secret -l owner=helm,name=web"
+   ],
+   "fix": [
+    "helm rollback web REV; or delete only the pending release secret; helm upgrade --install --atomic / --rollback-on-failure; uninstall and reinstall if first install failed."
+   ],
+   "prevention": "Do not cancel helm jobs; use --atomic and resource_group in CI.",
+   "sources": [
+    {
+     "title": "helm #5595: has no deployed releases",
+     "url": "https://github.com/helm/helm/issues/5595",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "helm #3353: upgrade --install if first install fails",
+     "url": "https://github.com/helm/helm/issues/3353",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=helm+%22another+operation%22+%22is+in+progress%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Helm UPGRADE FAILED: immutable fields, ownership, CRDs",
+   "area": "Helm upgrades",
+   "tool": "Helm",
+   "level": "L2",
+   "context": "Changing selectors/clusterIP, adopting existing resources, chart CRDs.",
+   "error_text": "spec.selector: Invalid value: ... field is immutable | spec.clusterIP: Invalid value: \"\": field is immutable | invalid ownership metadata; label validation error: missing key \"app.kubernetes.io/managed-by\" | no resource with the name \"x\" found",
+   "frequency_signal": "helm #7956 clusterIP immutable (97 reactions), #1193 no resource with the name (124), #3275 (105).",
+   "root_causes": [
+    "Immutable fields require delete/recreate.",
+    "Resource created outside Helm.",
+    "Helm never upgrades CRDs in crds/."
+   ],
+   "diagnosis": [
+    "helm diff upgrade (plugin) or helm template | kubectl diff -f -",
+    "kubectl get deploy web -o jsonpath='{.metadata.annotations}'"
+   ],
+   "fix": [
+    "Recreate the object deliberately; annotate meta.helm.sh/release-name/namespace + label managed-by=Helm to adopt; apply CRDs separately (server-side)."
+   ],
+   "prevention": "helm diff in CI; never change selectors in place.",
+   "sources": [
+    {
+     "title": "helm #7956: field is immutable",
+     "url": "https://github.com/helm/helm/issues/7956",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "helm #1193: no resource with the name found",
+     "url": "https://github.com/helm/helm/issues/1193",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=helm+upgrade+%22field+is+immutable%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Argo CD behind an ingress: redirect loop and CLI gRPC errors",
+   "area": "Argo CD exposure",
+   "tool": "Argo CD, ingress-nginx, Traefik",
+   "level": "L2",
+   "context": "argocd-server serves TLS itself; TLS terminated at the ingress then re-sent as HTTP \u2192 redirect loop.",
+   "error_text": "ERR_TOO_MANY_REDIRECTS | argocd login: rpc error: code = Unavailable desc = ... | 307 loops",
+   "frequency_signal": "Argo CD docs ingress page and FAQ; a staple of homelab threads.",
+   "root_causes": [
+    "Both ingress and argocd-server redirect to HTTPS.",
+    "CLI gRPC over HTTP/1 proxy."
+   ],
+   "diagnosis": [
+    "curl -sI https://argocd.example.com | head",
+    "kubectl -n argocd get cm argocd-cmd-params-cm -o yaml | grep insecure"
+   ],
+   "fix": [
+    "server.insecure: \"true\" in argocd-cmd-params-cm and terminate TLS at ingress; or ssl-passthrough; argocd login --grpc-web."
+   ],
+   "prevention": "Expose through one documented path; SSO via Dex.",
+   "sources": [
+    {
+     "title": "Argo CD docs",
+     "url": "https://argo-cd.readthedocs.io/en/stable/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Argo CD FAQ",
+     "url": "https://argo-cd.readthedocs.io/en/stable/faq/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=argocd+ingress+%22too+many+redirects%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "GitOps prune deletes more than intended",
+   "area": "GitOps safety",
+   "tool": "Argo CD, Flux, Helm templating",
+   "level": "L4",
+   "context": "App-of-apps or templated manifests where an empty variable changes namespace or name; automated prune enabled.",
+   "error_text": "Namespaces deleted across the cluster after a merge; app shows many resources pruned",
+   "frequency_signal": "k8s.af Skyscanner: a couple of characters in templating brought down the site via namespace deletion; Argo CD #11494 failed syncs block newer commits (49 reactions).",
+   "root_causes": [
+    "Automated prune + selfHeal trusts Git fully.",
+    "Namespace objects managed by apps.",
+    "No diff review gate."
+   ],
+   "diagnosis": [
+    "argocd app diff APP",
+    "argocd app history APP"
+   ],
+   "fix": [
+    "Disable auto-prune on platform apps; Prune=false / Delete=false annotations on namespaces; PR diff preview; sync windows."
+   ],
+   "prevention": "Rendered-manifest diff in MR; protect critical resources.",
+   "sources": [
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem-collection",
+     "verified": true
+    },
+    {
+     "title": "argo-cd #11494",
+     "url": "https://github.com/argoproj/argo-cd/issues/11494",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=argocd+prune+deleted+namespace&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "kubeadm upgrade: version skew, package repos and removed APIs",
+   "area": "cluster upgrades",
+   "tool": "kubeadm, kubelet, apt, pkgs.k8s.io",
+   "level": "L2",
+   "context": "Upgrading a homelab or CKA task; apt repos per minor version on pkgs.k8s.io; deprecated APIs removed; label changes.",
+   "error_text": "[ERROR CoreDNSUnsupportedPlugins] / Specified version to upgrade to \"v1.37.0\" is higher than the kubeadm version | E: Version '1.36.2-1.1' for 'kubeadm' was not found | no matches for kind \"Ingress\" in version \"extensions/v1beta1\"",
+   "frequency_signal": "Cluster upgrade is a CKA task; k8s.af Reddit Pi-Day outage (Calico + node label change during upgrade).",
+   "root_causes": [
+    "You can only upgrade one minor at a time; kubelet may lag.",
+    "pkgs.k8s.io repo is pinned per minor; legacy apt.kubernetes.io is gone.",
+    "Manifests using removed API versions.",
+    "Label/selector changes (node-role.kubernetes.io/master removed)."
+   ],
+   "diagnosis": [
+    "kubeadm upgrade plan",
+    "apt-cache madison kubeadm",
+    "kubectl get --raw /metrics | grep apiserver_requested_deprecated_apis"
+   ],
+   "fix": [
+    "Switch repo to next minor, unhold, install kubeadm X.Y, kubeadm upgrade apply, drain, upgrade kubelet/kubectl, uncordon; update manifests."
+   ],
+   "prevention": "Rehearse on a clone; check deprecated API metrics; read changelog Urgent Upgrade Notes.",
+   "sources": [
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem-collection",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubeadm+upgrade+apply+version+not+found",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Reddit r/kubernetes search",
+     "url": "https://www.reddit.com/r/kubernetes/search/?q=kubeadm+upgrade+failed&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Certificates expired after a year",
+   "area": "PKI",
+   "tool": "kubeadm, kubelet, k3s, Rancher",
+   "level": "L2",
+   "context": "Cluster not upgraded for a year; kubelet client certs; k3s renews automatically at start within 120 days; Rancher containers restarting with expired certs.",
+   "error_text": "x509: certificate has expired or is not yet valid: current time 2026-10-04T08:12:44Z is after 2026-09-30T10:02:11Z | Unable to connect to the server: x509: certificate has expired",
+   "frequency_signal": "Rancher #26984 container restarting every 12 seconds with expired certificates (81 comments); k3s docs: certs valid 365 days and auto-renewed on start when within 120 days.",
+   "root_causes": [
+    "kubeadm leaf certs are valid 1 year; upgrades renew them.",
+    "admin.conf embeds a client cert that also expires.",
+    "kubelet client cert rotation broken."
+   ],
+   "diagnosis": [
+    "sudo kubeadm certs check-expiration",
+    "sudo openssl x509 -enddate -noout -in /var/lib/kubelet/pki/kubelet-client-current.pem",
+    "k3s: sudo k3s certificate check (newer versions)"
+   ],
+   "fix": [
+    "kubeadm certs renew all; restart static pods (move manifests out and back); refresh kubeconfigs; k3s certificate rotate + restart."
+   ],
+   "prevention": "Upgrade at least yearly; alert on cert expiry (kubeadm check in cron).",
+   "sources": [
+    {
+     "title": "Rancher #26984: expired certificates",
+     "url": "https://github.com/rancher/rancher/issues/26984",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "k3s docs: certificate",
+     "url": "https://docs.k3s.io/cli/certificate",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=kubeadm+certificate+expired+%22certs+renew%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "etcd backup and restore: kubeadm and k3s",
+   "area": "etcd DR",
+   "tool": "etcdctl, etcdutl, k3s etcd-snapshot",
+   "level": "L2",
+   "context": "CKA task; restoring after a bad change; most failures are missing TLS flags or restoring to a data dir the manifest doesn't use.",
+   "error_text": "Error: context deadline exceeded (no --cacert/--cert/--key) | etcdserver: ... member has already been bootstrapped | after restore the old objects are still there",
+   "frequency_signal": "discuss 'ETCD - backup and restore management' (197k views), 'ETCD backup !ssues' (52k); k3s docs etcd-snapshot and cluster-reset.",
+   "root_causes": [
+    "etcdctl needs endpoint and certs.",
+    "Restore writes a new data dir; the static pod must point to it.",
+    "k3s needs --cluster-reset --cluster-reset-restore-path."
+   ],
+   "diagnosis": [
+    "ETCDCTL_API=3 etcdctl --endpoints=https://127.0.0.1:2379 --cacert ... snapshot save",
+    "etcdutl snapshot status FILE -w table"
+   ],
+   "fix": [
+    "etcdutl snapshot restore FILE --data-dir /var/lib/etcd-restore; edit etcd.yaml hostPath; wait for pods; k3s: systemctl stop k3s; k3s server --cluster-reset --cluster-reset-restore-path=..."
+   ],
+   "prevention": "Scheduled snapshots off-node, restore drills quarterly.",
+   "sources": [
+    {
+     "title": "discuss.kubernetes.io: ETCD - backup and restore management",
+     "url": "https://discuss.kubernetes.io/t/etcd-backup-and-restore-management/11019",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "discuss.kubernetes.io: ETCD backup !ssues",
+     "url": "https://discuss.kubernetes.io/t/etcd-backup-ssues/8304",
+     "type": "forum",
+     "verified": true
+    },
+    {
+     "title": "k3s docs: etcd-snapshot",
+     "url": "https://docs.k3s.io/cli/etcd-snapshot",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=etcdctl+snapshot+restore+kubeadm",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "etcd slow, out of space, or lost quorum",
+   "area": "etcd operations",
+   "tool": "etcd, k3s embedded etcd, RKE2",
+   "level": "L3",
+   "context": "HDD/SD card or busy shared storage; NOSPACE alarm at 2 GiB default quota; 2 of 3 servers down.",
+   "error_text": "etcdserver: mvcc: database space exceeded | apply request took too long | etcdserver: request timed out | k3s: failed to get etcd status ... context deadline exceeded / etcd cluster has no leader",
+   "frequency_signal": "Monzo etcd incidents on k8s.af; k3s HA epic #42.",
+   "root_causes": [
+    "fsync latency too high (wal_fsync_duration).",
+    "History not compacted/defragmented \u2192 quota hit.",
+    "Even member counts and losing majority."
+   ],
+   "diagnosis": [
+    "etcdctl endpoint status -w table",
+    "etcdctl alarm list",
+    "Prometheus etcd_disk_wal_fsync_duration_seconds"
+   ],
+   "fix": [
+    "Compact + defrag + alarm disarm; move etcd to SSD; restore quorum from snapshot with cluster-reset on one server then rejoin others."
+   ],
+   "prevention": "SSD for etcd, 3 or 5 members, fsync alerts, defrag schedule.",
+   "sources": [
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem-collection",
+     "verified": true
+    },
+    {
+     "title": "k3s #42: EPIC Support HA",
+     "url": "https://github.com/k3s-io/k3s/issues/42",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=etcd+%22database+space+exceeded%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "Rancher cluster agent can't reach Rancher",
+   "area": "Rancher",
+   "tool": "Rancher, cattle-cluster-agent",
+   "level": "L3",
+   "context": "Imported/downstream clusters where pods can't resolve or trust the Rancher server URL; private CA.",
+   "error_text": "ERROR: https://rancher.example.com/ping is not accessible (Could not resolve host: rancher.example.com) | x509: certificate signed by unknown authority | cluster stuck Unavailable",
+   "frequency_signal": "rancher #16454 cattle cluster agent could not resolve host (139 comments, 56 reactions); #38816 high CPU on 1.24.4 (112).",
+   "root_causes": [
+    "Cluster DNS can't resolve internal Rancher hostname.",
+    "Private CA not passed (agent-tls-mode / cacerts).",
+    "Proxy env missing."
+   ],
+   "diagnosis": [
+    "kubectl -n cattle-system logs deploy/cattle-cluster-agent | tail",
+    "kubectl run t --rm -it --image=curlimages/curl -- curl -sv https://rancher.example.com/ping"
+   ],
+   "fix": [
+    "Fix DNS (CoreDNS hosts/forward to internal DNS); provide CA checksum/cacerts setting; set proxy env."
+   ],
+   "prevention": "Rancher URL resolvable from every network; monitor agent connection.",
+   "sources": [
+    {
+     "title": "rancher #16454: Cattle Cluster Agent Could not Resolve Host",
+     "url": "https://github.com/rancher/rancher/issues/16454",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "rancher #38816: high CPU usage",
+     "url": "https://github.com/rancher/rancher/issues/38816",
+     "type": "github-issue",
+     "verified": true
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=cattle-cluster-agent+%22could+not+resolve+host%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "EKS: nodes don't join or kubectl says Unauthorized",
+   "area": "EKS access",
+   "tool": "EKS, IAM, aws-auth, access entries",
+   "level": "L2",
+   "context": "New node group role not mapped; human IAM role not granted cluster access; cluster creator lost.",
+   "error_text": "error: You must be logged in to the server (Unauthorized) | nodes never appear, NodeCreationFailure: Instances failed to join the kubernetes cluster",
+   "frequency_signal": "Classic EKS questions; differs from on-prem kubeconfig/cert model.",
+   "root_causes": [
+    "IAM principal not mapped (aws-auth ConfigMap or access entries).",
+    "Node role missing policies or private subnets without endpoints/NAT.",
+    "Wrong AWS profile."
+   ],
+   "diagnosis": [
+    "aws sts get-caller-identity",
+    "aws eks list-access-entries --cluster-name CLUSTER",
+    "kubectl -n kube-system get cm aws-auth -o yaml"
+   ],
+   "fix": [
+    "aws eks create-access-entry + associate-access-policy; fix node role policies and subnet routes."
+   ],
+   "prevention": "Manage access entries in Terraform; break-glass role.",
+   "sources": [
+    {
+     "title": "AWS EKS docs",
+     "url": "https://docs.aws.amazon.com/eks/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/aws search",
+     "url": "https://www.reddit.com/r/aws/search/?q=eks+unauthorized+access+entry&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    },
+    {
+     "title": "Stack Overflow search",
+     "url": "https://stackoverflow.com/search?q=eks+%22You+must+be+logged+in+to+the+server%22",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  },
+  {
+   "title": "EKS: pods stuck ContainerCreating, no free IPs",
+   "area": "EKS VPC CNI",
+   "tool": "amazon-vpc-cni-k8s",
+   "level": "L3",
+   "context": "Small subnets, many pods per node; VPC CNI assigns real VPC IPs.",
+   "error_text": "failed to assign an IP address to container | Too many pods / pods limited by ENI max-pods",
+   "frequency_signal": "Classic EKS scaling issue (k8s.af lists AWS CNI stories).",
+   "root_causes": [
+    "Subnet IPs exhausted; ENI/IP limits per instance type.",
+    "WARM_IP_TARGET settings."
+   ],
+   "diagnosis": [
+    "kubectl -n kube-system logs ds/aws-node | grep -i 'assign'",
+    "aws ec2 describe-subnets --query 'Subnets[].AvailableIpAddressCount'"
+   ],
+   "fix": [
+    "Prefix delegation (ENABLE_PREFIX_DELEGATION=true), larger or secondary CIDR subnets, right-size max-pods."
+   ],
+   "prevention": "Plan pod IP capacity per subnet; alert on available IPs.",
+   "sources": [
+    {
+     "title": "AWS EKS docs",
+     "url": "https://docs.aws.amazon.com/eks/",
+     "type": "docs",
+     "verified": true
+    },
+    {
+     "title": "Kubernetes Failure Stories (k8s.af)",
+     "url": "https://k8s.af/",
+     "type": "postmortem-collection",
+     "verified": true
+    },
+    {
+     "title": "Reddit r/aws search",
+     "url": "https://www.reddit.com/r/aws/search/?q=eks+%22failed+to+assign+an+IP+address%22&restrict_sr=1",
+     "type": "search",
+     "verified": false
+    }
+   ]
+  }
+ ],
+ "tool_notes": [
+  {
+   "tool": "kubeadm",
+   "what": "Upstream bootstrapper for conformant clusters; static pods for control plane; certs valid 1 year; upgrade one minor at a time via pkgs.k8s.io per-minor repos.",
+   "docs": "https://kubernetes.io/docs/"
+  },
+  {
+   "tool": "k3s",
+   "what": "Single-binary distribution with embedded containerd, Flannel, CoreDNS, Traefik, ServiceLB (klipper-lb), local-path-provisioner, kube-router netpol; kubeconfig /etc/rancher/k3s/k3s.yaml; registries.yaml for registries; HelmChartConfig for packaged charts; certs 365 days auto-renewed at start within 120 days; etcd-snapshot + cluster-reset for restore.",
+   "docs": "https://docs.k3s.io/"
+  },
+  {
+   "tool": "RKE2",
+   "what": "Rancher's hardened distribution; kubeconfig /etc/rancher/rke2/rke2.yaml; ships ingress-nginx historically and Canal; same snapshot/cluster-reset model as k3s.",
+   "docs": "https://docs.rke2.io/"
+  },
+  {
+   "tool": "containerd/crictl",
+   "what": "CRI runtime; containerd 2.x uses config version 3; registry config in certs.d/hosts.toml; images in namespace k8s.io; crictl talks CRI, ctr talks containerd directly.",
+   "docs": "https://kubernetes.io/docs/setup/production-environment/container-runtimes/"
+  },
+  {
+   "tool": "ingress-nginx",
+   "what": "Retired by Kubernetes SIG Network (announced Nov 2025, no releases or security fixes after March 2026); migrate to Gateway API or another controller (Traefik has an nginx-annotation compatibility provider).",
+   "docs": "https://www.kubernetes.io/blog/2025/11/11/ingress-nginx-retirement/"
+  },
+  {
+   "tool": "cert-manager",
+   "what": "Issuers/ClusterIssuers, Certificates, ACME HTTP-01/DNS-01, CA issuer for private PKI; webhook must be reachable from the API server.",
+   "docs": "https://cert-manager.io/docs/"
+  },
+  {
+   "tool": "MetalLB",
+   "what": "Bare-metal LoadBalancer; CRD config (IPAddressPool, L2Advertisement, BGPAdvertisement); needs strictARP with IPVS.",
+   "docs": "https://metallb.io/"
+  },
+  {
+   "tool": "Longhorn",
+   "what": "Replicated block storage via iSCSI; RWX via NFSv4 share-manager; needs open-iscsi, nfs-common; multipathd must not claim its devices.",
+   "docs": "https://longhorn.io/docs/"
+  },
+  {
+   "tool": "metrics-server",
+   "what": "Resource metrics API for kubectl top and HPA; scrapes kubelet 10250 with TLS.",
+   "docs": "https://github.com/kubernetes-sigs/metrics-server"
+  },
+  {
+   "tool": "Helm",
+   "what": "Release state in secrets (owner=helm); CRDs in crds/ installed once never upgraded; --atomic/--rollback-on-failure.",
+   "docs": "https://helm.sh/docs/"
+  }
+ ],
+ "learning_signals": [
+  "Most-viewed Kubernetes forum topics are about access (localhost:8080, 6443 refused) and etcd backup/restore, i.e. CKA-domain basics break most often.",
+  "Top GitHub issues for add-ons (ingress-nginx, cert-manager, MetalLB, Longhorn) are about webhooks, networking reachability and node prerequisites rather than the add-on logic itself.",
+  "Postmortems on k8s.af repeat DNS (ndots, conntrack, CoreDNS sizing), admission webhooks, CPU limits and upgrades: senior engineers rehearse upgrades and DNS capacity.",
+  "Practitioners learn by building kubeadm clusters repeatedly, breaking them deliberately (KodeKloud CKA labs, Killercoda, killer.sh) and reading GitHub issues of the add-ons they run."
+ ],
+ "research_log": [
+  "discuss.kubernetes.io/top.json?period=all: localhost:8080 refused 842k views; <host>:6443 refused 592k; etcd backup and restore management 197k (t/11019); API group list 160k; kubectl error api group list 139k (t/24707); how to shut down and restart clusters 110k (t/5395); restart all deployments 104k; Pods no internet access 60k (t/5252); ETCD backup issues 52k (t/8304); cannot access pod services from another pod 40k (t/11944); CoreDNS [ERROR] plugin/errors: 2 38k (t/16106); kubeadm init fails 33k (t/16888); not able to join node 31k (t/7123); kubeadm init failed api server not healthy 14k (t/28097)",
+  "k3s issues by reactions: #1141 Traefik 2.0 integration (63), #817 drop traefik for nginx (55), #1126 helm cluster unreachable (46), #294 high load average (45, 71 comments), #1541 k3s kubectl prefers /etc/rancher/k3s/k3s.yaml over ~/.kube/config (41), #145 insecure registry support (33), #1880 switch default CNI to Calico (31), #1606 CoreDNS replica count (26); recent: #14717 get.k3s.io endpoint down (22 reactions), #14729 DiskPressure latches after recovery",
+  "ingress-nginx by reactions: #5401 failed calling webhook validate.nginx.ingress.kubernetes.io (307 reactions, 177 comments), #14178 'So long, and thanks for all the fish' retirement (216), #13598 proxy-busy-buffers-size keeps NGINX from starting (79), #9569 4.4.3 duplicated location block (53), #11176 strict-validate-path-type disallows dot in path (43), #5970 X-Forwarded-For (37), #17 bare-metal docs (58)",
+  "cert-manager by comments: #1292 skip self-check (122 comments), #2319 webhook context deadline exceeded (86), #2517 http-01 propagation wrong status 404 expected 200 (86), #466 proxy_protocol breaks HTTP01 self check (83), #2602 webhook TLS handshake timeout (71), #407 hits LE too aggressively (69), #656 http-01 self check failed (68), #5917 DNS-01 propagation not yet propagated (64), #494 syncing secrets between namespaces (60)",
+  "metallb by comments: #1597 and #1540 failed calling webhook ipaddresspoolvalidationwebhook.metallb.io (63/43), #888 memberlist secret not created (49), #298 L2 failover slow (44), #153 kube-proxy IPVS breaks MetalLB IPs (40), #1154 IPs assigned but no ARP (31), #114 BGP peering with Calico (80)",
+  "longhorn bugs by comments: #5183 RWX broken in 1.4.0 (133), #6866 manager pods 20GB RAM in 1.5.1 (125), #5456 RWX attachment failed (76), #6188 PVC mount timeout (74), #6259 1.5.0 upgrade conversion webhook fails (72), #4998 instance managers restart randomly (67), #6857 RWX fails to mount on first pod (67)",
+  "argo-cd bugs by reactions: #11143 STS volumeClaimTemplates diff with ServerSideApply (90), #7723 SSH host key mismatch github (86), #5991 SealedSecret stuck Progressing (77), #14607 Ingress Progressing without LB IP (57), #9678 ignoreDifferences with RespectIgnoreDifferences (56), #6880 hook never succeeds (56, 137 comments), #11494 failed sync blocks newer commits (49)",
+  "helm by reactions: #5595 has no deployed releases (94, 123 comments), #1193 UPGRADE FAILED no resource with the name (124), #3275 (105), #7956 spec.clusterIP field is immutable (97), #3353 upgrade --install doesn't if first install fails (87), #31434 get.helm.sh down (310)",
+  "metrics-server by comments: #131 hostname resolution of kubelet / apiserver can't reach metrics-server ClusterIP (73), #133 x509 certificate signed by unknown authority (65), #196 doesn't contain any IP SANs (44), #247 metrics not available yet (42), #1282 Metrics API not available (36), #212 401 Unauthorized (37), #990 403 Forbidden (34), #782 bind permission denied (40)",
+  "kubernetes/kubernetes by comments: #45419 node flapping Ready/NotReady PLEG (249), #51835 pods stuck terminating (191, 151 reactions), #60807 namespace stuck Terminating (180, 119), #89898 probes fail with timeout (166), #87615 kubelet won't reconnect after NIC failure (163), #60987 orphaned pod volume paths (138), #105204 sporadic MountVolume.SetUp failed (135), #74551 port-forward broken pipe (110)",
+  "k8s.af: Zalando DNS outage (CoreDNS OOM, ndots:5), Preply DNS postmortem (conntrack, CoreDNS autoscaler), Toyota Connected DNS storm (ndots:5, musl), Jetstack GKE webhook outage, Skyscanner GitOps templating deleted namespaces, Reddit Pi-Day outage (Calico upgrade, node labels), Buffer/Omio CPU limits throttling, loveholidays conntrack"
+ ]
+}
