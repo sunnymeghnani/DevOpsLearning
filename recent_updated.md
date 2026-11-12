@@ -869,3 +869,16 @@ Independent QA of the 12 new rooms (Junior 13–18, Mid 19–24) on the new lab 
   - the LastTagTime documentation was wrong.
 - **DOCKER.md:** new section "Automatic cleanup". It also explains why `CREATED` shows the publisher's build date, and that Docker keeps no reliable pull date.
 - **Tests:** tests/test_janitor.py added; 174 unit tests pass in total.
+
+## 31. Published on GitHub Pages (12 November 2026)
+
+- **Repo:** https://github.com/sunnymeghnani/DevOpsLearning (public). This folder is now its git working copy.
+- **Commit 9e9c290:** pushed as a normal fast-forward on top of the user's own upload, 7dc48d6. That upload was the claude.ai-wrapped copy; it is now replaced by the standalone index.html, which has the same content.
+- **Site:** https://sunnymeghnani.github.io/DevOpsLearning/. The path is case-sensitive.
+- **Checked in the browser:** the home page loads with no console errors, and the Labs page shows the read-only notice.
+- **`.nojekyll`** keeps GitHub Pages from running Jekyll, which would choke on the `{{ }}` in the modules.
+- **`.gitignore`** keeps out session files, backups and staging, plus decoder-briefs (local paths) and the owner's raw incident notes.
+- **Privacy:**
+  - The home path in PROJECT-SUMMARY.md was replaced.
+  - Commits use the GitHub noreply email.
+  - A staged-file scan found no personal data or secrets.
