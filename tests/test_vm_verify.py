@@ -305,6 +305,50 @@ class RunnerImage(unittest.TestCase):
         self.assertIn("| `restart` | 1 | no package for restart |", md)
         self.assertIn("| `stop` | 1 | no package for stop |", md)
 
+    # A real-format join token, assembled at run time so that no token-shaped literal sits in this public file.
+    FAKE_SWARM_TOKEN = "SWMTKN-1-" + "a1" * 25 + "-" + "b2" * 12 + "c"
+
+    def test_scrub_masks_swarm_join_tokens(self):
+        X = vmctl()
+        out = X.scrub(f"    docker swarm join --token {self.FAKE_SWARM_TOKEN} 192.168.56.11:2377\n")
+        self.assertEqual(out, "    docker swarm join --token SWMTKN-1-REDACTED 192.168.56.11:2377\n")
+
+    def test_scrub_masks_a_token_cut_short_by_the_excerpt_limit(self):
+        X = vmctl()
+        cut = self.FAKE_SWARM_TOKEN[:-20]                      # the JSON keeps only the first 300 characters
+        self.assertEqual(X.scrub(f"--token {cut} [...]"), "--token SWMTKN-1-REDACTED [...]")
+        self.assertEqual(X.scrub(f"--token {cut[:30]} [...]"), "--token SWMTKN-1-REDACTED [...]")
+
+    def test_scrub_keeps_the_handbooks_placeholder_tokens(self):
+        X = vmctl()
+        for text in ("docker swarm join --token SWMTKN-1-TOKEN 192.168.56.11:2377",
+                     "--token SWMTKN-1-WORKERTOKEN 10.10.0.10:2377",
+                     "--token SWMTKN-WORKER-TOKEN 10.0.0.11:2377",
+                     "`docker swarm join --token SWMTKN-1-… 192.168.56.11:2377`"):
+            self.assertEqual(X.scrub(text), text)
+
+    def test_report_files_carry_no_swarm_join_token(self):
+        import tempfile
+        X = vmctl()
+        printed = f"Swarm initialized.\n\n    docker swarm join --token {self.FAKE_SWARM_TOKEN} 10.0.2.15:2377\n"
+        stmts = [{"id": 1, "module": "44-x.md", "line": 9, "heading": "h", "block": "44-x.md#0",
+                  "text": "docker swarm init", "skip": None, "cls": "PASS", "detail": "", "rc": 0, "out": printed,
+                  "err": ""},
+                 {"id": 2, "module": "44-x.md", "line": 10, "heading": "h", "block": "44-x.md#0",
+                  "text": "docker swarm join-token --bogus", "skip": None, "cls": "USAGE", "detail": "unknown flag",
+                  "rc": 125, "out": "", "err": printed}]
+        old = X.REPORTS
+        with tempfile.TemporaryDirectory() as d:
+            X.REPORTS = Path(d)
+            try:
+                path = X.write_report({"Date": "2026-01-02 03:04"}, stmts, [], partial=True)
+            finally:
+                X.REPORTS = old
+            md, js = path.read_text(), path.with_suffix(".json").read_text()
+        for name, text in (("md", md), ("json", js)):
+            self.assertNotIn(self.FAKE_SWARM_TOKEN, text, name)
+            self.assertIn("SWMTKN-1-REDACTED", text, name)
+
     def test_guest_runner_hint_pattern(self):
         spec = importlib.util.spec_from_file_location("guest_runner", VMDIR / "guest_runner.py")
         G = importlib.util.module_from_spec(spec)

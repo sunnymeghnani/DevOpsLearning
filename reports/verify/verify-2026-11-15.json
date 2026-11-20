@@ -137355,7 +137355,7 @@
    "detail": "",
    "rc": 0,
    "dur": 0.629,
-   "out": "Swarm initialized: current node (nieyea9pu2b28nfxhhg0v5ry3) is now a manager.\n\nTo add a worker to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-0mp4q76gxkfqwwc3tt7p2g3x35a3d7xltmjlwa928f3kncqsrp-4dmow1wt8515d5tdkplc8jqu4 192.168.56.11:2377\n\nTo add a manager to this s [...]",
+   "out": "Swarm initialized: current node (nieyea9pu2b28nfxhhg0v5ry3) is now a manager.\n\nTo add a worker to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-REDACTED 192.168.56.11:2377\n\nTo add a manager to this s [...]",
    "err": "",
    "note": ""
   },
@@ -137371,7 +137371,7 @@
    "detail": "",
    "rc": 0,
    "dur": 0.016,
-   "out": "To add a manager to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-0mp4q76gxkfqwwc3tt7p2g3x35a3d7xltmjlwa928f3kncqsrp-a8j6u1h5ml0k2jedq4s7of8cc 192.168.56.11:2377\n\n",
+   "out": "To add a manager to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-REDACTED 192.168.56.11:2377\n\n",
    "err": "",
    "note": ""
   },
@@ -147411,7 +147411,7 @@
    "detail": "",
    "rc": 0,
    "dur": 0.623,
-   "out": "Swarm initialized: current node (k1s8g67ls8pnlv0uoooi1h8f3) is now a manager.\n\nTo add a worker to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-48kjg3qozldiqkycodap9yomg6mdrwqog5gi2va13lewgdrf51-27qw1jolntxib1aicncqd1toa 10.0.2.15:2377\n\nTo add a manager to this swarm [...]",
+   "out": "Swarm initialized: current node (k1s8g67ls8pnlv0uoooi1h8f3) is now a manager.\n\nTo add a worker to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-REDACTED 10.0.2.15:2377\n\nTo add a manager to this swarm [...]",
    "err": "",
    "note": ""
   },
@@ -156294,7 +156294,7 @@
    "detail": "",
    "rc": 0,
    "dur": 0.624,
-   "out": "Swarm initialized: current node (lhje9uob5z6aztyu4bv1tiz8k) is now a manager.\n\nTo add a worker to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-0uvd8op6yylkqccpt06nhp8pprodkq9vrfbj5yiwn3y9rmumio-8y56yu5vox6v152tua3m3gru8 10.10.0.10:2377\n\nTo add a manager to this swar [...]",
+   "out": "Swarm initialized: current node (lhje9uob5z6aztyu4bv1tiz8k) is now a manager.\n\nTo add a worker to this swarm, run the following command:\n\n    docker swarm join --token SWMTKN-1-REDACTED 10.10.0.10:2377\n\nTo add a manager to this swar [...]",
    "err": "",
    "note": ""
   },

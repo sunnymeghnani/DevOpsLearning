@@ -26,6 +26,8 @@ secret_pats = {
     "gitlab_token": r"\bglpat-[A-Za-z0-9_\-]{20,}\b",
     "slack_token": r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b",
     "jwt": r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+    # a printed Docker Swarm join token; the handbook's stand-ins (SWMTKN-1-TOKEN, SWMTKN-1-…) are upper case
+    "swarm_join_token": r"SWMTKN-1-[0-9a-z]{8,}",
 }
 for name, pat in secret_pats.items():
     for m in re.finditer(pat, h):

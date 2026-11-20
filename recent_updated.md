@@ -904,3 +904,14 @@ Independent QA of the 12 new rooms (Junior 13–18, Mid 19–24) on the new lab 
   - Content fixes from the VM report (14 modules).
   - The VM re-run of the changed modules is still to do. See `PROGRESS-CHECKPOINT.md`.
 - **Tests:** 221 pass.
+
+## 33. Swarm join tokens masked in the verify reports (20 November 2026)
+
+- **What happened:** GitHub secret scanning flagged four Docker Swarm join tokens in `reports/verify/verify-2026-11-15.json`.
+- **Why they are harmless:** the verify VM printed them when it ran the handbook's `docker swarm init` and `docker swarm join-token` lines. That VM was offline and its disks were deleted after the run, so the swarms no longer exist. Nothing needs rotating.
+- **Fix:**
+  - `scrub()` in `labs/vm/vmctl.py` now replaces any printed join token with `SWMTKN-1-REDACTED` in every report and kept log. The handbook's own stand-ins (`SWMTKN-1-TOKEN`, `SWMTKN-1-…`) stay as written.
+  - The four tokens in the 15 November report are masked the same way.
+  - `research/prepublish_scan.py` flags a real-format join token.
+- **Not changed:** the tokens remain in the history of commit `f215db3`. They are dead, and this repo is never force-pushed.
+- **Tests:** four new tests in `tests/test_vm_verify.py`.

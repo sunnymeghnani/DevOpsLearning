@@ -665,10 +665,16 @@ def rooms_pass(run_dir, filter_nums, host_dir, keep_going, out):
 
 
 # --------------------------------------------------------------------------- report
+# A join token that `docker swarm init` / `join-token` printed in the guest (whole, or cut short by an excerpt
+# limit). The handbook's own stand-ins (SWMTKN-1-TOKEN, SWMTKN-1-…) are upper case and stay as written.
+SWARM_TOKEN = re.compile(r"SWMTKN-1-[0-9a-z]{8,}(?:-[0-9a-z]+)?")
+
+
 def scrub(text: str) -> str:
-    """Never let the host's home path or user name into a report or a kept log."""
+    """Never let the host's home path or user name, or a secret the guest printed, into a report or a kept log."""
     if not text:
         return text
+    text = SWARM_TOKEN.sub("SWMTKN-1-REDACTED", text)
     home = str(Path.home())
     text = text.replace(home, "~")
     try:
