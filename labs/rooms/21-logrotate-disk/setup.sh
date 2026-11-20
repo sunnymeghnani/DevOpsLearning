@@ -67,6 +67,7 @@ systemctl start logrotate.service >/dev/null 2>&1 || true
 systemctl disable --now logrotate.timer >/dev/null 2>&1
 
 # journal: persistent, with a far too generous limit from a debugging session
+mkdir -p /etc/systemd/journald.conf.d   # not on every Ubuntu (the lab image has it)
 find /etc/systemd/journald.conf.d -maxdepth 1 -name '[6-9]*.conf' -delete
 cat > /etc/systemd/journald.conf.d/50-orders-debug.conf <<'CONF'
 # OPS-1187 debugging (2026-10-12): keep everything across reboots

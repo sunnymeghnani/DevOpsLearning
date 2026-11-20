@@ -12,7 +12,8 @@ Docker Engine API over /var/run/docker.sock), or by hand on the host:
 What counts as "ours" (anything else on the machine is never selected):
   * containers: label devlab=1 (lab machines) only. They are removed when the labs controller is not running
     (a crash left them behind) or when they outlive the lab lifetime limit plus an hour (safety net).
-  * images: label devops-handbook.project or devops-handbook.labs (set by our Dockerfiles), or the labels
+  * images: label devops-handbook.project or devops-handbook.labs (set by our Dockerfiles, including the verify VM
+    runner labs/vm/Dockerfile, devops-handbook.project="vm"), or the labels
     Compose put on images it built for this compose project's own services. Untagged (superseded) builds
     go at once; the tagged lab images go after IMAGE_KEEP_DAYS without labs use. The running handbook image
     and this janitor's image are never removed, and nothing is ever force-removed: an image any
@@ -68,7 +69,7 @@ GRACE_S = 10 * 60          # never touch anything younger than this (a build or 
 # `WORKDIR /src` between Dockerfiles and keeps whichever description came first. The export stage is
 # FROM scratch (no shell), so its one COPY is matched by its source stage name.
 CACHE_MARKS = re.compile(
-    r"^mount / from exec /bin/sh -c : (?:devops-handbook-(?:build|serve|janitor)|devlab-(?:base|controller))\s*$"
+    r"^mount / from exec /bin/sh -c : (?:devops-handbook-(?:build|serve|janitor|vm)|devlab-(?:base|controller))\s*$"
     r"|^\[[^\]]*\] COPY --from=handbook-build /src/index\.html /src/artifact\.html /$")
 LAB_ROOTS = re.compile(r"^mount / from exec /bin/sh -c : devlab-(?:base|controller)\s*$")
 TICK_S = 5 * 60            # how often the service looks for running labs between passes

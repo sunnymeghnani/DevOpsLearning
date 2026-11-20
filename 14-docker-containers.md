@@ -74,7 +74,10 @@ docker export c1 | tar tv | less           # full filesystem listing of a contai
 ```
 Distroless/minimal image with no shell:
 ```bash
-docker debug c1                            # (newer docker) attach a debug toolbox
+docker debug c1                            # Docker Desktop only (a paid-plan feature): not in Docker Engine
+                                           #   or Ubuntu's docker.io. Anywhere else, a toolbox that shares
+                                           #   c1's processes and network:
+docker run --rm -it --pid container:c1 --network container:c1 nicolaka/netshoot
 # or nsenter from the host:
 PID=$(docker inspect -f '{{.State.Pid}}' c1)
 nsenter -t $PID -n ss -tlnp                # run HOST tools inside container's netns ★

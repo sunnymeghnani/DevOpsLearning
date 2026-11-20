@@ -45,6 +45,8 @@ from labs_site import LABS_FILE, LABS_CSS, LABS_SCRIPT, labs_markdown, room_coun
 from drills_site import DRILLS_FILE, DRILLS_CSS, DRILLS_SCRIPT, drills_markdown, drill_count
 from prove_site import PROVE_CSS, module_topics, strip_html, topic_ladders
 from backnav_site import BACKNAV_CSS, BACKNAV_HTML, BACKNAV_SCRIPT
+from focus_site import FOCUS_CSS, FOCUS_SCRIPT
+from keycmd_site import KEYCMD_CSS, annotate as annotate_key_commands
 from page_slim import EXTERNAL_LINKS_JS, compact_html, minify_css, minify_js
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -504,6 +506,7 @@ def process_roadmap(path, by_file, warn):
                 n.setdefault("links", []).append({
                     "type": "read", "label": f"Sources & verification: {domain}",
                     "file": "56-sources-and-verification.md", "heading": SOURCE_HEADINGS[domain],
+                    "area": 1,   # area-wide: focus_site.py keeps it out of the topic's reading sequence
                 })
         if n.get("level") not in level_ids:
             warn(f"roadmap node '{nid}': level {n.get('level')!r} is not defined in 'levels'")
@@ -1338,7 +1341,12 @@ __EXTERNAL_LINKS_JS__
   function measure() {
     const sy = window.scrollY;
     readOffset = topbar.getBoundingClientRect().bottom + 24;
-    secTops = sections.map(s => s.getBoundingClientRect().top + sy);
+    /* a module focused reading hides (data-fx-off, focus_site.py) takes the next shown module's top; the first shown one
+       starts at -Infinity, so the binary search below never lands on a hidden module */
+    const tops = sections.map(s => (s.hasAttribute("data-fx-off") ? null : s.getBoundingClientRect().top + sy));
+    for (let i = tops.length - 1, nx = Infinity; i >= 0; i--) { if (tops[i] == null) tops[i] = nx; else nx = tops[i]; }
+    for (let i = 0; i < tops.length && (i === 0 || sections[i - 1].hasAttribute("data-fx-off")); i++) tops[i] = -Infinity;
+    secTops = tops;
     headCache.clear();
     dirty = false;
   }
@@ -1346,7 +1354,7 @@ __EXTERNAL_LINKS_JS__
     let c = headCache.get(i);
     if (!c) {
       const sy = window.scrollY;
-      const els = Array.prototype.filter.call(sections[i].querySelectorAll("h2[id], h3[id]"), h => linkById.has(h.id) && !envHidden(h) && !h.closest('[hidden]'));
+      const els = Array.prototype.filter.call(sections[i].querySelectorAll("h2[id], h3[id]"), h => linkById.has(h.id) && !envHidden(h) && !h.closest('[hidden],[data-fx-off]'));
       c = { els, tops: els.map(h => h.getBoundingClientRect().top + sy) };
       headCache.set(i, c);
     }
@@ -1536,6 +1544,7 @@ __EXTERNAL_LINKS_JS__
   }
   function go(d) {
     const B = window.__backnav, from = B && B.here();   // where the reader was, before the env switch moves it
+    if (window.__focus) window.__focus.exit();          // search is reference reading: no focus, no locks
     if (envHidden(d.el)) setEnv("both");
     hideResults();
     if (isDrawer()) input.blur();
@@ -2619,12 +2628,30 @@ __EXTERNAL_LINKS_JS__
     return h("li", null, h("span", { class: "ts-sym" }, s.slice(0, m.index)), h("span", { class: "ts-arrow", "aria-hidden": "true" }, "→"),
       h("code", null, s.slice(m.index + m[0].length)));
   }
-  function cmdRow(c) {
+  /* key commands explained (keycmd_site.py): x = [what it does, safety, "card ids"]. Decode links are plain
+     "#cmd-…" links: in the panel they go through jumpTo (Back reopens the topic); on focus_site.py's end card,
+     in #main, the page's own link handling leaves focused reading and Back returns to it */
+  const KC = { ro: ["read-only", "Only reads or prints: it changes nothing on the system"],
+    load: ["adds load", "Only reads, but loads the network or disk while it runs: not at peak time"],
+    ch: ["changes state", "Changes files, settings or running services"],
+    dg: ["dangerous", "Can stop a service, destroy resources or lock people out if aimed at the wrong thing"] };
+  function cmdRow(c, x) {
     const b = h("button", { type: "button", class: "mp-copy", "aria-label": "Copy command" }, "copy");
     const code = h("code", null, String(c));
     b.addEventListener("click", () => copyText(String(c), code, b));
-    return h("div", { class: "mp-cmd" }, code, b);
+    const row = h("div", { class: "mp-cmd" }, code, b);
+    if (!x) return row;
+    const k = KC[x[1]] || KC.ch;
+    const dec = String(x[2] || "").split(" ").filter(Boolean).map((id, i) => {
+      const card = document.getElementById("cmd-" + id), hd = card && card.querySelector("h3");
+      const name = hd ? hd.textContent.split(" — ")[0] : id;
+      return h("a", { href: "#cmd-" + id, class: "kc-d", title: "Command Decoder: " + (hd ? hd.textContent : name),
+        onclick: e => { if (panel.contains(e.currentTarget)) { e.preventDefault(); jumpTo("cmd-" + id); } } }, i ? name + " ›" : "Decode ›");
+    });
+    return h("div", { class: "kc" }, row, h("div", { class: "kc-meta" }, String(x[0]),
+      h("span", { class: "kc-b kc-" + x[1], title: k[1] }, k[0]), ...dec));
   }
+  function cmdList(n) { return h("div", { class: "mp-cmds" }, arr(n.commands).map((c, i) => cmdRow(c, arr(n.cmdx)[i]))); }
   const isHttp = u => /^https?:\/\//i.test(String(u || ""));
   function studyItem(it) {
     if (!it || typeof it !== "object") return h("li", null, h("span", { class: "si-body" }, String(it)));
@@ -2780,7 +2807,7 @@ __EXTERNAL_LINKS_JS__
       n.why ? h("p", null, String(n.why)) : null, arr(n.learn).length ? bullets(n.learn) : null));
     kids.push(...section("Prerequisites", chips(n.parents, "None — this is a starting point.")));
     if (arr(n.study).length) kids.push(...section("Study path (in this order)", h("ol", { class: "mp-study" }, n.study.map(studyItem))));
-    if (arr(n.commands).length) kids.push(...section("Key commands", h("div", { class: "mp-cmds" }, n.commands.map(cmdRow))));
+    if (arr(n.commands).length) kids.push(...section("Key commands", cmdList(n)));
     if (arr(n.practice).length) kids.push(...section("Practice drills (on a test VM)", bullets(n.practice)));
     if (arr(n.troubleshoot).length) kids.push(...section("Troubleshooting: symptom → first command", h("ul", { class: "mp-ts" }, n.troubleshoot.map(tsItem))));
     if (n.exit_check) kids.push(...section("Exit check — you've got it when…", h("p", { class: "mp-exit" }, String(n.exit_check))));
@@ -2829,6 +2856,7 @@ __EXTERNAL_LINKS_JS__
   function toggleDone(id) {
     if (S.done.has(id)) S.done.delete(id); else { S.done.add(id); jobPop = id; }
     saveDone(); updateProgress();
+    document.dispatchEvent(new CustomEvent("roadmap-done", { detail: id }));   // learning-mode locks recompute (focus_site.py)
     if (S.selected) { const y = panel.scrollTop; renderPanel(G.byId[S.selected]); panel.scrollTop = y; }   // stay put: the job section sits low
     jobPop = null;
     if (S.listOpen) renderList();
@@ -3006,7 +3034,9 @@ __EXTERNAL_LINKS_JS__
   }
   /* internal study links: close the map and jump to the handbook heading */
   function jumpTo(anchor) {
+    if (window.__focus && S.selected && window.__focus.open(S.selected, anchor)) return;   // this topic's section only (focus_site.py)
     const el = document.getElementById(anchor);
+    if (window.__focus) window.__focus.exit(1);   // any other place is reference reading, all of it shown (focus_site.py)
     if (el && window.__backnav) { window.__backnav.jump(el, "#" + anchor); return; }   // pushes an entry: Back reopens this topic
     closeMap({ keepHistory: true });
     try { history.replaceState(null, "", "#" + anchor); } catch (_) { /* ignore */ }
@@ -3061,7 +3091,7 @@ __EXTERNAL_LINKS_JS__
 
   window.__map = {
     core, graph: G, state: S, pos3, posF, open: openMap, close: closeMap, select, deselect,
-    startPath, goPath, endPath, setFlat, toggleList, toggleDone, draw, homeView,
+    startPath, goPath, endPath, setFlat, toggleList, toggleDone, draw, homeView, cmdList,
     projected: id => S.proj[id] || null, hits: () => S.hits.slice(),
   };
   if (core.parseHash(location.hash)) routeFromHash();
@@ -3117,8 +3147,8 @@ def render_page(variant, nav, content, legacy, roadmap, has_map, prove_data=None
         ("__DOC_START__", v["doc_start"]),
         ("__BODY_OPEN__", v["body_open"]),
         ("__DOC_END__", v["doc_end"]),
-        ("__SOURCE_CSS__", SOURCE_CSS + INTERVIEW_CSS + DECODER_CSS + LABS_CSS + DRILLS_CSS + PROVE_CSS + BACKNAV_CSS),
-        ("__SOURCE_SCRIPT__", SOURCE_SCRIPT + DECODER_SCRIPT + LABS_SCRIPT + DRILLS_SCRIPT + BACKNAV_SCRIPT),
+        ("__SOURCE_CSS__", SOURCE_CSS + INTERVIEW_CSS + DECODER_CSS + LABS_CSS + DRILLS_CSS + PROVE_CSS + BACKNAV_CSS + FOCUS_CSS + KEYCMD_CSS),
+        ("__SOURCE_SCRIPT__", SOURCE_SCRIPT + DECODER_SCRIPT + LABS_SCRIPT + DRILLS_SCRIPT + FOCUS_SCRIPT + BACKNAV_SCRIPT),
         ("__BACKNAV_HTML__", BACKNAV_HTML),
         ("__EXTERNAL_LINKS_JS__", EXTERNAL_LINKS_JS),
         ("__UI_CSS__", UI_CSS),
@@ -3163,6 +3193,19 @@ def main(argv=None):
         print("ERROR: no markdown modules found — nothing to build")
         return 1
     roadmap = process_roadmap(args.roadmap, by_file, warn)
+    if roadmap is not None:
+        try:
+            no_line, unused = annotate_key_commands(roadmap, HERE)
+        except (OSError, ValueError) as e:
+            print(f"ERROR: key command notes: {e}")
+            return 1
+        if no_line:
+            print(f"ERROR: {len(no_line)} key command(s) have no line in keycmd_notes.tsv (what it does, safety):")
+            for topic, cmd in no_line:
+                print(f"  {topic}: {cmd}")
+            return 1
+        for cmd in unused:
+            warn(f"keycmd_notes.tsv: no topic uses {cmd!r} any more")
     has_map = roadmap is not None and len(roadmap["nodes"]) > 0
     if roadmap is not None and not has_map:
         warn("roadmap has no nodes — 3D course map disabled")

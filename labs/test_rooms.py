@@ -181,6 +181,67 @@ def validate_room(room_dir: Path) -> tuple[dict, dict, list[str]]:
 
 
 # ---------------------------------------------------------------- one room
+def run_room_steps(room_dir: Path, room: dict, answers: dict, run, setup_budget: float = SETUP_BUDGET_S):
+    """Steps 4-8 of the room test on any machine that can run a script as root (a lab container here, the
+    verify VM in labs/vm/vmctl.py): run(script_path) -> (rc, stdout, stderr, seconds). Returns (ok, lines)."""
+    lines: list[str] = []
+    ok = True
+
+    def bad(msg: str) -> None:
+        nonlocal ok
+        ok = False
+        lines.append(f"  FAIL {msg}")
+
+    checks = [(t["id"], c["id"], room_dir / c["script"]) for t in room["tasks"] for c in t["checks"]]
+    for attempt in (1, 2):
+        rc, out, err, dt = run(room_dir / "setup.sh")
+        if rc != 0:
+            bad(f"setup.sh run {attempt} exited {rc}: {(err or out).strip()[-400:]}")
+            return ok, lines
+        lines.append(f"  setup.sh run {attempt}: {dt:.1f}s")
+        if dt > setup_budget:
+            bad(f"setup.sh run {attempt} took {dt:.1f}s (budget {setup_budget:.0f}s)")
+
+    for tid, cid, script in checks:
+        rc, out, err, _ = run(script)
+        reason = out.strip().splitlines()[-1] if out.strip() else ""
+        if rc == 0:
+            bad(f"{tid}/{cid} PASSED before solve.sh: {reason}")
+        else:
+            lines.append(f"  before: {tid}/{cid} fails as expected: {reason}")
+        if not reason:
+            bad(f"{tid}/{cid} printed no reason line")
+        elif len(out.strip().splitlines()) > 1:
+            bad(f"{tid}/{cid} printed more than one line")
+
+    rc, out, err, dt = run(room_dir / "solve.sh")
+    if rc != 0:
+        bad(f"solve.sh exited {rc}: {(err or out).strip()[-600:]}")
+    lines.append(f"  solve.sh: {dt:.1f}s")
+    printed = dict(re.findall(r"^ANSWER (\S+?)=(.*)$", out, re.M))
+
+    for tid, cid, script in checks:
+        rc, out, err, _ = run(script)
+        reason = out.strip().splitlines()[-1] if out.strip() else ""
+        if rc != 0:
+            bad(f"{tid}/{cid} still FAILS after solve.sh: {reason} {err.strip()[-300:]}")
+        else:
+            lines.append(f"  after:  {tid}/{cid} passes: {reason}")
+
+    for t in room["tasks"]:
+        for q in t["questions"]:
+            expected = answers.get(q["id"])
+            if expected is None:
+                continue
+            if sha256(expected) != q["answer_sha256"]:
+                bad(f"{q['id']}: hash does not match answers.test.json")
+            if q["id"] in printed and normalise(printed[q["id"]]) != normalise(expected):
+                bad(f"{q['id']}: solve.sh found '{printed[q['id']]}', answers.test.json says '{expected}'")
+    lines.append(f"  answers: {len(answers)} checked"
+                 + (f" ({len(printed)} re-derived on the lab by solve.sh)" if printed else ""))
+    return ok, lines
+
+
 def test_room(room_dir: Path) -> tuple[str, bool, list[str]]:
     lines: list[str] = []
     ok = True
@@ -197,7 +258,6 @@ def test_room(room_dir: Path) -> tuple[str, bool, list[str]]:
     for p in problems:
         bad(p)
 
-    checks = [(t["id"], c["id"], room_dir / c["script"]) for t in room["tasks"] for c in t["checks"]]
     session = f"t{uuid.uuid4().hex[:10]}"
     name = f"devlab-{session}"
     try:
@@ -209,53 +269,9 @@ def test_room(room_dir: Path) -> tuple[str, bool, list[str]]:
             _live.add(name)
         state = wait_for_systemd(name)
         lines.append(f"  lab {name} booted ({state})")
-
-        for attempt in (1, 2):
-            rc, out, err, dt = exec_script(name, room_dir / "setup.sh")
-            if rc != 0:
-                bad(f"setup.sh run {attempt} exited {rc}: {(err or out).strip()[-400:]}")
-                return room_dir.name, False, lines
-            lines.append(f"  setup.sh run {attempt}: {dt:.1f}s")
-            if dt > SETUP_BUDGET_S:
-                bad(f"setup.sh run {attempt} took {dt:.1f}s (budget {SETUP_BUDGET_S:.0f}s)")
-
-        for tid, cid, script in checks:
-            rc, out, err, _ = exec_script(name, script)
-            reason = out.strip().splitlines()[-1] if out.strip() else ""
-            if rc == 0:
-                bad(f"{tid}/{cid} PASSED before solve.sh: {reason}")
-            else:
-                lines.append(f"  before: {tid}/{cid} fails as expected: {reason}")
-            if not reason:
-                bad(f"{tid}/{cid} printed no reason line")
-            elif len(out.strip().splitlines()) > 1:
-                bad(f"{tid}/{cid} printed more than one line")
-
-        rc, out, err, dt = exec_script(name, room_dir / "solve.sh")
-        if rc != 0:
-            bad(f"solve.sh exited {rc}: {(err or out).strip()[-600:]}")
-        lines.append(f"  solve.sh: {dt:.1f}s")
-        printed = dict(re.findall(r"^ANSWER (\S+?)=(.*)$", out, re.M))
-
-        for tid, cid, script in checks:
-            rc, out, err, _ = exec_script(name, script)
-            reason = out.strip().splitlines()[-1] if out.strip() else ""
-            if rc != 0:
-                bad(f"{tid}/{cid} still FAILS after solve.sh: {reason} {err.strip()[-300:]}")
-            else:
-                lines.append(f"  after:  {tid}/{cid} passes: {reason}")
-
-        for t in room["tasks"]:
-            for q in t["questions"]:
-                expected = answers.get(q["id"])
-                if expected is None:
-                    continue
-                if sha256(expected) != q["answer_sha256"]:
-                    bad(f"{q['id']}: hash does not match answers.test.json")
-                if q["id"] in printed and normalise(printed[q["id"]]) != normalise(expected):
-                    bad(f"{q['id']}: solve.sh found '{printed[q['id']]}', answers.test.json says '{expected}'")
-        lines.append(f"  answers: {len(answers)} checked"
-                     + (f" ({len(printed)} re-derived on the lab by solve.sh)" if printed else ""))
+        steps_ok, steps = run_room_steps(room_dir, room, answers, lambda script: exec_script(name, script))
+        lines += steps
+        ok = ok and steps_ok
     except Exception as exc:  # noqa: BLE001
         bad(f"error: {exc}")
     finally:

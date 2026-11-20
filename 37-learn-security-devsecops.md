@@ -3518,7 +3518,8 @@ which means "rotate now".)
 settings, access tokens). Then, if the repository is shared, rewrite history and force-push:
 
 ```bash
-git filter-repo --invert-paths --path deploy/.env --force     # git-filter-repo package
+# filter-repo is not part of git: sudo apt install git-filter-repo
+git filter-repo --invert-paths --path deploy/.env --force
 git log --all --oneline -- deploy/.env                        # prints nothing now
 ```
 
@@ -3775,6 +3776,7 @@ incident has everyone's attention is how you remove the habit, not just this ins
 **Goal:** remove the file from history and stop the next push.
 
 ```bash
+# filter-repo is not part of git: sudo apt install git-filter-repo
 git filter-repo --invert-paths --path deploy/harbor.env --force
 git remote add origin git@gitlab.example.com:shop/api.git   # filter-repo removes 'origin' on purpose
 git push --force origin main feature/new-deploy             # no remote-tracking refs left for --force-with-lease

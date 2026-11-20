@@ -27,7 +27,7 @@ Network problems lie about where they are. A DNS problem looks like "the site is
 - Have a way back before you change anything remote: a console (IPMI, iDRAC, Proxmox noVNC, EC2 Serial Console or SSM), `netplan try`, or a scheduled rollback.
 - Change one layer at a time and test from outside after each change. "It works from the server" proves almost nothing.
 - Never fix a TLS problem by turning verification off (`curl -k`, `insecureSkipVerify`, `GIT_SSL_NO_VERIFY`, `insecure-registries`), and never fix a firewall problem by disabling the firewall "for now".
-- Keep a copy of the ruleset before editing it (`sudo nft list ruleset > /root/nft-before.txt`, `sudo iptables-save > /root/ipt-before.txt`).
+- Keep a copy of the ruleset before editing it (`sudo nft list ruleset | sudo tee /root/nft-before.txt >/dev/null`, `sudo iptables-save | sudo tee /root/ipt-before.txt >/dev/null`).
 
 **Placeholders and examples:** UPPERCASE words are placeholders (IFACE, DOMAIN, PEER, PORT, CONTAINER, ZONE). The examples use a 10.0.1.0/24 lab LAN behind fw1 (10.0.1.1, WAN address 203.0.113.10): web1 at 10.0.1.10 serving www.example.com, dns1 at 10.0.1.53, vpn1 at 10.0.1.20 with the WireGuard network 10.8.0.0/24, a backup network 10.0.2.0/24, a remote office at 198.51.100.0/24, the IPv6 prefix 2001:db8:10::/64, an internal zone corp.example.com, and the admin user ops.
 
@@ -1160,6 +1160,7 @@ sudo ufw allow 80/tcp
 # Fail2ban or CrowdSec banned a validation address? Check, then exempt the challenge path at the proxy, not by IP
 sudo cscli decisions list 2>/dev/null | head ; sudo fail2ban-client status 2>/dev/null
 # Port 80 can't be opened at all (ISP block, internal-only host): use DNS-01 instead (entry 5.5)
+# certbot's Cloudflare plugin is a separate package: sudo apt install python3-certbot-dns-cloudflare
 sudo certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini -d www.example.com
 ```
 
@@ -1362,6 +1363,7 @@ ns1.example.net. hostmaster.example.com. 2026100402 7200 3600 1209600 3600
 
 ```bash
 # Give propagation time before the CA checks (certbot DNS plugins)
+# certbot's Cloudflare plugin is a separate package: sudo apt install python3-certbot-dns-cloudflare
 sudo certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini \
   --dns-cloudflare-propagation-seconds 60 -d example.com -d '*.example.com'
 ```

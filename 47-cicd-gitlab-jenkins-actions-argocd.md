@@ -323,8 +323,9 @@ Use self-hosted runners only for **private** repositories (6.4). The download UR
 
 ```bash
 sudo useradd -m -s /bin/bash ghrunner
-sudo -iu ghrunner bash -c '
-  mkdir -p actions-runner && cd actions-runner
+# -u ... -H, not -i: sudo -i escapes the newlines and runs the whole script as one line
+sudo -u ghrunner -H bash -c '
+  cd "$HOME" && mkdir -p actions-runner && cd actions-runner
   curl -fsSLO https://github.com/actions/runner/releases/download/vVERSION/actions-runner-linux-x64-VERSION.tar.gz
   echo "SHA256_FROM_THE_PAGE  actions-runner-linux-x64-VERSION.tar.gz" | sha256sum -c
   tar xzf actions-runner-linux-x64-VERSION.tar.gz
@@ -1728,7 +1729,7 @@ reboot   system boot  6.8.0-85-generic Fri Oct  2 06:10   still running
 
 **Fix:**
 
-```bash
+```text
 # /etc/apt/apt.conf.d/52unattended-upgrades-local on runner VMs: reboot only in a quiet window
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "03:30";

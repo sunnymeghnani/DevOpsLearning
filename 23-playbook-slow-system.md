@@ -4898,6 +4898,7 @@ Three macOS facts change how you read the numbers:
 one screen, with nothing to install.
 
 ```bash
+# macOS (Terminal), not Linux
 sysctl -n hw.ncpu hw.memsize       # logical CPUs, RAM in bytes
 # -l 2 takes two samples: read the SECOND one (the first sample's %CPU is not meaningful)
 top -l 2 -o cpu -n 6 -stats pid,command,cpu,mem,threads,state,time | tail -n 18
@@ -4946,6 +4947,7 @@ X4. The Docker VM is the hot process → `docker stats`, then section 12.
 **Goal:** decide whether the Mac is short of memory right now.
 
 ```bash
+# macOS (Terminal), not Linux
 memory_pressure                 # the number behind Activity Monitor's "Memory Pressure" graph
 vm_stat 1 | head -n 4           # per-second page counters; watch the swapins / swapouts columns
 sysctl vm.swapusage
@@ -5005,6 +5007,7 @@ well → Step X3.
 **Goal:** name the process and the files behind the disk activity.
 
 ```bash
+# macOS (Terminal), not Linux
 iostat -w 1 -c 5                                      # per disk: KB/transfer, transfers/s, MB/s
 sudo fs_usage -w -f diskio -t 10 | head -n 20         # who reads/writes the disk, for 10 s
 sudo fs_usage -w -f filesys mds_stores | head -n 10   # file-level calls of one process (Ctrl-C)
@@ -5052,6 +5055,7 @@ it. Swap traffic → back to Step X2. Nothing obvious → Step X4.
 have been freezing.
 
 ```bash
+# macOS (Terminal), not Linux
 pmset -g therm                                       # thermal and performance warnings, CPU speed limit
 sudo powermetrics --samplers thermal -n 1            # Apple Silicon: thermal pressure level
 ls -lt /Library/Logs/DiagnosticReports | head -n 5   # .hang and .spin reports from frozen apps
@@ -5095,6 +5099,7 @@ Mac slow
 **Fix & verify:**
 
 ```bash
+# macOS (Terminal), not Linux
 # Stop Spotlight indexing a dedicated development or data volume
 sudo mdutil -i off /Volumes/Dev
 # Folders on the system volume: System Settings → Spotlight → Search Privacy → add the folder
@@ -5709,7 +5714,7 @@ Get-Job | Stop-Job; Get-Job | Remove-Job
 ```
 
 ```bash
-# macOS: two busy processes, then find them with Step X1
+# macOS (Terminal), not Linux: two busy processes, then find them with Step X1
 yes > /dev/null & yes > /dev/null &
 top -l 2 -o cpu -n 5 -stats pid,command,cpu | tail -n 6
 kill %1 %2

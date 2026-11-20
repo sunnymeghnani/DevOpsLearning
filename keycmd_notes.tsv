@@ -1,0 +1,424 @@
+# Key commands explained: one line per command in roadmap.json's "commands" lists (keycmd_site.py).
+# Columns (tab-separated): exact command string, safety, what this exact invocation does (<= 110 characters).
+# Safety: ro = read-only (may write only its own output file: a dump, capture or report)
+#         load = read-only, but its job is heavy traffic or I/O (benchmarks, wide port scans, data read-back checks)
+#         ch = changes state (files, config, this shell, services that stay up or come back); opening a shell counts
+#         dg = dangerous: by itself stops a service, evicts pods, destroys resources or cuts access; aimed at the
+#         wrong thing, it takes a service down or locks people out. Effects that only bite later (mask) are ch.
+# The build fails when a key command has no line here; tests/test_keycmd.py checks lengths and safety.
+hostnamectl	ro	this machine's hostname, OS, kernel and hardware or VM type
+ip -br addr	ro	one line per interface: name, up/down state and its IP addresses
+df -h	ro	used and free space of every mounted filesystem, in human units (G, M)
+lsb_release -a	ro	the distribution's name, release number and codename (e.g. Ubuntu 24.04, noble)
+type -a COMMAND	ro	every way the shell could run COMMAND: alias, function, builtin, then each file on PATH
+ls -lah /etc	ro	long listing of /etc, hidden files included, with sizes in K/M/G
+find /etc -name '*.conf' -mtime -1	ro	files under /etc ending in .conf that were modified in the last 24 hours
+readlink -f /usr/bin/python3	ro	follows every symlink and prints the real file that python3 points to
+ls -l	ro	long listing: type, permissions, link count, owner, group, size and last-modified time of each entry
+namei -l /var/www/app/index.php	ro	owner and permissions of every directory on the path, to find the one blocking access
+getfacl DIR	ro	DIR's owner, group and mode plus any extra ACL entries giving users or groups access
+stat -c '%A %U:%G %n' FILE	ro	FILE's permissions (rwx form), owner:group and name on one line
+id deploy	ro	user deploy's UID, primary group and every supplementary group
+sudo -l -U deploy	ro	lists the sudo rules for user deploy: which commands it may run, and as whom (needs root)
+getent group docker	ro	the docker group's entry: its GID and the users listed as members
+sudo visudo -f /etc/sudoers.d/deploy	ch	edits that sudoers drop-in under a lock and checks it; a syntax error is not saved unless you force it
+ssh-keygen -t ed25519 -C deploy@lab	ch	creates a new Ed25519 key pair; the comment deploy@lab helps you tell keys apart
+ssh-copy-id deploy@192.0.2.10	ch	adds your public key to deploy's authorized_keys on that server, so key login works
+ssh -v deploy@192.0.2.10	ch	logs in with debug output (connection, host key check, each auth method tried), then gives you a shell
+ssh -L 8080:127.0.0.1:80 deploy@192.0.2.10	ch	tunnel: localhost:8080 on your machine reaches port 80 on the server itself
+ps -eo pid,ppid,stat,etime,cmd --sort=-%cpu | head	ro	top 9 processes by CPU averaged over each one's lifetime (not right now), with parent, state, age, command
+pstree -sp PID	ro	the chain of parent processes that started PID (and its children), with PIDs
+kill -TERM PID	dg	asks process PID to exit cleanly (SIGTERM) so it can clean up first; the wrong PID stops a live service
+ls -l /proc/PID/cwd	ro	the directory process PID is working in (cwd is a link to it)
+dpkg -S /usr/sbin/apache2	ro	which installed package owns that file
+apt policy apache2	ro	the installed version, the version apt would install, and the repository each comes from
+sudo apt-mark hold docker-ce	ch	freezes docker-ce at its current version so later apt upgrades skip it
+apt list --upgradable	ro	installed packages with a newer version available (as of the last apt update)
+grep -c '" 50[0-9] ' access.log	ro	counts requests in access.log that got a 500–509 server error
+awk '{print $9}' access.log | sort | uniq -c	ro	counts requests per HTTP status code (field 9 of the common log format)
+sed -n '/10:00/,/10:05/p' app.log	ro	prints app.log from a line containing 10:00 through the next line containing 10:05
+jq -r '.[].Name' containers.json	ro	the Name field of every item in the JSON array, as plain text
+bash -n health.sh	ro	checks the script's syntax without running any of it
+shellcheck health.sh	ro	lints the script for common bugs (quoting, typos, risky patterns) without running it
+bash -x health.sh	ch	runs the script and prints each command, with variables expanded, before it executes
+echo $?	ro	the exit status of the last command: 0 means success, anything else a failure
+git status -sb	ro	short status: current branch, ahead/behind its upstream, and the changed files
+git log --oneline --graph -10	ro	the last 10 commits, one line each, with the branch graph
+git revert COMMIT	ch	makes a new commit that undoes COMMIT, keeping the history intact
+git reflog	ro	where HEAD has been recently, to find a commit 'lost' by a reset or rebase
+ip route	ro	the routing table: the default gateway and which interface reaches each network
+ip neigh show	ro	the ARP/neighbour cache: IP to MAC address of hosts this machine has talked to, with state
+ping -c 3 192.0.2.1	ro	sends 3 echo requests, then shows replies, packet loss and round-trip times
+curl -v https://example.com/	ro	fetches the page showing each step: connect, TLS handshake, request and response headers
+curl -sI https://example.com/	ro	sends a HEAD request quietly and prints only the response headers
+curl -s -o /dev/null -w '%{http_code} %{time_total}\n' https://example.com/	ro	prints only the HTTP status code and the total time in seconds; the body is thrown away
+aws sts get-caller-identity	ro	which AWS account, user or role your current credentials belong to
+aws configure list	ro	the profile, keys (masked) and region in use, and where each value comes from
+aws ec2 describe-regions --output table	ro	the regions enabled for your account, as a table
+sudo du -xah /var | sort -h | tail -5	ro	the 5 largest files or directories on /var's filesystem; the last line is /var's own total
+sudo sshd -t	ro	checks sshd's config and host keys for errors without restarting anything
+git revert HEAD	ch	makes a new commit that undoes the last commit
+systemctl status UNIT	ro	is the unit running, since when, its main PID and its latest log lines
+systemctl cat UNIT	ro	the unit file plus every drop-in override, in the order systemd reads them
+sudo systemctl edit UNIT	ch	opens an editor on an override drop-in for UNIT, then reloads systemd; restart UNIT to apply it
+systemctl list-units --failed	ro	every unit that is in the failed state right now
+journalctl -u UNIT -b -n 100 --no-pager	ro	the last 100 log lines of UNIT since this boot, printed straight out
+journalctl -p warning --since '1 hour ago'	ro	log messages of priority warning or worse from the last hour
+journalctl -k -b	ro	kernel messages from the current boot (like dmesg, with journal timestamps)
+sudo logrotate -d /etc/logrotate.d/apache2	ro	dry run: shows what logrotate would do with Apache's logs and changes nothing
+df -i	ro	inode use per filesystem: a disk can be 'full' of small files with bytes still free
+sudo du -xh --max-depth=1 /var | sort -h	ro	size of each directory directly under /var (same filesystem only), smallest to biggest
+lsblk -f	ro	disks and partitions as a tree, with filesystem type, label, UUID and mount point
+systemctl list-timers --all	ro	every systemd timer, inactive ones too: next run, last run and the unit it starts
+crontab -l -u deploy	ro	prints user deploy's crontab (reading another user's needs root)
+timedatectl timesync-status	ro	systemd-timesyncd's view: which NTP server is used, the offset and the poll interval
+chronyc sources -v	ro	chrony's time sources with reachability, offset and which one is selected; -v explains columns
+uname -r	ro	the version of the running kernel
+dmesg -T | tail -20	ro	the last 20 kernel messages, with human-readable timestamps (Ubuntu allows dmesg only with sudo)
+sysctl net.core.somaxconn	ro	the kernel's cap on a listening socket's queue of connections not yet accepted
+cat /proc/PID/limits	ro	the resource limits (open files, processes, ...) that process PID really runs with
+sudo netplan try	ch	applies the new netplan config and rolls it back after 120 s unless you confirm it
+resolvectl status	ro	the DNS servers and search domains systemd-resolved uses, globally and per interface
+networkctl status	ro	systemd-networkd's summary: interface states, addresses, gateway and DNS
+sudo ss -tulpn	ro	every listening TCP and UDP port, numeric, with the process that owns it
+sudo ss -tn state established '( dport = :443 )'	ro	established TCP connections this host made to port 443 elsewhere (dport is the remote port)
+nc -vz 192.0.2.10 443	ro	does TCP port 443 on that host accept a connection? sends no data
+sudo ss -ltnp 'sport = :443'	ro	who listens on TCP port 443: the address and the owning process
+systemctl status PID	ro	which unit (service) process PID belongs to, and that unit's status
+sudo lsof -nP -iTCP:443 -sTCP:LISTEN	ro	the process listening on TCP port 443, without name or port lookups
+sudo apache2ctl -S	ro	Apache's parsed vhosts: which site answers each name and port, and the default ones
+sudo ufw status numbered	ro	the active firewall rules with their numbers (used to delete or insert at a position)
+sudo ufw allow from 10.0.0.0/24 to any port 22 proto tcp	ch	adds a rule allowing TCP port 22 from 10.0.0.0/24; live at once if ufw is enabled, and kept after reboot
+sudo nft list ruleset	ro	every nftables table, chain and rule loaded now, iptables-nft ones too (legacy iptables rules not shown)
+sudo ufw logging on	ch	turns on ufw logging, so blocked packets are written to the kernel log
+sudo systemctl reload ssh	ch	sshd re-reads its config and open sessions stay; on Ubuntu 22.10+ a Port change needs ssh.socket restarted
+sudo fail2ban-client status sshd	ro	the sshd jail: failures counted, and which IPs are banned right now
+sudo unattended-upgrade --dry-run --debug	ro	which updates the next automatic run would install or skip, and why; installs nothing (may download them)
+sudo apache2ctl configtest	ro	checks Apache's config before a reload: prints 'Syntax OK' or the broken line
+sudo systemctl reload apache2	ch	Apache re-reads its config gracefully, without dropping current connections
+tail -f /var/log/apache2/error.log	ro	follows Apache's error log live, printing new lines as they arrive
+sudo cp -a /etc/apache2 /root/apache2.bak	ch	copies the whole Apache config to a backup, keeping owners, modes and times
+sudo grep -rnE 'Listen|VirtualHost' /etc/apache2/	ro	every Listen and VirtualHost line under /etc/apache2, with file:line (-r skips symlinks)
+sudo ss -ltnp | grep -E ':(81|444) '	ro	who listens on TCP ports 81 and 444, with the owning process
+docker ps -a	ro	all containers, stopped ones too, with status and exit code
+docker logs --tail 100 -f CONTAINER	ro	the container's last 100 log lines, then follows new ones live
+docker exec -it CONTAINER sh	ch	opens an interactive shell inside the running container; what you type runs there
+docker inspect CONTAINER | jq '.[0].State'	ro	the container's state: running or not, exit code, OOM-killed, start and finish times
+docker compose up -d	ch	creates or recreates the project's containers to match the compose file, in the background
+docker compose ps	ro	the containers of this compose project, with state and published ports
+docker compose logs -f --tail 50 SERVICE	ro	the last 50 log lines of one service, then follows it live
+docker volume ls	ro	lists Docker volumes, where container data persists
+git switch -c feature/login	ch	creates branch feature/login from the current commit and switches to it
+git rebase origin/main	ch	replays your branch's commits on top of origin/main (rewrites them; fetch first)
+git tag -a v1.2.0 -m 'release 1.2.0'	ch	creates an annotated tag v1.2.0 on the current commit, with a message
+git log --oneline --graph --all -15	ro	the last 15 commits across all branches, one line each, with the graph
+aws ec2 describe-instances --output table	ro	your EC2 instances in the current region, as a table
+aws ssm start-session --target INSTANCE_ID	ch	opens a shell on the instance through Systems Manager: no SSH key or open port needed
+psql -h 127.0.0.1 -U app -d appdb -c 'select 1'	ro	can user app log in to appdb over TCP on localhost? 'select 1' only proves the connection
+sudo -u postgres psql -c 'show hba_file'	ro	asks PostgreSQL, as the postgres superuser, where its pg_hba.conf file is
+mysql -h 127.0.0.1 -u app -p -e 'select 1'	ro	tests logging in as app over TCP on localhost (asks for the password)
+pg_dump -Fc -f /backup/appdb.dump appdb	ro	dumps appdb to one compressed custom-format file for pg_restore; ALTER/DROP on its tables wait till it ends
+pg_restore -d appdb_restore /backup/appdb.dump	ch	restores the dump into the existing database appdb_restore
+mysqldump --single-transaction --result-file=/backup/appdb.sql appdb	ro	a consistent SQL dump of appdb into that file, without locking InnoDB tables
+journalctl --since '30 min ago' -p warning --no-pager	ro	warnings and worse from the last 30 minutes, printed straight out
+history | tail -30	ro	your last 30 shell commands, numbered
+script -q incident.log	ch	starts a recorded shell: everything until you type exit goes to incident.log (overwritten; -a appends)
+Get-NetTCPConnection -State Listen | Sort-Object LocalPort	ro	Windows: listening TCP ports sorted by port number, with the owning process ID
+Get-Service | Where-Object Status -eq Running	ro	Windows: only the services that are running now
+log show --last 10m --style compact	ro	macOS: the unified log of the last 10 minutes, one compact line per entry
+journalctl -u UNIT -n 50 --no-pager	ro	the last 50 log lines of UNIT, printed straight out
+ip route get 198.51.100.20	ro	the route, interface, gateway and source address the kernel would use for that IP
+tracepath -n 198.51.100.20	ro	each hop to that host and the path MTU, numeric; needs no root
+sudo conntrack -L | head	ro	the first entries of the kernel's connection-tracking table (used by stateful firewall rules and NAT)
+sudo tcpdump -ni any -c 20 port 443	ro	captures 20 packets to or from port 443 on all interfaces, numeric, then stops
+sudo tcpdump -ni eth0 -w /tmp/cap.pcap host 192.0.2.10	ro	saves eth0 traffic to or from 192.0.2.10 into a pcap file until Ctrl-C (it can hold secrets)
+strace -f -e trace=openat,connect curl -so /dev/null https://example.com	ro	runs curl and shows each file it opens and each connect() it makes, child processes too
+tshark -r /tmp/cap.pcap -Y 'tcp.flags.reset==1'	ro	lists only the TCP resets (RST packets) in the saved capture
+getent ahosts app.example.com	ro	the addresses a normal program gets for the name, via /etc/hosts, DNS and the rest of nsswitch
+resolvectl query app.example.com	ro	resolves the name through systemd-resolved and shows which interface and protocol answered
+dig @192.0.2.53 app.example.com +norecurse	ro	asks that one DNS server without recursion: does it hold the answer itself?
+sudo resolvectl log-level debug	ch	makes systemd-resolved log every lookup in detail, until reset or restart
+openssl s_client -connect app.example.com:443 -servername app.example.com -showcerts	ro	opens TLS to the server with that SNI name and prints the whole certificate chain it sends
+openssl x509 -in cert.pem -noout -subject -issuer -dates -ext subjectAltName	ro	the certificate's subject, issuer, validity dates and the names it covers (SAN)
+curl -vI https://app.example.com/	ro	HEAD request with connection and TLS details: certificate, protocol and headers
+openssl verify -CAfile chain.pem cert.pem	ro	checks offline that cert.pem chains to a CA in chain.pem; prints OK or the error
+sudo cp lab-ca.crt /usr/local/share/ca-certificates/lab-ca.crt	ch	puts your lab CA where Ubuntu collects extra trusted CAs (the file must end in .crt)
+sudo update-ca-certificates	ch	rebuilds the system trust store, so programs that use it trust your CA (running daemons after a restart)
+sudo mkdir -p /etc/docker/certs.d/harbor.example.com	ch	creates the folder where Docker looks for this registry's CA certificate
+openssl x509 -in lab-ca.crt -noout -enddate	ro	when the lab CA certificate expires
+sudo nginx -T | grep -nE 'server_name|proxy_pass'	ro	every server_name and proxy_pass in nginx's full loaded config, with line numbers in the dump
+curl -v -H 'Host: app.example.com' http://127.0.0.1/	ro	asks the local web server for app.example.com directly, skipping DNS, to test that vhost
+curl -v --resolve app.example.com:443:192.0.2.10 https://app.example.com/	ro	HTTPS to 192.0.2.10 for that name, ignoring DNS; SNI and the certificate check stay correct
+curl -sv -o /dev/null https://app.example.com/	ro	shows the connection, TLS and headers of one request and throws the body away
+sudo nginx -T	ro	checks nginx's config, then prints every config file it loaded
+curl -sIL https://app.example.com/	ro	headers only, following every redirect, so you see each hop
+iperf3 -c 192.0.2.20 -t 20	load	20-second throughput test to the iperf3 server at that IP; this host sends
+iperf3 -c 192.0.2.20 -R -P 4	load	reverse test: the server sends to you over 4 parallel streams (10 seconds by default)
+mtr -rwn -c 100 192.0.2.20	ro	100 probes to every hop, then one report of loss and latency per hop, numeric
+ethtool eth0	ro	eth0's negotiated speed, duplex and autonegotiation, and whether a link is detected
+uptime	ro	how long the host has run, users logged in, and the 1, 5 and 15-minute load averages
+vmstat 1 5	ro	5 one-second samples of run queue, memory, swap, I/O and CPU; the first line is since boot
+iostat -xz 1 3	ro	per-disk extended stats (util, wait, queue), 3 one-second reports; the first is since boot; idle disks hidden
+pidstat 1 5	ro	per-process CPU use, one sample per second for 5 seconds, then an average
+curl -s 'http://127.0.0.1:9115/probe?target=https://shop.example.com&module=http_2xx' | grep -E '^probe_(success|http_status_code)'	ro	asks the local Blackbox exporter to probe the shop now: did it pass, and which status code?
+curl -s -o /dev/null -m 10 -w '%{http_code} %{time_total}s\n' https://shop.example.com	ro	status code and total time of one request, giving up after 10 seconds
+docker exec uptime-kuma du -h /app/data/kuma.db	ro	the size of Uptime Kuma's SQLite database, measured inside its container
+free -h	ro	total, used and available memory and swap; 'available' is the number that counts
+cat /proc/pressure/memory	ro	memory pressure (PSI): share of time tasks stalled waiting for memory, over 10, 60 and 300 s
+ps -eo pid,rss,cmd --sort=-rss | head	ro	the processes using the most resident memory (RSS, in KiB), biggest first
+journalctl -k -b | grep -i oom	ro	kernel messages from this boot that mention the OOM killer
+sudo pidstat -d 1 5	ro	per-process disk reads and writes per second, 5 one-second samples
+sudo iotop -oPa	ro	only processes doing I/O, one line per process, with totals since iotop started
+findmnt -t nfs,nfs4	ro	the NFS mounts, with the server's export path and the mount options
+docker build -t app:dev .	ch	builds an image from the Dockerfile in this directory and tags it app:dev
+docker history app:dev	ro	each layer of app:dev, the instruction that created it, and its size
+docker run --rm -it --entrypoint sh app:dev	ch	starts a throwaway app:dev container with a shell instead of its normal start command
+docker image ls app	ro	local images of the repository app, with tags, IDs and sizes
+docker network ls	ro	Docker networks on this host, with driver and scope
+docker network inspect bridge	ro	the default bridge network: subnet, gateway and the containers attached to it
+docker run --rm -it --net container:CONTAINER nicolaka/netshoot	ch	a throwaway toolbox container sharing CONTAINER's network, to debug from its side
+sudo iptables -t nat -S DOCKER	ro	the NAT rules in the DOCKER chain: which host port is forwarded to which container
+docker ps --format '{{.Names}}\t{{.Ports}}'	ro	each running container's name and its published ports
+sudo iptables -L DOCKER-USER -n -v	ro	the rules in DOCKER-USER (your filter for published ports), numeric, with packet counters
+nmap -Pn -p 1-10000 192.0.2.10	load	probes TCP ports 1–10000 on that host with no ping first; an IDS may ban your IP; scan only hosts you may test
+docker events --since 30m	ro	engine events from the last 30 minutes (start, die, kill, oom ...), then keeps streaming
+docker system df -v	ro	Docker's disk use per image, container, volume and build cache, in detail
+sudo nsenter -t PID -n ss -ltn	ro	runs the host's ss inside PID's network namespace: the container's listening TCP ports
+kubectl config current-context	ro	the name of the kubeconfig context (cluster, user, namespace) your next kubectl command will use
+kubectl get nodes -o wide	ro	cluster nodes with status, roles, version, IPs, OS image and container runtime
+kubectl create deploy web --image=nginx --dry-run=client -o yaml	ro	prints a Deployment YAML for nginx without creating anything: a starting file to edit
+kubectl explain pod.spec.containers	ro	documentation of the containers field and its sub-fields, from the cluster's own API
+kubectl describe pod POD	ro	the pod's details and recent events: why it is pending, restarting or failing
+kubectl logs POD --previous	ro	logs of the container's previous run: what it printed before it crashed
+kubectl rollout undo deploy/DEPLOY	ch	rolls the Deployment back to its previous revision (its pods are replaced)
+kubectl get pods -o wide -w	ro	pods with node and pod IP, then watches and prints every change
+kubectl get svc,endpointslices -n NAMESPACE	ro	Services and their EndpointSlices: which pod IPs sit behind each Service (not-ready ones are listed too)
+kubectl describe svc SVC	ro	the Service's selector, ports, endpoints and events
+kubectl -n kube-system get pods -l k8s-app=kube-dns	ro	the cluster DNS (CoreDNS) pods and whether they are running
+kubectl run tmp --rm -it --restart=Never --image=nicolaka/netshoot -- bash	ch	a throwaway debug pod with network tools and a shell; deleted when you exit
+sudo gitlab-runner status	ro	is the gitlab-runner service running on this host?
+sudo gitlab-runner verify	ro	checks with GitLab that each runner registered here is still accepted
+sudo journalctl -u gitlab-runner -n 100 --no-pager	ro	the last 100 log lines of the runner service
+yamllint .gitlab-ci.yml	ro	checks the CI file for YAML syntax and style problems (not GitLab's own CI rules)
+trivy image --severity HIGH,CRITICAL app:dev	ro	scans image app:dev for known vulnerabilities, showing only HIGH and CRITICAL ones
+docker run --rm --read-only --cap-drop ALL --security-opt no-new-privileges app:dev	ch	runs app:dev hardened: read-only filesystem, no capabilities, no privilege gain; removed on exit
+psql -c 'select pid, state, query_start, query from pg_stat_activity'	ro	every PostgreSQL session: its PID, state, when its query started, and the query
+psql -c 'select pg_blocking_pids(PID)'	ro	which sessions hold the lock that session PID is waiting for
+mysql -e 'show full processlist'	ro	every MySQL connection and the full text of what it is running
+redis-cli info memory	ro	Redis memory: used, peak, fragmentation, the maxmemory limit and the eviction policy
+restic -r REPO snapshots --latest 3	ro	the newest 3 snapshots per host and path in the repository
+restic -r REPO check --read-data-subset=10%	load	checks the repository's structure and downloads 10% of its data to verify it: slow, and paid egress on S3
+borg list REPO --last 3	ro	the 3 most recent archives in the borg repository
+systemctl list-timers | grep -iE 'restic|borg'	ro	the backup timers: when restic or borg runs next, and when it last ran
+aws ec2 describe-route-tables --filters Name=vpc-id,Values=VPC_ID	ro	that VPC's route tables: where each subnet's traffic goes (internet gateway, NAT, peering)
+aws elbv2 describe-target-health --target-group-arn TG_ARN	ro	the health of each target in the group, with the reason when it is unhealthy
+aws ec2 describe-network-acls --filters Name=vpc-id,Values=VPC_ID	ro	that VPC's network ACLs: the numbered allow and deny rules of each subnet
+git log -3 --stat	ro	the last 3 commits with the files each one changed
+diff -u app.conf.bak app.conf	ro	the line-by-line changes from the backup to the current file
+sudo ss -ltnp	ro	all listening TCP ports, numeric, with the owning process
+systemctl list-sockets	ro	the sockets systemd listens on itself, and the unit each one starts
+grep -w 8080 /etc/services	ro	the service name registered for port 8080: a convention, not what is running
+sudo tcpdump -ni any port 443	ro	captures port 443 traffic on all interfaces, numeric, until Ctrl-C
+docker logs --tail 100 -f dokploy-traefik	ro	the last 100 lines of Dokploy's Traefik log, then follows it live
+docker inspect --format '{{json .Config.Labels}}' CONTAINER	ro	the container's labels as JSON; for Traefik these hold the routing rules
+docker exec dokploy-traefik wget -qO- http://127.0.0.1:8080/api/http/routers	ro	asks Traefik's API, from inside its container, which HTTP routers it has loaded
+ls /etc/dokploy/traefik/dynamic/	ro	the dynamic config files that Dokploy's Traefik watches
+sudo cp legacy-apache.yml /etc/dokploy/traefik/dynamic/	ch	drops a route file into Traefik's dynamic folder; Traefik picks it up on its own
+curl -v --resolve legacy.example.com:443:192.0.2.10 https://legacy.example.com/	ro	tests the legacy site through that server's IP before DNS points there
+docker logs --tail 50 dokploy-traefik	ro	the last 50 lines of Dokploy's Traefik log
+sudo ss -ltnp | grep -E ':(80|443|81|444) '	ro	who listens on TCP ports 80, 443, 81 and 444
+docker version --format 'server {{.Server.Version}} min {{.Server.MinAPIVersion}}'	ro	the Docker Engine version and the oldest API version it still accepts
+docker inspect -f '{{.Config.Image}}' dokploy-traefik	ro	the image (and tag) the Traefik container was created from
+curl -s -u admin:PASSWORD https://traefik.example.com/api/http/routers | jq -r '.[].name'	ro	the name of every HTTP router, from Traefik's dashboard API (basic auth; the password stays in shell history)
+sudo apt-mark hold docker-ce docker-ce-cli	ch	freezes the Docker Engine and CLI packages so apt upgrades skip them
+docker node ls	ro	Swarm nodes: status, availability (active or drain) and which is the leader
+docker service ls	ro	Swarm services with mode, running/desired replicas and image
+docker service ps --no-trunc SERVICE	ro	every task of the service, past ones too, with full error messages
+docker service logs --tail 50 SERVICE	ro	the last 50 log lines from the tasks of the service
+docker network inspect dokploy-network	ro	the dokploy-network overlay: subnet and the containers attached on this node
+ls -la /etc/dokploy	ro	everything in Dokploy's config folder, hidden files too, with owners and modes
+docker logs --tail 100 dokploy-traefik	ro	the last 100 lines of Dokploy's Traefik log
+docker service ls --format 'table {{.Name}}\t{{.Replicas}}'	ro	each Swarm service with running/desired replicas, as a table
+docker system df	ro	disk used by images, containers, volumes and build cache, and how much is reclaimable
+docker service logs dokploy --since 15m	ro	the Dokploy service's logs from the last 15 minutes
+docker builder prune -f --filter until=72h	ch	deletes dangling build cache older than 72 hours, without asking (-a would take all unused)
+docker inspect -f '{{.State.Pid}}' CONTAINER	ro	the host PID of the container's main process (what nsenter needs)
+sudo nsenter -t PID -n ip addr	ro	the interfaces and addresses seen inside that process's network namespace
+sudo dockerd --validate --config-file /etc/docker/daemon.json	ro	checks daemon.json for errors without starting or restarting Docker
+docker info --format '{{.LoggingDriver}}'	ro	the default log driver new containers get (e.g. json-file or journald)
+sudo gitlab-runner register	ch	registers this machine as a runner with GitLab and saves its token in config.toml
+sudo gitlab-runner list	ro	the runners configured in config.toml on this host (the output shows tokens)
+docker login harbor.example.com	ch	logs in to Harbor and saves the credentials in your Docker config, only base64-encoded unless a helper is set
+docker push harbor.example.com/apps/web:3f9c2a1	ch	uploads that image tag to the apps project in Harbor
+sudo journalctl -u gitlab-runner -n 50 --no-pager	ro	the last 50 log lines of the runner service
+sudo /usr/share/gitlab-runner/clear-docker-cache	ch	removes the stopped containers the runner's Docker executor left, with their cache volumes
+sudo systemctl status jenkins	ro	is Jenkins running, since when, and its latest log lines
+sudo du -sh /var/lib/jenkins/jobs /var/lib/jenkins/workspace	ro	the total size of Jenkins' job history and of its workspaces
+curl -s -u ops:API_TOKEN https://jenkins.example.com/crumbIssuer/api/json	ro	asks Jenkins for a CSRF crumb as user ops: proves the API token is accepted (the token stays in shell history)
+docker logs -f jenkins	ro	the Jenkins container's log, from the start, then follows it live
+ansible all -i inventory.ini -m ping	ro	can Ansible log in and run Python on every host? (a module test, not an ICMP ping)
+ansible-playbook -i inventory.ini site.yml --check --diff	ro	dry run with diffs of what site.yml would change; tasks set check_mode: false still run
+ansible-vault edit group_vars/all/vault.yml	ch	decrypts the vault file into your editor and encrypts it again on save
+ansible-lint site.yml	ro	checks the playbook for errors and bad practices without running it
+ansible-inventory -i inventories/staging --host web1	ro	every variable Ansible resolves for web1 from the staging inventory
+ansible-playbook -i inventories/prod site.yml --list-hosts --list-tasks	ro	which prod hosts and tasks the playbook would touch; runs nothing
+ansible-playbook -i inventories/prod site.yml --limit canary --check --diff	ro	dry run on the canary group only, with diffs of what would change
+terraform init	ch	downloads providers and modules and sets up the state backend for this directory
+terraform plan -out tf.plan	ro	shows what would change and saves that exact plan to tf.plan for apply (the file holds secrets in clear text)
+terraform apply tf.plan	dg	carries out exactly the saved plan: creates, changes or destroys real resources
+terraform state list	ro	the address of every resource Terraform tracks in its state
+terraform plan -detailed-exitcode -input=false > /dev/null; echo "exit=$?"	ro	drift check: exit 0 means no changes, 1 an error, 2 changes pending
+terraform state list | head	ro	the first 10 resources in the state
+terraform providers lock -platform=linux_amd64 -platform=darwin_arm64	ch	records provider checksums for Linux and Apple-silicon Macs in the lock file
+tofu plan -out=tfplan	ro	OpenTofu: shows what would change and saves that exact plan to tfplan for apply
+docker service update --image harbor.example.com/apps/web:3f9c2a1 web	ch	rolling update of service web to that image tag
+docker service rollback web	ch	returns service web to its previous spec (image and settings)
+kubectl rollout history deploy/web	ro	the Deployment's revisions, to pick one to roll back to
+kubectl rollout undo deploy/web	ch	rolls Deployment web back to its previous revision
+sops --encrypt --in-place secrets.enc.yaml	ch	encrypts the file's values in place, with the keys named in .sops.yaml
+ansible-vault encrypt group_vars/all/vault.yml	ch	encrypts that variables file in place with your vault password
+vault kv get secret/apps/web	ro	reads the latest version of the secret at secret/apps/web (prints its values)
+gitleaks detect --source .	ro	scans this repository, its Git history included, for committed secrets
+vault status	ro	is Vault initialised and sealed, its HA mode and its storage type
+vault operator raft list-peers	ro	the Raft cluster members, which one leads, and which ones vote
+vault audit list -detailed	ro	the enabled audit devices and where each writes (e.g. a file path)
+df -h /var/log/vault	ro	free space where Vault's audit log lives; if no audit device can write, Vault refuses requests
+sudo kubeadm init --pod-network-cidr=10.244.0.0/16	ch	builds a new control plane on this machine, with 10.244.0.0/16 for pod IPs
+kubectl drain NODE --ignore-daemonsets	dg	evicts every pod from NODE except DaemonSet pods and marks it unschedulable
+sudo etcdctl snapshot save /backup/etcd.db --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/server.crt --key=/etc/kubernetes/pki/etcd/server.key	ro	saves a copy of all cluster data from etcd to /backup/etcd.db (it holds every Secret)
+sudo kubeadm certs check-expiration	ro	when each control-plane certificate and kubeconfig expires
+kubectl get ingress -A	ro	every Ingress in all namespaces: class, hosts, address and ports
+kubectl get ingressclass	ro	the installed Ingress classes and the controller behind each
+kubectl describe ingress web	ro	Ingress web's rules, backends, TLS settings and events
+kubectl get networkpolicy -n NAMESPACE -o yaml	ro	the full NetworkPolicies in that namespace: which traffic each one allows
+kubectl describe node NODE | grep -A8 'Allocated resources'	ro	CPU and memory the node's pods request and limit, against what the node can allocate
+kubectl get pvc,pv -A	ro	volume claims in every namespace, and every PersistentVolume with the claim it is bound to
+kubectl get storageclass	ro	the storage classes, their provisioner, and which one is the default
+kubectl top pods -A	ro	the current CPU and memory use of every pod (needs metrics-server)
+kubectl get events -A --sort-by=.lastTimestamp	ro	events from all namespaces in time order, the newest at the bottom
+sudo crictl ps -a	ro	every container on this node, exited ones too, straight from the container runtime
+journalctl -u kubelet -b -n 100 --no-pager	ro	the kubelet's last 100 log lines since this boot
+kubectl debug -it POD --image=nicolaka/netshoot --target=CONTAINER	ch	adds an ephemeral toolbox container to the live pod, sharing CONTAINER's processes; it stays till the pod goes
+helm upgrade --install web ./chart -f values.yaml -n apps	ch	installs release web from ./chart, or upgrades it if it exists, in namespace apps
+helm history web -n apps	ro	the revisions of release web: date, status and chart version
+helm rollback web 3 -n apps	ch	redeploys revision 3 of release web, recorded as a new revision
+kubectl kustomize overlays/prod	ro	prints the final YAML the prod overlay builds; applies nothing
+kubectl auth can-i create deployments -n apps --as=system:serviceaccount:apps:ci	ro	may the ci service account create Deployments in namespace apps? answers yes or no
+kubectl create rolebinding ci-deploy --clusterrole=edit --serviceaccount=apps:ci -n apps	ch	gives the ci service account the edit role, only inside namespace apps
+kubectl label ns apps pod-security.kubernetes.io/enforce=restricted	ch	enforces Pod Security 'restricted' in apps: running pods stay; new or replacement pods breaking it are refused
+alias k=kubectl	ch	makes k a shortcut for kubectl in this shell (add it to ~/.bashrc to keep it)
+export do='--dry-run=client -o yaml'	ch	stores the dry-run flags in $do, so 'k create ... $do' prints YAML instead of creating
+kubectl config use-context CONTEXT	ch	rewrites the kubeconfig's current context, so later kubectl commands in every shell hit that cluster
+kubectl explain pod.spec --recursive	ro	every field under pod.spec as one tree, without the descriptions
+argocd app get APP	ro	the app's sync and health status, with the state of each resource
+argocd app history APP	ro	the app's past syncs: ID, date and Git revision
+argocd app terminate-op APP	ch	stops the sync operation that is running on the app now
+flux get all -A --status-selector ready=false	ro	every Flux object, in all namespaces, that is not ready
+curl -s http://127.0.0.1:9100/metrics | grep node_load1	ro	node_exporter's 1-minute load average (node_load15 matches too, plus their HELP and TYPE lines)
+promtool check config prometheus.yml	ro	validates prometheus.yml and the rule files it lists, without starting Prometheus
+curl -s 'http://127.0.0.1:9090/api/v1/query?query=up' | jq	ro	runs the query 'up' on Prometheus: 1 for each target scraped fine, 0 for each one down
+promtool check rules rules/*.yml	ro	checks the alerting and recording rule files for errors
+curl -s localhost:9090/api/v1/targets | jq -r '.data.activeTargets[] | select(.health != "up") | .scrapeUrl + " " + .lastError'	ro	each scrape target that is not up, with its URL and the last scrape error
+curl -s localhost:9090/api/v1/alertmanagers | jq -r '.data.activeAlertmanagers[].url'	ro	the Alertmanager URLs Prometheus is sending its alerts to
+docker exec alertmanager amtool --alertmanager.url=http://localhost:9093 silence query	ro	the active silences, asked from inside the Alertmanager container
+sudo systemctl status wazuh-agent	ro	is the Wazuh agent running, and its latest log lines
+sudo tail -f /var/ossec/logs/ossec.log	ro	follows the Wazuh log live
+sudo lynis audit system	ro	runs a local security audit and lists warnings and hardening suggestions
+sudo auditctl -l	ro	the audit rules loaded in the kernel right now
+sudo cscli decisions list	ro	the bans and other decisions CrowdSec has active right now
+sudo cscli lapi status	ro	can cscli reach and log in to CrowdSec's local API?
+sudo fail2ban-regex /var/log/auth.log /etc/fail2ban/filter.d/sshd.conf	ro	tests the sshd filter against auth.log: how many lines match, without banning anyone
+aws ecr describe-repositories	ro	the ECR repositories in this account and region, with their URIs
+aws cloudwatch describe-alarms --state-value ALARM	ro	the CloudWatch alarms that are in the ALARM state now
+aws cloudtrail lookup-events --max-results 20	ro	the 20 most recent management events (API calls) CloudTrail recorded
+pvecm status | grep -E 'Quorate|Expected votes|Total votes'	ro	Proxmox cluster quorum: is it quorate, and how many votes are expected and present
+qm config 101 | grep -E '^(net|lock|agent)'	ro	VM 101's network devices, any lock on it, and its guest agent setting
+cat /sys/module/zfs/parameters/zfs_arc_max	ro	the ZFS ARC cache size limit in bytes (0 means the built-in default)
+pvesm status	ro	Proxmox: each storage with its type, whether it is active, and total, used and free space
+psql -c 'select * from pg_stat_replication'	ro	on the primary: each connected standby, its state and how far behind its WAL positions are
+pg_basebackup -h 10.0.0.11 -D /var/lib/postgresql/16/replica -R -P	ch	copies the whole primary into a new data directory, adds standby settings (-R), shows progress
+psql -c 'select pg_is_in_recovery()'	ro	t on a standby (replaying WAL), f on the primary
+mc admin info ALIAS	ro	MinIO server status: uptime, drives online or offline, and storage used
+mc ls ALIAS/backups	ro	the objects and prefixes in the backups bucket
+mc ilm rule ls ALIAS/backups	ro	the lifecycle (expiry and transition) rules set on the backups bucket
+timedatectl | grep synchronized	ro	is the system clock synchronised by NTP? (yes or no)
+docker service ps web	ro	where each task of service web runs, and its current state
+sudo ss -ltnp | grep -E ':(80|443) '	ro	who listens on TCP ports 80 and 443
+promtool check rules alerts.yml	ro	checks the alert rules file for syntax and expression errors
+amtool alert query	ro	the alerts firing in Alertmanager now
+amtool silence add alertname=DiskAlmostFull --duration=2h --comment='planned cleanup'	ch	mutes DiskAlmostFull notifications for 2 hours, with the reason recorded
+logcli query '{job="traefik"} |= "502"'	ro	Loki lines from job traefik containing 502 (by default the last hour, 30 lines)
+logcli labels	ro	the label names Loki knows
+curl -s http://127.0.0.1:3100/ready	ro	is Loki ready to serve? it answers 'ready' when it is
+curl -s http://127.0.0.1:3100/loki/api/v1/labels | jq -r '.data[]'	ro	the label names Loki has indexed, one per line
+alloy convert --source-format=promtail --report=report.txt --output=config.alloy promtail.yml	ro	converts a Promtail config to Alloy syntax; report.txt lists what it could not convert
+curl -s http://127.0.0.1:3000/api/health	ro	Grafana's health check: its version and whether its database is OK
+promtool check rules slo-alerts.yml	ro	checks the SLO alert rules for errors before they are loaded
+curl -s 'http://127.0.0.1:9090/api/v1/query?query=up' | jq '.data.result[].value'	ro	only the [timestamp, value] of each 'up' series: 1 is up, 0 is down
+sudo perf record -F 99 -a -g -- sleep 30	ro	samples all CPUs 99 times a second, with call stacks, for 30 s into perf.data
+sudo perf report --stdio	ro	a text report from perf.data: which functions used the most CPU
+cat /proc/pressure/io	ro	I/O pressure (PSI): share of time tasks stalled waiting for the disk
+fio --name=randread --rw=randread --bs=4k --size=1G --runtime=30 --filename=/mnt/test/fio.dat	ch	creates a 1 GiB test file (left behind), then does random 4 KiB reads on it for up to 30 s: IOPS and latency
+date -u +%H:%MZ	ro	the current UTC time as HH:MMZ, for incident timeline notes
+journalctl --since '2 hours ago' -p warning --no-pager	ro	warnings and worse from the last 2 hours
+git log --since='2 hours ago' --oneline --all	ro	commits on any branch from the last 2 hours: what changed just before the incident
+journalctl --since '2026-09-28 10:00' --until '2026-09-28 11:00' --no-pager	ro	every journal entry in that one-hour window
+last -x | head	ro	the latest logins, plus reboots, shutdowns and runlevel changes
+git log --since='2026-09-28' --stat	ro	commits since 28 Sep 2026 with the files each changed; a bare date means that day at the current clock time
+sudo systemctl disable --now apache2	dg	stops Apache now and keeps it from starting at boot
+sudo systemctl mask apache2	ch	Apache can't start at all (by hand, at boot or as a dependency) until unmasked; a running one keeps running
+ping -c 3 192.0.2.10	ro	3 echo requests: is the host up, and how long does a round trip take?
+ssh deploy@192.0.2.11 docker service ls	ro	runs 'docker service ls' on the other manager over SSH: does the Swarm answer there?
+time pg_restore -d appdb_restore /backup/appdb.dump	ch	restores the dump into appdb_restore and measures how long a real restore takes
+aws ce get-cost-and-usage --time-period Start=2026-09-01,End=2026-10-01 --granularity MONTHLY --metrics UnblendedCost	ro	September 2026's total cost (End is exclusive); each Cost Explorer call costs USD 0.01
+aws ec2 describe-vpn-connections	ro	your site-to-site VPN connections, with the state of each tunnel
+aws route53resolver list-resolver-endpoints	ro	the Route 53 Resolver endpoints that forward DNS between the VPC and on-prem
+git log --merges --since='30 days ago' --format='%h %cs %s'	ro	merge commits of the last 30 days: short hash, date and subject
+grep -n 'include:' .gitlab-ci.yml	ro	the lines of the CI file that pull in other templates or files
+curl -sk -u admin 'https://127.0.0.1:9200/_cluster/health?pretty'	ro	the Wazuh indexer's health (green, yellow, red) and shard counts; asks for the password; -k skips cert checks
+sudo /var/ossec/bin/agent_control -l	ro	on the Wazuh manager: every agent with its ID, name, IP and status
+sudo /var/ossec/bin/wazuh-logtest	ro	interactive test: paste a log line and see which decoder and rule match it
+sudo tail -n 50 /var/ossec/logs/ossec.log	ro	the last 50 lines of the Wazuh log
+last -a | head -20	ro	the 20 latest logins, with the remote host in the last column
+sudo journalctl -u ssh --since today --no-pager	ro	today's SSH server log: logins, failures and disconnects
+aws iam update-access-key --access-key-id ACCESS_KEY_ID --status Inactive	dg	disables that access key at once (it can be re-enabled); anything using it starts failing
+journalctl --since '1 hour ago' -p warning --no-pager	ro	warnings and worse from the last hour
+ss -tlnp 'sport = :8080'	ro	who listens on TCP port 8080 (without sudo, the owning process is shown only if it is yours)
+dig +short app.example.com A	ro	only the IPv4 addresses the name resolves to (plus any CNAME on the way), one per line
+echo | openssl s_client -connect app.example.com:443 -servername app.example.com 2>/dev/null | openssl x509 -noout -enddate	ro	when the certificate the server sends right now expires
+git init ~/journal	ch	creates a new Git repository in ~/journal for your notes
+grep -c '^20' ~/journal/2026-10.md	ro	counts the lines starting with '20' (the dated entries) in the October notes
+grep -h '^Cause:' ~/journal/*.md | sort | uniq -c | sort -rn | head	ro	your most frequent incident causes across all notes, with counts
+docker version --format '{{.Server.Version}} API {{.Server.APIVersion}} min {{.Server.MinAPIVersion}}'	ro	the Engine version, its API version, and the oldest API version it accepts
+docker network inspect $(docker network ls -q) --format '{{.Name}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'	ro	every Docker network with its subnets, to spot an overlap with your LAN
+docker inspect CONTAINER --format '{{.State.ExitCode}} oom={{.State.OOMKilled}}'	ro	the container's last exit code, and whether the OOM killer stopped it
+docker service ps --no-trunc --format '{{.Node}}\t{{.CurrentState}}\t{{.Error}}' SERVICE	ro	for each task of the service: node, current state and the full error
+docker service inspect SERVICE --format '{{json .UpdateStatus}}'	ro	how the service's last update ended: completed, paused or rolled back, and why
+docker stack deploy --with-registry-auth -c compose.yml STACK	ch	deploys or updates the stack's services from compose.yml, passing your registry login on
+docker login harbor.example.com -u 'robot$team-a+ci'	ch	logs in to Harbor as that robot account (quoted because of the $)
+curl -sI https://harbor.example.com/v2/ | grep -i www-authenticate	ro	where the registry tells clients to get a login token (the realm URL)
+sudo du -sh /data/registry /data/database	ro	the total size of Harbor's image storage and of its database
+cd /opt/harbor && docker compose ps	ro	Harbor's containers and their state, from its install folder
+kubectl auth can-i --list --as=system:serviceaccount:NS:SA -n NS	ro	everything that service account may do in namespace NS
+kubectl get events -A --sort-by=.lastTimestamp | tail -20	ro	the 20 most recent events across the cluster
+helm history RELEASE -n NS	ro	the release's revisions, and which one is deployed
+kubectl -n metallb-system get ipaddresspools,l2advertisements	ro	MetalLB's address pools and the L2 announcements set up for them
+kubectl get certificate,challenge -A	ro	cert-manager Certificates (ready or not) and any ACME challenges still pending
+kubectl -n kube-system get cm kube-proxy -o jsonpath='{.data.config\.conf}' | grep -E '^mode|strictARP'	ro	kube-proxy's mode and its strictARP setting (MetalLB L2 with IPVS needs strictARP: true)
+df -hT; df -i	ro	space per filesystem with its type, then inode use
+systemctl show UNIT -p NRestarts -p ExecMainStatus -p Result	ro	how often systemd auto-restarted UNIT (Restart=), its main process's exit status, and its result
+journalctl -k -b --no-pager | grep -iE 'invoked oom-killer|Killed process'	ro	OOM-killer events this boot: what triggered it, and which process was killed
+grep 'open files' /proc/PID/limits	ro	process PID's open-files limit (soft and hard)
+getent ahosts www.example.com	ro	the addresses programs on this host get for www.example.com
+sudo nft list ruleset | sudo tee /root/nft-before.txt >/dev/null	ro	saves the whole ruleset before you edit it; sudo tee can write /root, a plain > from your shell can't
+sudo certbot renew --dry-run	ch	renewal rehearsal on the staging CA: saves nothing, but runs pre/post hooks and may reload the web server
+sudo certbot certificates	ro	the certificates certbot manages: names, expiry dates and file paths
+dig +short CAA example.com	ro	the CAA records at this name: which CAs may issue for it (none: the parent's records apply, else any CA)
+for ns in $(dig +short NS example.com); do dig +short +norecurse TXT _acme-challenge.example.com @$ns; done	ro	asks each authoritative server directly for the ACME TXT record: do they all have it?
+sudo wg show wg0 latest-handshakes	ro	when each wg0 peer last completed a handshake (Unix time, 0 means never)
+tailscale status; tailscale ping PEER	ro	your tailnet peers, then whether PEER is reached directly or through a DERP relay
+netbird status -d	ro	NetBird peers in detail: connected or not, direct or relayed, and latency
+ping -c 2 -M do -s 1372 198.51.100.20	ro	2 pings of 1400-byte packets that may not be fragmented: does that size get through?
+docker service ls --format '{{.Name}} {{.Image}}'	ro	each Swarm service and the image it runs
+docker exec CROWDSEC cscli metrics	ro	CrowdSec's metrics from inside its container: lines parsed, alerts and bouncer calls
+nmap -Pn -p 22,3000,8006,9200 203.0.113.10	ro	are ports 22, 3000, 8006 and 9200 open on that host from here? scan only hosts you may test

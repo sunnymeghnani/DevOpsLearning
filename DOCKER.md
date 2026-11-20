@@ -35,9 +35,9 @@ Docker builds the site from the Markdown sources and serves it, so no local Pyth
 
 | What | When it goes | How it is recognised |
 |---|---|---|
-| Older builds of the handbook, controller, lab and janitor images (untagged after a rebuild) | at the next pass | the `devops-handbook.*` labels in our Dockerfiles, or the labels Compose puts on images it built for this project's own services. An image that Compose built for another project is never ours, even if it inherits our labels from a `FROM` |
+| Older builds of the handbook, controller, lab, janitor and verify-VM images (untagged after a rebuild) | at the next pass | the `devops-handbook.*` labels in our Dockerfiles, or the labels Compose puts on images it built for this project's own services. An image that Compose built for another project is never ours, even if it inherits our labels from a `FROM` |
 | The tagged lab images `devops-handbook-lab:base` and `devops-handbook-labs-controller` | after `JANITOR_IMAGE_KEEP_DAYS` (7) days without labs use, and only while the labs are off | the same labels. "Last used" is when the janitor last saw the labs running: it looks every 5 minutes and keeps that time in the `devops-handbook-janitor-state` volume |
-| Build cache of our Dockerfiles | after `JANITOR_CACHE_KEEP_HOURS` (48) hours unused | every stage of our Dockerfiles starts with a no-op `RUN : devops-handbook-<stage>` (or `: devlab-<stage>`). That record is unique to our Dockerfiles, and everything built on top of it is ours. A record is removed only together with all its children, one record at a time by ID |
+| Build cache of our Dockerfiles | after `JANITOR_CACHE_KEEP_HOURS` (48) hours unused | every stage of our Dockerfiles starts with a no-op `RUN : devops-handbook-<stage>` (or `: devlab-<stage>`; the verify-VM runner's is `: devops-handbook-vm`). That record is unique to our Dockerfiles, and everything built on top of it is ours. A record is removed only together with all its children, one record at a time by ID |
 | Lab machines (label `devlab=1`) | when the labs controller is not running (a crash left them), or one hour past the lifetime limit | the label |
 
 The lab controller itself destroys a lab machine after 30 minutes idle, or `LABS_MAX_SECONDS` (3 hours) after it started, busy or not.
@@ -47,7 +47,8 @@ The lab controller itself destroys a lab machine after 30 minutes idle, or `LABS
 - any volume or network;
 - base images and their "pulled from …" cache records, which other projects may share;
 - generic cache steps such as `WORKDIR /src`, which BuildKit shares between Dockerfiles. For the same reason, stage names are never used to recognise our cache;
-- the running handbook image and the janitor's own image.
+- the running handbook image and the janitor's own image;
+- the tagged verify-VM image `devops-handbook-vm:local`, its container and its volume (`python3 labs/vm/vmctl.py clean` removes those).
 
 Images are never force-removed: an image that any container uses, even a stopped one, is kept. The janitor has no network (`network_mode: none`), a read-only filesystem, no Linux capabilities, and a 128 MB memory and 64 process limit. Its only access is the Docker socket, the same as the labs controller. The socket is root-equivalent, which is why the selection rules above are tested in `tests/test_janitor.py`.
 
@@ -114,3 +115,27 @@ docker network create --internal --label com.docker.compose.project=troubleshoot
 ```
 
 If compose reports `network devlab-net was found but has incorrect label`, the network was created without those labels. Run `labs/clean.sh`, then start the profile again. Do not run `test_rooms.py` while you use the labs in the browser: the controller removes every `devlab=1` container when it starts and stops.
+
+## Verify VM (optional: run every lesson in a throwaway VM)
+
+`labs/vm/` builds a disposable Ubuntu 24.04 virtual machine, runs the handbook's shell commands and all lab rooms in it, writes a checklist to `reports/verify/verify-YYYY-MM-DD.md` (plus `.json`), and deletes the VM's disks. The design is in `labs/vm/README.md`.
+
+| You want to | Run |
+|---|---|
+| Check the prerequisites (docker, `/dev/kvm`, 15 GB free, KVM inside the runner) | `python3 labs/vm/vmctl.py check` |
+| Download and verify the cloud image, build the prepared image (once; again only when `labs/vm/provision.sh` or the lab image's package list changes) | `python3 labs/vm/vmctl.py prepare` |
+| Run everything: every module's commands, then all 25 rooms (about 2 hours) | `python3 labs/vm/vmctl.py verify` |
+| Only some modules / some rooms | `python3 labs/vm/vmctl.py verify --modules 27,41` / `verify --rooms 13,19` |
+| Rewrite the report from the last run's saved raw results (after a classifier change; starts nothing) | `python3 labs/vm/vmctl.py report` |
+| Remove the volume and the image (and with `--runs` the local logs in `labs/vm/runs/`) | `python3 labs/vm/vmctl.py clean` |
+
+What it does:
+
+- **Where it runs.** QEMU runs inside the container `devops-handbook-vm` (image `devops-handbook-vm:local`, `labs/vm/Dockerfile`) with `--device /dev/kvm`, **all capabilities dropped** (QEMU/KVM needs none; `check` proves it), `no-new-privileges`, a read-only root filesystem and **no published ports**. It is not privileged. The guest's SSH is forwarded to 127.0.0.1 inside that container only, and `vmctl.py` uses `docker exec ... ssh`. Nothing is installed on the host, nothing is added to boot, and no handbook command ever runs on the host.
+- **Downloads.** Only the official `ubuntu-24.04-server-cloudimg-amd64.img` from `cloud-images.ubuntu.com/releases/noble/release/`, used only after `SHA256SUMS.gpg` verifies against Ubuntu's cloud-image keyring and the image's sha256 matches. Packages come from Ubuntu's archive, inside the VM during `prepare`. During `verify` the VM is offline.
+- **Commands pass.** One fresh VM per module. Each ```` ```bash ```` block runs in one bash session as root, 20 s per statement. Statements with placeholders (`<pod>`, `CONTAINER`, `...`) and a denylist of VM-killers (reboot, mkfs on the VM's disk, firewall changes, link down, `netplan apply`, ...) are skipped and listed. Each result is classed PASS, USAGE (a likely documentation error), MISSING (with the apt package hint), EXTERNAL (kubectl, aws, terraform, ...), CONTEXT, TIMEOUT or BROKE_VM.
+- **Rooms pass.** Every room on a fresh VM, with the same steps as `labs/test_rooms.py` (setup twice, checks fail, solve, checks pass, answer hashes). A room that behaves differently on a real VM than in the container lab is reported as DIFFERS, with the step.
+
+Disk use: everything lives in ONE named volume, `devops-handbook-vm` (label `devops-handbook.vm=1`): the cloud image (~0.6 GB) and the prepared image (packages installed, ~2 GB) at rest: about 2.3 GB. Each VM gets a qcow2 overlay (10G virtual size, typically 100 to 300 MB written; the first full run peaked at about 2.5 GB for the whole volume) that is deleted when the VM stops. One VM at a time. It refuses to start below 15 GB free on the filesystem of Docker's data root, stops below 8 GB, and stops a VM whose overlay passes 6.5 GB. The runner image is about 0.25 GB.
+
+Never touched: any other container, image, volume or network. `vmctl.py` selects only its own objects by name and label, never prunes, and removes its runner container and every overlay at the end of a run, on errors and on Ctrl-C (a container left behind by `kill -9` is removed by the next run). The janitor removes older untagged builds of the runner image and its build cache.

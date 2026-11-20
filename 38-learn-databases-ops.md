@@ -923,32 +923,46 @@ echo "log_min_duration_statement = '500ms'" | sudo tee /etc/postgresql/16/main/c
 sudo -u postgres psql -c "SELECT pg_reload_conf();" -c "SHOW log_min_duration_statement;"
 ```
 
-**Step 2 — Break it: a typo.** Add a broken line and reload:
+**Step 2 — Break it: a typo.** Add a bad value and reload. Unit names are case-sensitive, so
+`64mb` is not `64MB`:
 
 ```bash
-echo "work_mem = 64MB oops" | sudo tee /etc/postgresql/16/main/conf.d/90-typo.conf
+echo "work_mem = 64mb" | sudo tee /etc/postgresql/16/main/conf.d/90-typo.conf
 sudo -u postgres psql -c "SELECT pg_reload_conf();"
 sudo -u postgres psql -c "SELECT sourcefile, sourceline, error FROM pg_file_settings WHERE error IS NOT NULL;"
-sudo tail -n 3 /var/log/postgresql/postgresql-16-main.log
+sudo tail -n 4 /var/log/postgresql/postgresql-16-main.log
 ```
 
 ```
-                 sourcefile                  | sourceline |    error
----------------------------------------------+------------+--------------
- /etc/postgresql/16/main/conf.d/90-typo.conf |          1 | syntax error
+                 sourcefile                  | sourceline |            error
+---------------------------------------------+------------+------------------------------
+ /etc/postgresql/16/main/conf.d/90-typo.conf |          1 | setting could not be applied
 
 2026-10-03 10:12:41.207 UTC [1012] LOG:  received SIGHUP, reloading configuration files
-2026-10-03 10:12:41.208 UTC [1012] LOG:  syntax error in file "/etc/postgresql/16/main/conf.d/90-typo.conf" line 1, near token "oops"
-2026-10-03 10:12:41.208 UTC [1012] LOG:  configuration file "/etc/postgresql/16/main/postgresql.conf" contains errors; no changes were applied
+2026-10-03 10:12:41.208 UTC [1012] LOG:  invalid value for parameter "work_mem": "64mb"
+2026-10-03 10:12:41.208 UTC [1012] HINT:  Valid units for this parameter are "B", "kB", "MB", "GB", and "TB".
+2026-10-03 10:12:41.208 UTC [1012] LOG:  configuration file "/etc/postgresql/16/main/conf.d/90-typo.conf" contains errors; unaffected changes were applied
 ```
 
-→ A **reload** with a broken file is harmless: the server keeps running on the old config and tells
-you why. A **restart** with the same file would fail and leave the database down. So: edit, reload,
-check `pg_file_settings`, and only then restart if the setting needs it.
+→ A **reload** with a bad value is harmless: the server keeps the old `work_mem`, applies the rest,
+and tells you which file and line are wrong. A **restart** with the same file would fail and leave
+the database down. So: edit, reload, check `pg_file_settings`, and only then restart if the setting
+needs it.
 
-**Step 3 — Fix it.** `sudo rm /etc/postgresql/16/main/conf.d/90-typo.conf`, reload, and confirm
-`pg_file_settings` shows no errors. For settings with context `postmaster`, check
-`SELECT name FROM pg_settings WHERE pending_restart;` to see what is waiting for a restart.
+> A line PostgreSQL cannot even parse (`work_mem = 64MB oops`) is worse on Ubuntu: the `psql`
+> wrapper reads the cluster's config files too, refuses to start with "invalid line 1 in …", and you
+> lose the very client you would check with. `sudo -u postgres /usr/lib/postgresql/16/bin/psql`
+> skips the wrapper, but the quickest way out is still to remove the broken file.
+
+**Step 3 — Fix it.** Remove the file, reload, and confirm nothing is left in error. For settings with
+context `postmaster`, `pending_restart` shows what is still waiting for a restart:
+
+```bash
+sudo rm /etc/postgresql/16/main/conf.d/90-typo.conf
+sudo -u postgres psql -c "SELECT pg_reload_conf();"
+sudo -u postgres psql -c "SELECT sourcefile, sourceline, error FROM pg_file_settings WHERE error IS NOT NULL;"   # (0 rows)
+sudo -u postgres psql -c "SELECT name FROM pg_settings WHERE pending_restart;"
+```
 
 **How it breaks**
 

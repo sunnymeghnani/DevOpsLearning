@@ -340,7 +340,7 @@ while read -r use mount; do
 done < <(df --output=pcent,target -x tmpfs -x devtmpfs -x overlay -x squashfs | tail -n +2)
 
 echo "== inodes =="
-df -i -x tmpfs -x devtmpfs -x overlay -x squashfs --output=ipcent,target | tail -n +2
+df -x tmpfs -x devtmpfs -x overlay -x squashfs --output=ipcent,target | tail -n +2
 
 echo "== memory =="
 free -h

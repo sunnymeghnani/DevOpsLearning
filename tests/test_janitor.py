@@ -44,6 +44,8 @@ class CacheSelection(unittest.TestCase):
             rec("wd", "[handbook-build 3/7] WORKDIR /src", 500, ["root"]),
             rec("copy", "[handbook-build 6/7] COPY . .", 500, ["wd"], key=" Parents"),   # Docker 29.2 spelling
             rec("lab", "mount / from exec /bin/sh -c : devlab-base", 500, ["ubuntu"]),
+            rec("vm", "mount / from exec /bin/sh -c : devops-handbook-vm", 500, ["ubuntu"]),
+            rec("vmapt", "mount / from exec /bin/sh -c apt-get update && apt-get install -y qemu-system-x86", 500, ["vm"]),
             rec("labapt", "mount / from exec /bin/sh -c apt-get update && apt-get install -y nginx-light ttyd", 500,
                 ["lab"]),
             rec("export", "[handbook-export 1/1] COPY --from=handbook-build /src/index.html /src/artifact.html /", 500),
@@ -60,7 +62,7 @@ class CacheSelection(unittest.TestCase):
             rec("noop", "mount / from exec /bin/sh -c : devops-handbook-build && rm -rf /", 500),
             rec("jenkins", "pulled from docker.io/jenkins/jenkins:lts@sha256:bb", 500),
         ]
-        self.assertEqual(J.our_cache_ids(cache), {"root", "wd", "copy", "lab", "labapt", "export"})
+        self.assertEqual(J.our_cache_ids(cache), {"root", "wd", "copy", "lab", "labapt", "vm", "vmapt", "export"})
 
     def test_a_parent_goes_only_with_all_its_children(self):
         cache = [rec("root", "mount / from exec /bin/sh -c : devops-handbook-build", 99),
@@ -89,7 +91,8 @@ class CacheSelection(unittest.TestCase):
     def test_every_stage_of_ours_starts_with_its_mark(self):
         """The first step after FROM in every stage of ours is a no-op RUN whose record is ours."""
         files = [ROOT / "Dockerfile", ROOT / "labs" / "base" / "Dockerfile",
-                 ROOT / "labs" / "controller" / "Dockerfile", ROOT / "docker" / "janitor" / "Dockerfile"]
+                 ROOT / "labs" / "controller" / "Dockerfile", ROOT / "docker" / "janitor" / "Dockerfile",
+                 ROOT / "labs" / "vm" / "Dockerfile"]
         for f in files:
             stages = re.split(r"^(?=FROM )", f.read_text(), flags=re.M)[1:]
             for block in stages:
@@ -105,6 +108,8 @@ class CacheSelection(unittest.TestCase):
                 self.assertTrue(steps[0].startswith("RUN : "), f"{f.name} {stage}: {steps[0]}")
                 desc = "mount / from exec /bin/sh -c " + steps[0][4:]
                 self.assertTrue(J.CACHE_MARKS.search(desc), f"{f.name} {stage}: {desc}")
+        vm = (ROOT / "labs" / "vm" / "Dockerfile").read_text()
+        self.assertIn('LABEL devops-handbook.project="vm"', vm)   # the janitor sees its old builds as ours
         hb = (ROOT / "Dockerfile").read_text()
         self.assertIn('LABEL devops-handbook.project="handbook"', hb)
         self.assertIn("AS export", hb)                   # `docker build --target export` still works

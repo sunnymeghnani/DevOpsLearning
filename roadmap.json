@@ -12829,7 +12829,7 @@
     "sudo netplan try",
     "ip route get 198.51.100.20",
     "getent ahosts www.example.com",
-    "sudo nft list ruleset > /root/nft-before.txt"
+    "sudo nft list ruleset | sudo tee /root/nft-before.txt >/dev/null"
    ],
    "exit_check": "In 30 minutes on the four-VM lab, someone breaks the resolver, a port forward and a certificate chain; you name each broken layer with evidence from both sides of the network and fix it without turning off verification or the firewall.",
    "prove_sites": [

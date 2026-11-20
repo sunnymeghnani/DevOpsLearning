@@ -7193,8 +7193,8 @@ Oct 03 10:41:07 web01 kernel: [UFW BLOCK] IN=ens18 OUT= MAC=... SRC=198.51.100.2
 
 > ⚠️ `iptables -F` (flush) / `nft flush ruleset` remove **all** rules at once: with a
 > default-drop policy you lose SSH instantly, and you also wipe Docker's NAT rules so
-> every container loses networking. Safer: save first (`sudo iptables-save >
-> /root/fw-backup.rules`, `sudo nft list ruleset > /root/nft-backup.nft`), change one rule
+> every container loses networking. Safer: save first (`sudo iptables-save | sudo tee /root/fw-backup.rules >/dev/null`,
+> `sudo nft list ruleset | sudo tee /root/nft-backup.nft >/dev/null`), change one rule
 > at a time (`ufw delete N`), arm a rollback timer (section 11), and prefer
 > `ufw disable` over flushing if you must turn filtering off.
 
@@ -7904,7 +7904,7 @@ restarting the app releases it.
 > ⚠️ You can empty a deleted-but-open file through its descriptor
 > (`sudo truncate -s 0 /proc/2671/fd/5`), but its contents are lost for good. Safer
 > first: reload or restart the app in a quiet moment; if you must truncate, copy the
-> part you need first (`sudo tail -n 10000 /proc/2671/fd/5 > /root/app-tail.log`).
+> part you need first (`sudo tail -n 10000 /proc/2671/fd/5 | sudo tee /root/app-tail.log >/dev/null`).
 
 **Hands-on lab (test VM only)**
 

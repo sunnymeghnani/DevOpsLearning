@@ -2477,6 +2477,7 @@ macOS has the best built-in speed test of the three platforms
 [macOS reference](20-macos.md).
 
 ```bash
+# macOS (Terminal), not Linux
 # Capacity AND latency under load ("responsiveness"), macOS 12+
 networkQuality
 networkQuality -s            # sequential: upload and download measured separately
@@ -3008,10 +3009,16 @@ problem (Step C5).
 # Linux client
 ip route get 1.1.1.1
 ip route get 10.20.0.15        # an internal server
-# macOS client
+```
+
+```bash
+# macOS client (Terminal), not Linux
 route -n get 1.1.1.1
+```
+
+```powershell
 # Windows client
-#   Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object InterfaceAlias, NextHop
+Find-NetRoute -RemoteIPAddress 1.1.1.1 | Select-Object InterfaceAlias, NextHop
 ```
 
 ```

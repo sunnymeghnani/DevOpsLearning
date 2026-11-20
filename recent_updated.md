@@ -882,3 +882,25 @@ Independent QA of the 12 new rooms (Junior 13–18, Mid 19–24) on the new lab 
   - The home path in PROJECT-SUMMARY.md was replaced.
   - Commits use the GitHub noreply email.
   - A staged-file scan found no personal data or secrets.
+
+## 32. Verify VM, focus mode, key commands explained (15–20 November 2026)
+
+- **Verify VM** (`labs/vm/`):
+  - QEMU runs inside a capability-free container, and the guest is offline while it is checked.
+  - It runs the handbook's commands and all 25 rooms. Report: `reports/verify/verify-2026-11-15.md`.
+  - Rooms: 22 PASS, 3 DIFFERS on a real VM.
+  - QA: GO. Runner fixes: OOMPolicy=continue, docker restored between blocks, the culprit blamed for BROKE_VM, classifier fixes.
+- **Focus mode** (`focus_site.py`):
+  - A topic shows only its own sections, with lock cards for topics not reached yet.
+  - "Show whole module" shows only that module.
+  - "Sources" lists become a "Related incidents" link, and nested sections are de-duplicated.
+  - Two QA rounds: 12 bugs fixed.
+- **Key commands explained** (`keycmd_site.py`, `keycmd_notes.tsv`):
+  - 455 key commands, each with a one-line summary, a safety badge and a Decode › link.
+  - Fact-check: 40 summaries and 4 badges corrected.
+  - QA: GO.
+- **Not yet QA'd:**
+  - The whole-module end card now leads with "Next topic".
+  - Content fixes from the VM report (14 modules).
+  - The VM re-run of the changed modules is still to do. See `PROGRESS-CHECKPOINT.md`.
+- **Tests:** 221 pass.

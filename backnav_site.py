@@ -47,7 +47,7 @@ BACKNAV_SCRIPT = r"""<script>
     if (S && S.open) { n = M.graph.byId[S.selected]; return { m: S.selected || "", pt: $("map-panel").scrollTop, t: "map" + (n ? ": " + n.title : "") }; }
     if (o) return { t: o[0] === "lab-on" ? "lab: " + $("lab-v-title").textContent : "drill: " + $("drill-v-title").textContent };
     var line = $("topbar").getBoundingClientRect().bottom + 8;
-    main.querySelectorAll(":scope > .mod-section").forEach(function (s) { if (s.getBoundingClientRect().top <= line) sec = a = s; });
+    main.querySelectorAll(":scope > .mod-section:not([data-fx-off])").forEach(function (s) { if (s.getBoundingClientRect().top <= line) sec = a = s; });
     if (sec) sec.querySelectorAll("h2[id],h3[id]").forEach(function (h) { var r = h.getBoundingClientRect(); if (r.height && r.top <= line) a = h; });
     return { y: W.scrollY, a: a ? a.id : "", o: a ? a.getBoundingClientRect().top : 0, t: sec ? sec.getAttribute("data-title") : "" };
   }

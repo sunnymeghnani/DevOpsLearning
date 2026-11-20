@@ -33,15 +33,15 @@ sysctl --system                           # reload all config files
 
 Frequently-tuned parameters in incidents:
 ```bash
-fs.file-max                               # system-wide fd limit
-net.core.somaxconn                        # accept queue (listen backlog)
-net.ipv4.ip_local_port_range              # ephemeral ports
-net.ipv4.tcp_tw_reuse                     # TIME_WAIT reuse for outbound
-net.netfilter.nf_conntrack_max            # conntrack table size
-vm.max_map_count                          # needed by Elasticsearch etc.
-vm.overcommit_memory                      # Redis wants 1
-net.ipv4.ip_forward                       # must be 1 on routers/NAT/K8s nodes
-kernel.pid_max ; kernel.threads-max
+sysctl fs.file-max                        # system-wide fd limit
+sysctl net.core.somaxconn                 # accept queue (listen backlog)
+sysctl net.ipv4.ip_local_port_range       # ephemeral ports
+sysctl net.ipv4.tcp_tw_reuse              # TIME_WAIT reuse for outbound
+sysctl net.netfilter.nf_conntrack_max     # conntrack table size (exists once nf_conntrack is loaded)
+sysctl vm.max_map_count                   # needed by Elasticsearch etc.
+sysctl vm.overcommit_memory               # Redis wants 1
+sysctl net.ipv4.ip_forward                # must be 1 on routers/NAT/K8s nodes
+sysctl kernel.pid_max kernel.threads-max
 ```
 
 ## 3. Resource limits (ulimit)
@@ -92,13 +92,16 @@ sensors                                   # temperatures/fans (lm-sensors)
 ipmitool sensor ; ipmitool sel list       # BMC sensors + hardware event log ★
                                           #   (ECC errors, PSU failures, fan failures)
 ipmitool chassis status
-mcelog ; grep -i "machine check" /var/log/messages   # CPU/memory machine-check errors
+ras-mc-ctl --summary ; ras-mc-ctl --errors   # CPU/memory error log (apt install rasdaemon;
+                                          #   mcelog is not in Ubuntu 24.04)
+journalctl -k | grep -i "machine check"   # machine-check errors (RHEL: /var/log/messages)
 dmesg -T | grep -iE "ecc|mce|thermal"
 smartctl -a /dev/sda                      # disk health (01-storage-disk.md)
 # RAID controllers (vendor tools): storcli /c0 show all   (Broadcom/LSI)
 #                                  perccli /c0 show       (Dell PERC)
 #                                  ssacli ctrl all show config   (HPE)
-free -h vs dmidecode -t memory            # OS sees less RAM than installed? failed DIMM
+free -h                                   # RAM the OS sees ...
+dmidecode -t memory | grep -E "^\s+Size:" # ... vs the DIMMs installed: less in free = failed DIMM
 ```
 
 ## 7. Virtualization/cloud detection oddities

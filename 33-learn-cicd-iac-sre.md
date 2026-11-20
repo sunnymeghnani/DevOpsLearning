@@ -2757,8 +2757,8 @@ failing command talks to an external system, go to Step 7.
 
 **Goal:** identify which external system refused the request and why, from inside a job.
 
-```bash
-# add temporarily to the failing job (names and hosts only, no secret values)
+```yaml
+# add temporarily to the failing job's script: list (names and hosts only, no secret values)
 - getent ahosts harbor.example.com
 - echo | openssl s_client -connect harbor.example.com:443 -servername harbor.example.com 2>/dev/null | openssl x509 -noout -issuer -enddate
 - curl -sS -o /dev/null -w '%{http_code}\n' https://harbor.example.com/api/v2.0/ping

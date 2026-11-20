@@ -97,7 +97,7 @@ verify — it can indicate interception.
 | every command laggy | packet loss | `mtr host` (02-network.md) |
 
 Session drops on idle → keepalives, client side:
-```bash
+```text
 # ~/.ssh/config
 Host *
     ServerAliveInterval 60

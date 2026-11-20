@@ -304,11 +304,13 @@ mind:
 Apache's default `combined` log has no duration. Add `%D` (microseconds) at the **end** of
 a custom format so `$NF` picks it up:
 
-```bash
+```apache
 # /etc/apache2/conf-available/timed-log.conf  (enable with a2enconf timed-log; then use it in a vhost)
 LogFormat "%h %l %u %t \"%r\" %>s %O \"%{Referer}i\" \"%{User-Agent}i\" %D" combined_timed
 # in the vhost:  CustomLog ${APACHE_LOG_DIR}/app-access.log combined_timed
+```
 
+```bash
 # percentiles in ms from the last 10,000 requests
 tail -n 10000 /var/log/apache2/app-access.log \
   | awk '{print $NF/1000}' | sort -n \

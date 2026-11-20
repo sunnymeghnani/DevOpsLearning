@@ -31,3 +31,6 @@ compose.yaml
 # deep-research notes and reports (not part of the site)
 research_notes/
 reports/
+
+# verify VM run logs (labs/vm/runs/)
+labs/vm/runs/

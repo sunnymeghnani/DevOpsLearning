@@ -524,7 +524,7 @@ Endpoint, region and credentials work from this host, and last night's backup ex
 **Next step:** identity doubts → `aws sts get-caller-identity`. A service with its own card → that card. ECR login → `aws ecr get-login-password --region R | docker login --username AWS --password-stdin ACCOUNT.dkr.ecr.R.amazonaws.com` (the token lasts 12 hours).
 
 ### terraform plan — what exactly will change, and is anything replaced or destroyed?
-Match: terraform plan
+Match: terraform plan, tofu plan
 Instead of: terraform apply straight away
 Safety: read-only for infrastructure · takes the state lock and calls the provider APIs to refresh · the `-out` file holds sensitive values in clear text
 

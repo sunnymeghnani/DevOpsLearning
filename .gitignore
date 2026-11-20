@@ -27,3 +27,6 @@ research/decoder-briefs/
 # --- the owner's own raw incident notes (the handbook carries anonymised versions)
 research/user-cases/
 research_notes/Free learning tools per DevOps topic/incident_no_ip_after_reset.md
+
+# --- verify VM: local run logs (serial consoles, raw results)
+labs/vm/runs/

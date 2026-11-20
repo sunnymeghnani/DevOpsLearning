@@ -293,6 +293,7 @@ WRN leaks found: 1
 # 2. Store the replacement as a masked, protected CI/CD variable or in Vault, never in the repo
 # 3. Review what the old token did while exposed (GitLab admin: Monitoring > Audit events)
 # 4. Only then rewrite history, if your policy requires it, and tell everyone to re-clone
+#    (filter-repo is not part of git: sudo apt install git-filter-repo)
 git filter-repo --replace-text replacements.txt     # file contains: glpat-OLDVALUE==>REDACTED
 ```
 
@@ -933,7 +934,7 @@ Filesystem     Inodes IUsed IFree IUse% Mounted on
 
 ```bash
 # Tonight: keep the last lines as evidence, then empty the file in place
-sudo tail -n 5000 /var/lib/docker/containers/8c1f2a.../8c1f2a...-json.log > /root/8c1f2a-tail.log
+sudo tail -n 5000 /var/lib/docker/containers/8c1f2a.../8c1f2a...-json.log | sudo tee /root/8c1f2a-tail.log >/dev/null
 sudo truncate -s 0 /var/lib/docker/containers/8c1f2a.../8c1f2a...-json.log
 # Next change window: default rotation for every new container, in /etc/docker/daemon.json
 #   { "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "3" } }
